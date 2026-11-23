@@ -226,6 +226,12 @@ class AudioDubbingForegroundService : Service() {
                 // đầu phiên — đổi công tắc giữa chừng có hiệu lực từ lần
                 // bật lồng tiếng sau (lời dặn gửi cho model lúc mở phiên).
                 val wholeSentence = repository.wholeSentenceFlow.first()
+                // FIX19: live mirror of the external-app mode switch, so the
+                // voice hold can be dropped even if the user flips the switch
+                // mid-session (before the first translated audio arrives).
+                // FIX39: moved up here (was below the text callbacks) so the
+                // source-text sampler can read the current mode too.
+                var activeExternalMode = externalAppMode
                 // FIX27: two Gemini keys (two Google accounts). Key 1 is the
                 // existing "api_key"; key 2 is optional. The active key is
                 // shared by this whole session; a failover moves it to the
@@ -559,10 +565,6 @@ class AudioDubbingForegroundService : Service() {
                 }
 
                 var activeDubbingMode = dubbingMode
-                // FIX19: live mirror of the external-app mode switch, so the
-                // voice hold can be dropped even if the user flips the switch
-                // mid-session (before the first translated audio arrives).
-                var activeExternalMode = externalAppMode
                 val firstAudioSentAtMs = AtomicLong(0L)
                 val firstTranslatedAudioMeasured = AtomicBoolean(false)
 

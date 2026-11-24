@@ -222,6 +222,15 @@ class AudioDubbingForegroundService : Service() {
                 val browserDelayedBackground = !externalAppMode && useSystemCapture
                 val alarmMode = (externalAppMode && filterOriginalVoice || browserDelayedBackground) &&
                     dubbingMode != UserPreferencesRepository.MODE_SUBTITLE_ONLY
+                // FIX41: live delayed-background flag. Starts as the
+                // session-start decision; set to true if the WebAudio tap
+                // dies mid-session (CORS/DRM fallback fires ~2s after the
+                // video starts, AFTER session start) so the original audio
+                // is delayed to match the picture even when the tap was
+                // alive at session start. AtomicBoolean because the
+                // onModeChanged callback and the settings collectors run
+                // on different threads.
+                val delayedBackgroundActive = AtomicBoolean(browserDelayedBackground)
                 // FIX35: dịch nguyên câu hoàn chỉnh. Đọc một lần lúc bắt
                 // đầu phiên — đổi công tắc giữa chừng có hiệu lực từ lần
                 // bật lồng tiếng sau (lời dặn gửi cho model lúc mở phiên).
@@ -705,12 +714,14 @@ class AudioDubbingForegroundService : Service() {
                     // 2. Reactive original media volume & ducking updates
                     // FIX29: in alarm mode the slider drives the filtered
                     // background loudness (STREAM_MUSIC stays 0).
+                    // FIX41: also after a mid-session switch to the
+                    // delayed-background mode.
                     launch {
                         kotlinx.coroutines.flow.combine(
                             DubbingSessionRepository.originalVolumeRatio,
                             DubbingSessionRepository.isOriginalMuted
                         ) { ratio, muted -> Pair(ratio, muted) }.collect { (ratio, muted) ->
-                            if (alarmMode) {
+                            if (alarmMode || delayedBackgroundActive.get()) {
                                 backgroundAudioPlayer?.setVolume(ratio, muted)
                             } else {
                                 audioPlayerManager?.setOriginalMediaAudio(ratio, muted)
@@ -721,9 +732,13 @@ class AudioDubbingForegroundService : Service() {
                     // FIX37: in browser delayed-background mode, keep the
                     // background delay matched to the picture delay as the
                     // auto delay adapts.
-                    if (browserDelayedBackground) {
-                        launch {
-                            DubbingSessionRepository.selectedMediaDelayMs.collect { delayMs ->
+                    // FIX41: the collector runs always now and checks the
+                    // live flag, so a mid-session switch gets the delay
+                    // updates too (the session-start flag alone would miss
+                    // it — the collector was never launched then).
+                    launch {
+                        DubbingSessionRepository.selectedMediaDelayMs.collect { delayMs ->
+                            if (delayedBackgroundActive.get()) {
                                 backgroundAudioPlayer?.setDelayMs(delayMs.toLong())
                             }
                         }
@@ -875,6 +890,69 @@ class AudioDubbingForegroundService : Service() {
                     }
                 }
 
+                // FIX41: switch on the delayed-background mode mid-session.
+                // The WebAudio tap can die AFTER session start (the CORS/
+                // DRM fallback fires ~2s after the video starts playing),
+                // so FIX37's session-start decision misses it — the
+                // original audio would then play live while the picture is
+                // delayed. Same end state as FIX37: dub voice on the alarm
+                // stream, original audio delayed through the background
+                // player, live WebView audio muted. The dub voice keeps
+                // playing (its queue survives the track rebuild) and the
+                // translation input keeps flowing (stereo capture feeds
+                // Gemini the same mono downmix as before).
+                fun activateDelayedBackground(projection: MediaProjection) {
+                    if (!delayedBackgroundActive.compareAndSet(false, true)) return
+                    Log.w(TAG, "WebAudio died mid-session: activating delayed-background mode")
+                    // 1. Move the dub voice to the alarm stream first
+                    // (STREAM_MUSIC is about to be muted; the dub would
+                    // go silent otherwise).
+                    audioPlayerManager?.switchToAlarmStream()
+                    // 2. Start the background player with the current
+                    // picture delay (the delay-updater collector keeps it
+                    // matched from here on).
+                    backgroundAudioPlayer?.stop()
+                    backgroundAudioPlayer = BackgroundAudioPlayer(applicationContext)
+                    backgroundAudioPlayer?.onPassthroughChanged = { passthrough ->
+                        DubbingSessionRepository.setConnectionStatus(
+                            if (passthrough) "Phim này tiếng mono — không lọc được giọng gốc, đang phát nguyên tiếng phim"
+                            else "Đang lọc giọng gốc — chỉ giữ tiếng nền"
+                        )
+                    }
+                    backgroundAudioPlayer?.start()
+                    backgroundAudioPlayer?.setVolume(
+                        DubbingSessionRepository.originalVolumeRatio.value,
+                        DubbingSessionRepository.isOriginalMuted.value
+                    )
+                    backgroundAudioPlayer?.setFilterEnabled(filterOriginalVoice)
+                    backgroundAudioPlayer?.setDelayMs(
+                        DubbingSessionRepository.selectedMediaDelayMs.value.toLong()
+                    )
+                    // 3. Stereo capture: mono feeds Gemini (as before),
+                    // stereo feeds the background player. Browser mode: the
+                    // background player is the only original audio, so keep
+                    // feeding it even if the tap comes alive later.
+                    audioCaptureManager = AudioCaptureManager()
+                    audioCaptureManager?.startCaptureStereo(
+                        projection, applicationInfo.uid,
+                        onMonoAudioData = { pcmData ->
+                            if (BrowserAudioBridge.isActive) return@startCaptureStereo
+                            firstAudioSentAtMs.compareAndSet(0L, SystemClock.elapsedRealtime())
+                            webSocketManager?.sendAudioData(pcmData)
+                            val currentAmp = DubbingSessionRepository.audioAmplitude.value
+                            DubbingSessionRepository.setAudioAmplitude(
+                                AudioUtils.processPcmAmplitude(pcmData, currentAmp)
+                            )
+                        },
+                        onStereoAudioData = { stereoData ->
+                            backgroundAudioPlayer?.feedPcm(stereoData)
+                        }
+                    )
+                    DubbingSessionRepository.setConnectionStatus(
+                        "Trang web chặn âm thanh — tiếng gốc đang trễ theo hình qua kênh báo thức"
+                    )
+                }
+
                 // Prefer the in-WebView WebAudio tap. It splits source PCM before
                 // DelayNode playback, so Gemini receives live audio while speakers
                 // receive the delayed original mix. System capture remains fallback
@@ -903,15 +981,28 @@ class AudioDubbingForegroundService : Service() {
                             } else if (DubbingSessionRepository.isDubbingRunning.value &&
                                 audioCaptureManager == null && mediaProjection != null) {
                                 val projectionForFallback = mediaProjection
-                                audioCaptureManager = AudioCaptureManager()
-                                audioCaptureManager?.startCapture(projectionForFallback!!, applicationInfo.uid) { pcmData ->
-                                    if (BrowserAudioBridge.isActive) return@startCapture
-                                    firstAudioSentAtMs.compareAndSet(0L, SystemClock.elapsedRealtime())
-                                    webSocketManager?.sendAudioData(pcmData)
-                                    val amp = DubbingSessionRepository.audioAmplitude.value
-                                    DubbingSessionRepository.setAudioAmplitude(AudioUtils.processPcmAmplitude(pcmData, amp))
+                                // FIX41: in browser mode with a voice dub, the
+                                // tap dying mid-session means the original audio
+                                // would play live while the picture is delayed
+                                // — switch on the delayed-background mode
+                                // (FIX37's end state) instead of the plain mono
+                                // fallback. External mode / subtitle-only keep
+                                // the mono fallback.
+                                if (!activeExternalMode &&
+                                    dubbingMode != UserPreferencesRepository.MODE_SUBTITLE_ONLY &&
+                                    !delayedBackgroundActive.get()) {
+                                    activateDelayedBackground(projectionForFallback!!)
+                                } else {
+                                    audioCaptureManager = AudioCaptureManager()
+                                    audioCaptureManager?.startCapture(projectionForFallback!!, applicationInfo.uid) { pcmData ->
+                                        if (BrowserAudioBridge.isActive) return@startCapture
+                                        firstAudioSentAtMs.compareAndSet(0L, SystemClock.elapsedRealtime())
+                                        webSocketManager?.sendAudioData(pcmData)
+                                        val amp = DubbingSessionRepository.audioAmplitude.value
+                                        DubbingSessionRepository.setAudioAmplitude(AudioUtils.processPcmAmplitude(pcmData, amp))
+                                    }
+                                    Log.w(TAG, "WebAudio unavailable: system capture fallback resumed")
                                 }
-                                Log.w(TAG, "WebAudio unavailable: system capture fallback resumed")
                             }
                         }
                     }

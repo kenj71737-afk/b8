@@ -172,6 +172,13 @@ class AudioPlayerManager(private val context: Context) {
         audioTrack?.play()
         setPlaybackSpeed(currentPlaybackSpeed)
 
+        launchPlaybackLoop()
+    }
+
+    // FIX41: the playback loop, shared by start() and switchToAlarmStream()
+    // (the switch restarts the loop on the same scope after rebuilding the
+    // track, so queued translated audio survives it).
+    private fun launchPlaybackLoop() {
         playbackJob = playerScope.launch {
             var prevSample = 0f
             for (chunk in audioChannel) {
@@ -243,6 +250,84 @@ class AudioPlayerManager(private val context: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * FIX41: move the dub voice to the alarm stream mid-session. Used when
+     * the WebAudio tap dies after session start (CORS/DRM): the original
+     * audio is then delayed through the background player on the alarm
+     * stream, STREAM_MUSIC must be muted, and the dub would go silent if
+     * it stayed on the assistant usage. Rebuilds the AudioTrack with
+     * USAGE_ALARM and restarts the playback loop on the same scope, so
+     * queued translated audio survives and the initial voice hold is NOT
+     * re-applied (it was already applied at session start).
+     */
+    fun switchToAlarmStream() {
+        if (alarmMode) return
+        alarmMode = true
+        try {
+            initialAlarmVolume = audioManager?.getStreamVolume(AudioManager.STREAM_ALARM) ?: -1
+            maxAlarmVolume = audioManager?.getStreamMaxVolume(AudioManager.STREAM_ALARM) ?: 7
+            // Map the CURRENT music loudness onto the alarm stream (the
+            // user may have changed the volume since session start).
+            val currentMusicVolume = audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC)
+                ?: initialMusicVolume
+            val musicRatio = if (maxMusicVolume > 0 && currentMusicVolume > 0) {
+                currentMusicVolume.toFloat() / maxMusicVolume
+            } else 0.7f
+            val alarmTarget = (musicRatio * maxAlarmVolume).toInt().coerceIn(1, maxAlarmVolume)
+            audioManager?.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+            audioManager?.setStreamVolume(AudioManager.STREAM_ALARM, alarmTarget, 0)
+            Log.i(TAG, "Switch to alarm: STREAM_MUSIC muted, STREAM_ALARM set to $alarmTarget/$maxAlarmVolume")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not set alarm-mode volumes", e)
+        }
+        // Abandon the audio focus requested for the assistant usage
+        // (alarm mode does not request focus).
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                focusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager?.abandonAudioFocus { }
+            }
+            focusRequest = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not abandon audio focus", e)
+        }
+        // Rebuild the track with USAGE_ALARM. Cancel the playback loop
+        // first so it never writes to a released track; the channel keeps
+        // its queued chunks and the loop restarts on the same scope.
+        playbackJob?.cancel()
+        playbackJob = null
+        try {
+            audioTrack?.stop()
+            audioTrack?.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping audioTrack for alarm switch", e)
+        }
+        audioTrack = null
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_ALARM)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val minBufferSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
+        val bufferSize = maxOf(minBufferSize, 2048)
+        val audioFormat = AudioFormat.Builder()
+            .setSampleRate(SAMPLE_RATE)
+            .setChannelMask(CHANNEL_CONFIG)
+            .setEncoding(AUDIO_FORMAT)
+            .build()
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(audioAttributes)
+            .setAudioFormat(audioFormat)
+            .setBufferSizeInBytes(bufferSize)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+            .build()
+        audioTrack?.play()
+        setPlaybackSpeed(currentPlaybackSpeed)
+        launchPlaybackLoop()
     }
 
     fun playAudioData(data: ByteArray) {

@@ -502,7 +502,14 @@ class AudioDubbingForegroundService : Service() {
                 // (Moved up here so the source-text callback below can
                 // feed it too; see the FIX39 note there.)
                 val latencyEma = LatencyEma()
-                val burstDetector = AudioBurstDetector()
+                // FIX43: 500 ms burst gap (was the 1000 ms default). In phrase
+                // mode the latency sampler only runs at burst starts; rapid
+                // dialogue (Cantonese film, 24/11) has < 1 s pauses between
+                // phrases, so no burst ever started and the auto delay stayed
+                // frozen at its 5.238 s seed. 500 ms catches those pauses;
+                // the EMA (30%/sample) + 500 ms deadband still smooth out
+                // any noisy sample from a mid-phrase pause.
+                val burstDetector = AudioBurstDetector(500L)
                 val sentenceDurationTracker = SentenceDurationTracker()
 
                 webSocketManager?.onTextMessageReceived = { textDelta ->

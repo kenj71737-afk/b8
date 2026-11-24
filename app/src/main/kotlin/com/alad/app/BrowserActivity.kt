@@ -783,6 +783,23 @@ class BrowserActivity : Activity() {
               // compatibility PCM tap; audio playback itself uses DelayNode.
               function attachAudio(v) {
                 if (!v || audioStates.has(v) || !window.AudioContext && !window.webkitAudioContext) return;
+                // FIX42: a cross-origin video whose element has NO crossOrigin
+                // attribute is TAINTED for Web Audio — createMediaElementSource
+                // routes it through the graph and the graph outputs silence
+                // forever (even the direct fallback stays silent, because the
+                // source itself is tainted). Skip the graph entirely so the
+                // element plays through its normal output; the service then
+                // uses system capture + the delayed-background player
+                // (FIX37/FIX41). Same-origin video and video with
+                // crossOrigin='anonymous' are clean and still attach.
+                // (Not added to audioStates, so scan() re-checks cheaply if
+                // the src changes — e.g. the next episode on the same page.)
+                const _src = v.currentSrc || v.src;
+                if (_src && !v.crossOrigin) {
+                  try {
+                    if (new URL(_src, location.href).origin !== location.origin) return;
+                  } catch(e) {}
+                }
                 const AC = window.AudioContext || window.webkitAudioContext;
                 let ctx, source, delay, gain, tap, silent;
                 try {
@@ -823,13 +840,24 @@ class BrowserActivity : Activity() {
                     for(let k=0;k<bytes.length;k++) binary += String.fromCharCode(bytes[k]);
                     try { if(window.ALADAudio) ALADAudio.onPcm(btoa(binary)); } catch(e) {}
                   };
-                  const state = {ctx:ctx, source:source, delay:delay, gain:gain, tap:tap,
-                                 silent:silent, nonSilent:()=>nonSilentBlocks};
-                  audioStates.set(v,state); window.__aladAudioStates.push(state);
-                  let checkTimer = null;
-                  const resume = () => {
-                    if(ctx.state === 'suspended') ctx.resume().catch(()=>{});
-                    if(checkTimer === null) checkTimer = setTimeout(() => {
+                  // FIX42: the 2.2 s audio probe must not run while the
+                  // context is suspended (autoplay without a user gesture):
+                  // a suspended context delivers no audio to the tap, and
+                  // firing the CORS fallback for it is a false positive
+                  // (the fallback routes through the same suspended context
+                  // and stays silent too). startCheck() is deferred until
+                  // the context is running; the document gesture listeners
+                  // below resume suspended contexts and start the probe.
+                  let checkTimer = null, notifiedSuspended = false;
+                  const startCheck = () => {
+                    if (checkTimer !== null || failed) return;
+                    checkTimer = setTimeout(() => {
+                      if (ctx.state === 'suspended') {
+                        // Still no gesture — not a CORS block. Re-arm so the
+                        // probe runs once a gesture resumes the context.
+                        checkTimer = null;
+                        return;
+                      }
                       if (nonSilentBlocks === 0 && !failed) {
                         failed = true;
                         try { source.disconnect(); source.connect(ctx.destination); } catch(e) {}
@@ -840,6 +868,22 @@ class BrowserActivity : Activity() {
                         notify('Đã nhận âm thanh HTML5: gửi Gemini tức thì và phát trễ.');
                       }
                     }, 2200);
+                  };
+                  const state = {ctx:ctx, source:source, delay:delay, gain:gain, tap:tap,
+                                 silent:silent, nonSilent:()=>nonSilentBlocks, startCheck:startCheck};
+                  audioStates.set(v,state); window.__aladAudioStates.push(state);
+                  const resume = () => {
+                    if (ctx.state === 'suspended') {
+                      ctx.resume().then(() => {
+                        if (ctx.state === 'running') startCheck();
+                      }).catch(()=>{});
+                      if (!notifiedSuspended) {
+                        notifiedSuspended = true;
+                        notify('Video đang im lặng — chạm vào màn hình để bật tiếng.');
+                      }
+                      return;
+                    }
+                    startCheck();
                   };
                   v.addEventListener('play', resume); v.addEventListener('playing', resume);
                   if (!v.paused) resume();
@@ -924,6 +968,27 @@ class BrowserActivity : Activity() {
               scan(); new MutationObserver(scan).observe(document.documentElement,{childList:true,subtree:true});
               setInterval(scan,1200);
               document.addEventListener('visibilitychange',()=>{ if(!document.hidden) scan(); });
+              // FIX42: an AudioContext starts suspended until a user gesture.
+              // Autoplaying video (episode 2+ after a navigation) has no
+              // gesture when it starts, so its context never resumes and the
+              // video plays silently. Resume every suspended context on any
+              // tap or key press, and start the deferred audio probe.
+              function resumeAllContexts() {
+                window.__aladAudioStates.forEach(s => {
+                  try {
+                    if (s.ctx && s.ctx.state === 'suspended') {
+                      s.ctx.resume().then(() => {
+                        if (s.ctx.state === 'running' && s.startCheck) s.startCheck();
+                      }).catch(()=>{});
+                    } else if (s.ctx && s.ctx.state === 'running' && s.startCheck) {
+                      s.startCheck();
+                    }
+                  } catch(e) {}
+                });
+              }
+              document.addEventListener('click', resumeAllContexts);
+              document.addEventListener('touchstart', resumeAllContexts);
+              document.addEventListener('keydown', resumeAllContexts);
             })();
         """.trimIndent()
         webView.evaluateJavascript(js, null)

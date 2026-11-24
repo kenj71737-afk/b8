@@ -51,7 +51,6 @@ class BrowserActivity : Activity() {
     private lateinit var controlsView: LinearLayout
     private lateinit var fullscreenButton: Button
     private var fullscreenHud: LinearLayout? = null
-    private lateinit var fullscreenHudStatus: TextView
     private var isFullscreen = false
     // FIX16: video seek (progress) controls. These move the video's own
     // currentTime and are separate from the dubbing-delay SeekBar above.
@@ -350,11 +349,6 @@ class BrowserActivity : Activity() {
 
     private fun ensureFullscreenHud() {
         if (fullscreenHud != null) return
-        fullscreenHudStatus = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            setPadding(dp(8), dp(8), dp(8), dp(8))
-        }
         fun hudButton(label: String, action: () -> Unit) = Button(this).apply {
             text = label
             isAllCaps = false
@@ -362,51 +356,15 @@ class BrowserActivity : Activity() {
             minWidth = dp(42)
             setOnClickListener { action() }
         }
-        // FIX16: the HUD is two rows now — the existing delay controls on top
-        // and a video seek row below (same −10s / scrub bar / +10s as the
-        // normal controls, so seeking works while fullscreen too).
+        // FIX40: the fullscreen HUD is a single thin row now — the delay
+        // buttons (AUTO / THỦ CÔNG / − / +) and the delay label covered too
+        // much of the picture, so they live only in the normal controls.
+        // Fullscreen keeps the seek row plus one small THOÁT button.
         val hud = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(dp(5), dp(3), dp(5), dp(3))
             setBackgroundColor(Color.argb(210, 10, 15, 25))
-        }
-        val delayRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            addView(hudButton("AUTO") {
-                autoSyncEnabled = true
-                DubbingSessionRepository.setAutoSyncEnabled(true)
-                delayMs = DubbingSessionRepository.estimatedDubbingDelayMs.value.coerceIn(0, 20000)
-                if (delayMs < 3000) delayMs = 3000
-                updateDelayUiAndWebView()
-                updateFullscreenHud()
-            })
-            addView(hudButton("THỦ CÔNG") {
-                autoSyncEnabled = false
-                DubbingSessionRepository.setAutoSyncEnabled(false)
-                updateFullscreenHud()
-            })
-            addView(hudButton("−") {
-                if (!autoSyncEnabled) {
-                    delayMs = (delayMs - 500).coerceIn(3000, 20000)
-                    DubbingSessionRepository.setSelectedMediaDelayMs(delayMs)
-                    updateDelayUiAndWebView()
-                    updateFullscreenHud()
-                }
-            })
-            addView(fullscreenHudStatus, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
-            ))
-            addView(hudButton("+") {
-                if (!autoSyncEnabled) {
-                    delayMs = (delayMs + 500).coerceIn(3000, 20000)
-                    DubbingSessionRepository.setSelectedMediaDelayMs(delayMs)
-                    updateDelayUiAndWebView()
-                    updateFullscreenHud()
-                }
-            })
-            addView(hudButton("THOÁT") { setFullscreen(false) })
         }
         val seekRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -443,7 +401,12 @@ class BrowserActivity : Activity() {
         seekRow.addView(fsVideoSeekTime, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply { setMargins(dp(6), 0, 0, 0) })
-        hud.addView(delayRow)
+        // FIX40: the only exit from fullscreen — a small THOÁT at the end
+        // of the seek row.
+        seekRow.addView(hudButton("THOÁT") { setFullscreen(false) },
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)
+            ).apply { setMargins(dp(6), 0, 0, 0) })
         hud.addView(seekRow)
         fullscreenHud = hud
         val decor = window.decorView as ViewGroup
@@ -461,9 +424,8 @@ class BrowserActivity : Activity() {
     }
 
     private fun updateFullscreenHud() {
-        if (!::fullscreenHudStatus.isInitialized) return
-        val mode = if (autoSyncEnabled) "TỰ ĐỘNG" else "THỦ CÔNG"
-        fullscreenHudStatus.text = "$mode • ${"%.1f".format(java.util.Locale.US, delayMs / 1000.0)}s"
+        // FIX40: no delay label in the fullscreen HUD any more — this only
+        // shows/hides the (single-row) HUD.
         fullscreenHud?.let { hud ->
             hud.visibility = if (isFullscreen && customVideoView == null) View.VISIBLE else View.GONE
         }

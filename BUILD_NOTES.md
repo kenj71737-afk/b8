@@ -1,3 +1,71 @@
+# DubLive v1.0.12 — SỬA CRASH FGS mediaProjection KHI BẤM "Bắt đầu lồng tiếng" (TAP + MIC)
+
+Build xong 26/11/2026 (03:43 user báo crash v1.0.11 trên NetShort tập 4, Mức tiếng 0).
+APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.12.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.12.apk`)
+- Kích thước: 9.519.130 bytes (9,1 MB). MD5: 5a2cb4a60222618f7a9c3b12b56ee044.
+- aapt2: package `com.dublive.live`, versionCode 13, versionName 1.0.12,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+  Dex có đủ: `foregroundTypeForMode`, `enterForeground`,
+  `upgradeForegroundToProjection`, chuỗi `media_volume_hint`, và hotfix
+  v1.0.11 còn nguyên (field `deferredTooSmall`, chuỗi chẩn đoán
+  "bỏ %d lát/%d mẫu (nhỏ %d hoãn/lớn %d)").
+- Actions run thành công: **45698132626** (completed/success), commit
+  `fcdd0ece8562155f2ae0579ac683cf6933850842` trên nhánh `dublive-v1`
+  (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
+  `alad-apks` (id 15061184659, bản Debug). Build 1 lần là đậu, không tốn lượt retry.
+
+## Nguyên nhân (ảnh user 03:42 26/11)
+
+"Lỗi: Không mở được dịch vụ nền: Starting FGS with type mediaProjection
+... targetSDK=34 requires permissions: all of the permissions allOf=true
+[android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION] any of the
+permissions allOf=false [android.permission.CAPTURE_VIDEO_OUTPUT,
+android:project_media]". Manifest đã đúng (FOREGROUND_SERVICE_MEDIA_PROJECTION
++ service foregroundServiceType="mediaProjection|microphone"). Lỗi là code:
+`DubbingService.startDub()` gọi `startForeground(..., MEDIA_PROJECTION |
+MICROPHONE)` VÔ ĐIỀU KIỆN cho MỌI mode. Từ Android 14, FGS kiểu
+mediaProjection chỉ được phép khi app đang giữ token MediaProjection
+(android:project_media — chỉ có sau khi user bấm cho phép ở hộp thoại ghi
+màn hình). Tap mode (không mở hộp thoại theo thiết kế) và mic mode đều
+không có token nên hệ thống từ chối ngay, service chết, Mức tiếng 0.
+V1.0.10 không lỗi vì đường chính luôn qua hộp thoại ghi màn hình trước.
+
+## Cách sửa (chỉ 2 file service + activity, giữ nguyên toàn bộ v1.0.11)
+
+1. `DubbingService.kt` — chọn kiểu FGS theo audioMode: chỉ CAPTURE (khởi
+   động từ kết quả hộp thoại, token trong tay, `resultData != null`) mới
+   dùng MEDIA_PROJECTION|MICROPHONE, và vẫn startForeground TRƯỚC
+   getMediaProjection() như cũ; TAP_WEB/TAP_LOCAL/MIC chỉ dùng
+   FOREGROUND_SERVICE_TYPE_MICROPHONE (RECORD_AUDIO đã xin trước,
+   manifest đã khai microphone). Hàm mới: `foregroundTypeForMode()`,
+   `enterForeground()`. Tuyệt đối không truyền MEDIA_PROJECTION khi chưa có token.
+2. `DubbingService.kt` — đường fallback tap→capture (`transitionToCapture`,
+   service đã foreground kiểu MICROPHONE): gọi lại `startForeground` với
+   MEDIA_PROJECTION|MICROPHONE (`upgradeForegroundToProjection()`) NGAY
+   KHI nhận token và TRƯỚC getMediaProjection(); nếu nâng kiểu bị từ chối
+   thì fallback sang mic thay vì chết. Đường LocalPlayerActivity (local tap)
+   đi qua cùng logic này (ACTION_START_LOCAL_TAP → TAP_LOCAL, fallback
+   qua ACTION_START → transitionToCapture).
+3. Dòng chú thích âm lượng dưới màn hình (MainActivity): trước đây là text
+   tĩnh "Giọng dịch dùng âm lượng cuộc gọi..." kể cả khi đang tap (media).
+   Giờ động theo route thật (`updateVolumeHint()`): tap → chuỗi mới
+   `media_volume_hint` (nút âm lượng chỉnh chung cả hai, kéo thanh trượt
+   trong Cài đặt để đổi tỉ lệ); capture/mic → `call_volume_hint` như cũ.
+   Cập nhật cả khi bấm Bắt đầu (tap/media, mic/call), khi service báo
+   đổi route (TYPE_AUDIO_ROUTE), khi dừng (về mặc định).
+4. Không đổi gì khác: tap WebAudio + fallback, hotfix đo lát cắt, không
+   đường báo thức, slice measurement giữ nguyên.
+
+## Checklist thử lại (đưa user)
+
+Bấm "Bắt đầu lồng tiếng" trên NetShort tập 4 phải chạy ngay không lỗi,
+Mức tiếng > 0, trạng thái hiện đúng route ("Âm thanh: phương tiện" nếu
+tap sống, "Âm thanh: cuộc gọi (trang chặn lấy tiếng)" nếu fallback);
+thử cả nút mic (cũng từng crash y hệt); xem 2–3 phút rồi chụp dòng chẩn
+đoán: "N mẫu/60 s" tăng, D đổi mỗi ~4 s.
+
 # DubLive v1.0.11 — GIỌNG DỊCH + TIẾNG GỐC QUA ÂM THANH PHƯƠNG TIỆN (TAP TRONG TRANG)
 
 Build xong 25/11/2026 (rebuild cùng version sau hotfix đo lát cắt).

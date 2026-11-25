@@ -31,7 +31,8 @@ package com.dublive.live
  * source itself is tainted). Such videos are SKIPPED entirely (no
  * graph): the element keeps playing normally and the service falls
  * back to system capture (onTapBlocked). Same-origin video and video
- * with crossOrigin='anonymous' attach normally.
+ * with crossOrigin='anonymous' attach normally. (MSE/blob: URLs
+ * inherit the page origin, so hls.js playback passes this check.)
  *
  * PROBE (ALDA): 2.2 s after the AudioContext is RUNNING, a video that
  * produced zero non-silent blocks is declared blocked (CORS without
@@ -48,6 +49,32 @@ package com.dublive.live
  * destination direct) and keeps the context alive — closing the
  * context would leave the element's audio routing uncertain, so the
  * graph is bypassed, never closed.
+ *
+ * v1.0.13 — ONE video only (the 04:17 screenshot: tap alive, level
+ * 884, D 3.4 s, but the live original still overlapped the delayed
+ * one). Root cause, read from the cswold page itself: the page runs
+ * xgplayer in #cyberPlayer AND a small floating corner ad video
+ * ("广告", bottom-left). The old findVideo() sorted by INTRINSIC
+ * resolution (videoWidth x videoHeight) + rect area, so a high-res
+ * small ad could outrank the main video — and scan() only ever
+ * attached to pool[0]. The tap then sat on the AD (level meter
+ * showing the ad's audio) while the MAIN video played live, straight
+ * to the speakers, next to the ad's delayed audio. Fix (mirrors the
+ * proven web-dub userscript v1.9.1 on this exact page):
+ *  - findVideo scores by VISIBLE rect area (x10 while playing),
+ *    min 100x60, across the document + shadow roots + same-origin
+ *    iframes; the main video always wins over a corner ad.
+ *  - Only the CURRENT best video sends PCM (onaudioprocess gates on
+ *    __dubLiveTapBest) and only its delay gain is live; a demoted
+ *    video's gain goes to 0, and a demoted SMALL video is muted
+ *    outright (its live audio must never leak beside the delayed
+ *    main audio). Promotion unmutes + restores the duck gain.
+ *  - The 2.2 s silence probe only ever fails the BEST video (a muted
+ *    demoted video is silent by design and must not trip fallback).
+ *  - No eligible video at all for 8 s while the tap is active ->
+ *    onTapFailed once, so the session falls back to capture instead
+ *    of sitting silent forever (e.g. a cross-origin iframe player
+ *    the top frame cannot reach).
  */
 object TapJs {
     const val INJECT = """
@@ -55,24 +82,85 @@ object TapJs {
   if (window.__dubLiveTapInstalled) return;
   window.__dubLiveTapInstalled = true;
   window.DubLiveTapDelaySec = 5;
+  window.DubLiveTapDuckVol = 1.0;
   window.__dubLiveTapActive = false;
   window.__dubLiveTapStates = [];
+  window.__dubLiveTapBest = null;
+  window.__dubLiveTapNoVideoSince = 0;
+  window.__dubLiveTapNoVideoFired = false;
+
+  // v1.0.13 — find the MAIN video the way the proven web-dub
+  // userscript does: visible size wins (x10 while playing), across
+  // the document, shadow roots and same-origin iframes. Intrinsic
+  // resolution is deliberately NOT scored: a 1080p corner ad must
+  // never outrank the film the user is watching.
+  function collectVideos(root, out) {
+    if (!root || !root.querySelectorAll) return;
+    try { root.querySelectorAll('video').forEach(function (v) { out.push(v); }); } catch (e) {}
+    try {
+      root.querySelectorAll('*').forEach(function (el) {
+        if (el.shadowRoot) collectVideos(el.shadowRoot, out);
+      });
+    } catch (e) {}
+    try {
+      root.querySelectorAll('iframe').forEach(function (f) {
+        try { if (f.contentDocument) collectVideos(f.contentDocument, out); } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
+  function scoreVideo(v) {
+    var r;
+    try { r = v.getBoundingClientRect(); } catch (e) { return -1; }
+    if (!r || r.width < 100 || r.height < 60) return -1;
+    if (v.readyState < 2 || !isFinite(v.duration) || v.duration <= 0) return -1;
+    var score = r.width * r.height;
+    if (!v.paused && !v.ended) score *= 10;
+    return score;
+  }
 
   function findVideo() {
-    var all = Array.from(document.querySelectorAll('video'))
-      .filter(function (v) { return v.readyState >= 2 && isFinite(v.duration) && v.duration > 0; });
-    if (!all.length) return null;
-    var playing = all.filter(function (v) { return !v.paused && !v.ended; });
-    var pool = playing.length ? playing : all;
-    pool.sort(function (a, b) {
-      var ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
-      return (b.videoWidth * b.videoHeight + br.width * br.height) -
-             (a.videoWidth * a.videoHeight + ar.width * ar.height);
-    });
-    return pool[0];
+    var all = [];
+    collectVideos(document, all);
+    var best = null, bestScore = -1;
+    for (var i = 0; i < all.length; i++) {
+      var s = scoreVideo(all[i]);
+      if (s > bestScore) { bestScore = s; best = all[i]; }
+    }
+    return best;
+  }
+
+  function isSmall(v) {
+    try {
+      var r = v.getBoundingClientRect();
+      return (r.width * r.height) < 0.15 * window.innerWidth * window.innerHeight;
+    } catch (e) { return false; }
   }
 
   function notify(m) { try { if (window.DubLiveAudio) DubLiveAudio.onTapStatus(m); } catch (e) {} }
+
+  // v1.0.13 — one audio path only. Demote the old best (its delayed
+  // audio goes silent, a small one is muted outright so its live
+  // sound never overlaps the delayed main audio) and promote the
+  // new best (unmuted, duck gain restored).
+  function updateBest(v) {
+    var old = window.__dubLiveTapBest;
+    if (old === v) return;
+    if (old) {
+      var os = old.__dubLiveTapState;
+      if (os && !os.failed && !os.blocked) {
+        try { os.gain.gain.setTargetAtTime(0, os.ctx.currentTime, 0.05); } catch (e) {}
+      }
+      if (isSmall(old)) { try { old.muted = true; } catch (e) {} }
+    }
+    window.__dubLiveTapBest = v;
+    try { v.muted = false; } catch (e) {}
+    var ns = v.__dubLiveTapState;
+    if (ns && !ns.failed && !ns.blocked) {
+      try { ns.gain.gain.setTargetAtTime(window.DubLiveTapDuckVol, ns.ctx.currentTime, 0.05); } catch (e) {}
+      if (ns.startCheck) ns.startCheck();
+    }
+  }
 
   function attachAudio(v) {
     if (!v || v.__dubLiveTapState || (!window.AudioContext && !window.webkitAudioContext)) return;
@@ -94,7 +182,7 @@ object TapJs {
       source = ctx.createMediaElementSource(v);
       delay = ctx.createDelay(22.0);
       delay.delayTime.value = window.DubLiveTapDelaySec;
-      gain = ctx.createGain(); gain.gain.value = 1.0;
+      gain = ctx.createGain(); gain.gain.value = window.DubLiveTapDuckVol;
       tap = ctx.createScriptProcessor(2048, 1, 1);
       silent = ctx.createGain(); silent.gain.value = 0.0;
       source.connect(delay); delay.connect(gain); gain.connect(ctx.destination);
@@ -105,7 +193,10 @@ object TapJs {
       v.__dubLiveTapState = st;
       window.__dubLiveTapStates.push(st);
       tap.onaudioprocess = function (ev) {
-        if (st.failed || st.bypassed) return;
+        // v1.0.13 — only the current best video feeds Live. A second
+        // attached video (corner ad) must never mix its PCM into the
+        // translation, or the dub translates two soundtracks at once.
+        if (st.failed || st.bypassed || st.v !== window.__dubLiveTapBest) return;
         var input = ev.inputBuffer.getChannelData(0);
         var sum = 0;
         for (var i = 0; i < input.length; i += 4) sum += input[i] * input[i];
@@ -131,9 +222,14 @@ object TapJs {
       };
       var startCheck = function () {
         if (st.checkTimer !== null || st.failed || st.bypassed) return;
+        // v1.0.13 — the silence probe only judges the BEST video. A
+        // demoted video is muted / gain-0 by design, so its silence
+        // must never trip the capture fallback.
+        if (st.v !== window.__dubLiveTapBest) return;
         st.checkTimer = setTimeout(function () {
           st.checkTimer = null;
           if (st.failed || st.bypassed) return;
+          if (st.v !== window.__dubLiveTapBest) return;
           if (ctx.state === 'suspended') return; // re-arm on next resume
           if (st.nonSilentBlocks === 0) {
             st.failed = true;
@@ -171,15 +267,34 @@ object TapJs {
       if (s.v && !document.contains(s.v)) {
         try { if (s.ctx) s.ctx.close(); } catch (e) {}
         try { if (s.v) s.v.__dubLiveTapState = null; } catch (e) {}
+        if (window.__dubLiveTapBest === s.v) window.__dubLiveTapBest = null;
         window.__dubLiveTapStates.splice(i, 1);
       }
     }
     var v = findVideo();
-    if (v) attachAudio(v);
+    if (!v) {
+      // v1.0.13 — no main video reachable at all (e.g. a
+      // cross-origin iframe player the top frame cannot see):
+      // fall back to capture after 8 s instead of sitting
+      // silent forever. Fires once per activation.
+      if (!window.__dubLiveTapNoVideoSince) window.__dubLiveTapNoVideoSince = Date.now();
+      if (!window.__dubLiveTapNoVideoFired &&
+          Date.now() - window.__dubLiveTapNoVideoSince > 8000) {
+        window.__dubLiveTapNoVideoFired = true;
+        try { if (window.DubLiveAudio) DubLiveAudio.onTapFailed('Không tìm thấy video chính trên trang — đang chuyển sang đường cuộc gọi…'); } catch (e) {}
+      }
+      return;
+    }
+    window.__dubLiveTapNoVideoSince = 0;
+    window.__dubLiveTapNoVideoFired = false;
+    updateBest(v);
+    attachAudio(v);
   }
 
   window.DubLiveTapStart = function () {
     window.__dubLiveTapActive = true;
+    window.__dubLiveTapNoVideoSince = 0;
+    window.__dubLiveTapNoVideoFired = false;
     scan();
   };
   // Bypass the delay (direct sound again) but keep the context alive:
@@ -217,8 +332,11 @@ object TapJs {
   };
   window.DubLiveTapSetDuck = function (vol) {
     var n = Math.max(0, Math.min(1, Number(vol) || 0));
+    window.DubLiveTapDuckVol = n;
     window.__dubLiveTapStates.forEach(function (s) {
       if (s.failed || s.blocked) return;
+      // v1.0.13 — only the best video's delayed audio is audible.
+      if (s.v !== window.__dubLiveTapBest) return;
       try { s.gain.gain.setTargetAtTime(n, s.ctx.currentTime, 0.05); } catch (e) {}
     });
   };

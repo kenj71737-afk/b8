@@ -280,6 +280,22 @@ class MainActivity : AppCompatActivity() {
             if (status.isNullOrBlank()) return
             Log.i(TAG, "tap status: $status")
         }
+
+        /** v1.0.13 — the delay canvas could not capture frames
+         * (page blocks frame capture): the picture delay is off,
+         * the original video is shown instead, so tell the user
+         * plainly instead of leaving a live picture unexplained. */
+        @JavascriptInterface
+        fun onDelayFailed(reason: String?) {
+            if (reason.isNullOrBlank()) return
+            try {
+                runOnUiThread {
+                    statusView.text = "Trạng thái: $reason"
+                    Toast.makeText(this@MainActivity, reason, Toast.LENGTH_LONG).show()
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private val dubReceiver = object : BroadcastReceiver() {

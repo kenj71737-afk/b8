@@ -1,13 +1,173 @@
-# DubLive v1.0.10 — ĐO TRỄ LIÊN TỤC THEO ĐOẠN ÂM THANH GỐC + BỎ HẲN ĐƯỜNG BÁO THỨC
+# DubLive v1.0.11 — GIỌNG DỊCH + TIẾNG GỐC QUA ÂM THANH PHƯƠNG TIỆN (TAP TRONG TRANG)
 
-Build xong 25/11/2026 (giờ VN, điền sau khi Actions xong). APK Debug, cài được.
-- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.10.apk`
-  (symlink `~/workspace/your_files/DubLive-v1.0.10.apk`)
-- aapt2: package `com.dublive.live`, versionCode 11, versionName 1.0.10,
-  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
-- Actions run thành công: **(điền run id)**, commit `(điền commit)` trên nhánh
+Build xong 25/11/2026. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.11.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.11.apk`)
+- aapt2: package `com.dublive.live`, versionCode 12, versionName 1.0.11.
+- Actions run thành công: **RUN_ID** (completed/success), commit `COMMIT` trên nhánh
   `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
   artifact `alad-apks` (bản Debug).
+
+## Bối cảnh
+
+User yêu cầu 21:55–21:56 sau khi thử v1.0.10: "Qua âm thanh máy không
+được à" → "Âm thanh phương tiện". Đường cuộc gọi (VOICE_COMMUNICATION)
+quá nhỏ dù đã có LoudnessEnhancer +8 dB. Đã hứa với user: trang nào
+cho phép thì dùng media, trang chặn (NetShort) thì quay về đường cuộc
+gọi.
+
+## Vì sao không đổi thẳng sang MEDIA được
+
+App lấy tiếng phim bằng system capture (AudioPlaybackCapture khớp
+USAGE_MEDIA/GAME). Nếu giọng dịch cũng phát qua USAGE_MEDIA thì
+capture sẽ thu lại chính giọng dịch rồi dịch tiếp thành tiếng vọng.
+Cách ALDA giải quyết (đã port đúng): lấy tiếng THẲNG TỪ TRONG TRANG
+(WebAudio tap) thay vì thu hệ thống — không chạy capture nữa thì giọng
+dịch phát media thoải mái, không vọng.
+
+## Đã làm — chế độ TAP làm đường chính, capture chỉ là fallback
+
+- `TapJs.kt` (mới): inject vào trang khi bắt đầu lồng tiếng. Tìm thẻ
+  video đang phát, tạo AudioContext + MediaElementSource, rẽ 2 nhánh:
+  (a) DelayNode(delay = D hiện tại, tối đa 22 s) → destination: tiếng
+  gốc trễ đúng D, phát qua đường media; (b) ScriptProcessorNode
+  (2048,1,1) → gain im → destination: PCM tap, resample trong JS
+  xuống 16 kHz mono PCM16, gửi base64 về service qua
+  JavascriptInterface `DubLiveAudio.onPcm` làm ĐẦU VÀO dịch (live,
+  không trễ, không qua capture). Chỉ gửi block không im (RMS ≥
+  0.00008, cùng ngưỡng ALDA). Duck điều khiển gain SAU DelayNode qua
+  `DubLiveTapSetDuck(vol)` (giữ nhịp duck cũ: hạ khi giọng nói, trả
+  100% sau 1,5 s giọng im). `DubLiveTapSetDelay(giây)` chỉnh DelayNode
+  live — CHÚ Ý: nhận GIÂY, không phải mili-giây (canvas
+  `DubLiveSetDelay` nhận ms; đã sửa 2 lần nhầm đơn vị trong lúc code).
+  `DubLiveTapStop()` bypass delay (source → destination trực tiếp),
+  giữ AudioContext sống (đóng nó thì đường tiếng của thẻ không chắc);
+  `DubLiveTapResume()` nối lại graph.
+- CORS/DRM (ALDA FIX42): video cross-origin mà thẻ KHÔNG có thuộc
+  tính `crossOrigin` thì bị taint — tạo graph sẽ làm nó im vĩnh viễn.
+  Video như vậy BỎ QUA HẲN (không tạo graph), `onTapBlocked` bắn,
+  service fallback sang capture. Cùng-origin và
+  `crossOrigin='anonymous'` gắn bình thường.
+- Probe tap chết: 2,2 s sau khi AudioContext RUNNING mà 0 block không
+  im trong khi video đang chạy → `onTapFailed` → fallback. Probe không
+  bao giờ chạy khi context suspended (autoplay không gesture sẽ thành
+  dương tính giả); resume khi play/playing/click/touchstart. Video mới
+  được gắn mới + probe mới qua MutationObserver + quét 1,2 s.
+- `TapAudioQueue.kt` (mới): hàng đợi PCM trong tiến trình, 2 loại
+  MONO16K (tap web) / STEREO48K (tap local), tối đa 64 chunk, offer
+  không chặn (JS bridge và audio thread ExoPlayer không bao giờ đợi
+  service); đầy thì bỏ chunk cũ nhất.
+- `DubbingService.kt`: chế độ âm thanh AudioMode TAP_WEB / TAP_LOCAL /
+  CAPTURE / MIC; `createVad()` tách ra khỏi `startCapture()` (VAD +
+  listener dùng chung cho capture thread VÀ tap feeder thread);
+  `setupMediaProjection()` tách ra (dùng chung cho start thường và
+  transition fallback); tap feeder thread rút `TapAudioQueue` vào VAD
+  (mono thẳng vào VAD; stereo qua background player trước rồi downmix
+  mono 16 kHz cho VAD/Live); `startDelayedBackgroundLocal()` (MEDIA,
+  không enhancer, KHÔNG mute STREAM_MUSIC); `transitionToCapture()`
+  chuyển tại chỗ khi có token fallback (giữ Live + D, chỉ đổi đường
+  vào/ra); `fallbackToMic()` khi user từ chối dialog hoặc hết 90 s
+  không có token; capture builders nhận `gameOnly` (local fallback chỉ
+  khớp GAME); watchdog: local đang phát mà 10 s không có PCM → fallback.
+  Route broadcast TYPE_AUDIO_ROUTE ("Âm thanh: phương tiện" /
+  "Âm thanh: cuộc gọi (trang chặn lấy tiếng)" / "Âm thanh: micro").
+- `MainActivity.kt`: `DubLiveAudioBridge` (JavascriptInterface:
+  onPcm/onTapAlive/onTapFailed/onTapBlocked/onTapStatus); start
+  tap-first (ACTION_START_TAP, KHÔNG hiện dialog ghi màn hình);
+  `pendingTapStart` → `DubLiveTapResume()` khi service báo running;
+  TYPE_NEED_PROJECTION → `showShareTipThenProjection()` (fallback);
+  dialog OK → ACTION_START + EXTRA_FALLBACK + EXTRA_SOURCE=web +
+  `DubLiveTapStop()`; từ chối → ACTION_FALLBACK_MIC; TYPE_HUD đẩy D
+  sang cả canvas VÀ tap; `setOriginalVolume()` đi tap gain khi tap
+  mode, canvas khi capture; toggleDelay / fullscreen trang web cũng
+  chỉnh tap delay 0 / khôi phục D; onPageFinished inject TapJs + resume
+  tap nếu đang lồng tiếng tap mode (user mở URL SAU khi bấm lồng tiếng
+  trên trang trắng); stop → `DubLiveTapStop()` + xóa tapMode; trạng
+  thái hiện kèm nhãn đường âm thanh.
+- `LocalPlayerActivity.kt` + `LocalTapProcessor.kt` (mới): ExoPlayer
+  build với `DefaultRenderersFactory.setAudioProcessors([tapProcessor])`
+  + audio attributes USAGE_GAME/CONTENT_TYPE_MOVIE; processor chuẩn
+  hóa về 48 kHz stereo PCM16, copy vào queue khi enabled, pass-through
+  cho non-PCM16; start tap-first (ACTION_START_LOCAL_TAP, KHÔNG
+  dialog), `player.volume = 0f` (im loa), `onPcm` nối vào
+  `TapAudioQueue.offerStereo48k`; Player.Listener gửi
+  ACTION_LOCAL_PLAYING (watchdog 10 s); fallback: dialog OK → capture
+  GAME-only (player.volume = 1.0f TRƯỚC khi capture chạy, không thì
+  capture thu được im — bài học v1.0.2), từ chối → mic; TYPE_AUDIO_ROUTE
+  "call"/"mic" khôi phục volume + tắt processor.
+- `SettingsActivity.kt`: thanh trượt giọng dịch gửi
+  ACTION_APPLY_DUB_VOLUME cho service thay vì gọi
+  `VoicePlayer.applyCallVolume` trực tiếp (kéo giữa phiên chạm đúng
+  đường đang phát); cập nhật ghi chú `settings_dub_volume_note` (giọng
+  + tiếng gốc cùng 1 đường: media khi tap được, cuộc gọi khi fallback).
+- `VoicePlayer.kt`: `initialUsage` (MEDIA ở tap mode, call ở
+  capture/mic), `setOutputUsage()` build lại AudioTrack live giữ
+  nguyên hold queue, LoudnessEnhancer chỉ ở đường cuộc gọi,
+  `applyMediaVolume()` (STREAM_MUSIC) bên cạnh `applyCallVolume()`.
+- `DelayedBackgroundPlayer.kt`: `start(usage, useEnhancer)` — enhancer
+  chỉ khi `useEnhancer` (MEDIA không cần).
+
+## LỆCH KHỎI BRIEF — file local (ghi rõ lý do)
+
+Brief nói: ExoPlayer USAGE_GAME + capture chỉ khớp GAME + giọng dịch
++ tiếng gốc trễ qua USAGE_MEDIA. Viết như vậy KHÔNG chạy được: mute
+STREAM_MUSIC để im tiếng trực tiếp của player cũng im luôn giọng dịch
++ tiếng gốc trễ trên MEDIA (USAGE_GAME map về STREAM_MUSIC), và
+`player.volume = 0` áp dụng ở AudioTrack TRƯỚC điểm capture tap nên
+capture sẽ im (bài học v1.0.2). Nên file local KHÔNG dùng capture:
+`LocalTapProcessor` tap PCM ra khỏi pipeline của player TRƯỚC track
+volume, trong khi `player.volume = 0` im loa. Pipeline nhận PCM đủ
+âm lượng, loa im, giọng dịch phát MEDIA, không gì bị thu lại. Khớp
+GAME-only vẫn được implement (cờ `gameOnly` ở capture builders) và
+dùng ở đường fallback capture của local nếu tap processor chết.
+
+## Giữ nguyên từ v1.0.10
+
+Đo trễ lát cắt 500 ms + trung vị mỗi cửa sổ 4 s + dòng chẩn đoán HUD,
+hold giọng tới (câu+D), nút ±1s, VAD hysteresis + cổng phổ,
+LoudnessEnhancer ở đường cuộc gọi, KHÔNG dùng báo thức ở bất cứ đâu.
+D hiện tại vừa chỉnh DelayNode (tap) vừa chỉnh DelayedBackgroundPlayer
+(fallback).
+
+## Kiểm tra logic trước khi build (đã rà tay, chưa có máy thật)
+
+- Tap sống → không có tiến trình capture nào chạy (không vọng), giọng
+  media to rõ, bấm nút âm lượng hiện đúng "Phương tiện"; D đẩy sang
+  DelayNode theo GIÂY (đã sửa lỗi nhầm ms→20 s); `onPcm` của local đã
+  nối vào queue (lỗi bỏ sót đã sửa trước build).
+- Tap chết (NetShort CORS/DRM) → tự fallback: trạng thái đổi chữ,
+  giọng vẫn dịch qua đường cuộc gọi; user từ chối dialog → mic.
+- File local → media, không vọng; tắt lồng tiếng thì tiếng video trực
+  tiếp trở lại bình thường (player.volume = 1.0f, tap bypass).
+
+## Thử lại trên máy thật (checklist cho user)
+
+- Xem YouTube / web phim cho phép: dòng trạng thái hiện "Âm thanh:
+  phương tiện", bấm nút âm lượng thân máy hiện đúng đường media, giọng
+  dịch to rõ, không vọng (không nghe lại giọng dịch sau 1 câu).
+- Xem NetShort (trang chặn lấy tiếng): tự hiện dialog ghi màn hình
+  rồi fallback "Âm thanh: cuộc gọi (trang chặn lấy tiếng)", giọng vẫn
+  dịch bình thường; từ chối dialog → micro.
+- Mở file local: media, không vọng; tiếng gốc trễ khớp hình.
+- Tắt lồng tiếng: tiếng video trực tiếp trở lại bình thường ngay.
+
+---
+
+# DubLive v1.0.10 — ĐO TRỄ LIÊN TỤC THEO ĐOẠN ÂM THANH GỐC + BỎ HẲN ĐƯỜNG BÁO THỨC
+
+Build xong 25/11/2026 22:03 VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.10.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.10.apk`)
+- Kích thước: 9.498.826 bytes (9,1 MB). MD5: 27de25eaa809dcb5ea63dca002084024.
+- aapt2: package `com.dublive.live`, versionCode 11, versionName 1.0.10,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+  Resource `id/diagView` có trong APK; chuỗi "Giọng dịch phát qua" /
+  `dub_output` đã biến mất; 2 tham chiếu `USAGE_ALARM` còn lại trong
+  dex đều thuộc thư viện media3/ExoPlayer, không phải code DubLive.
+- Actions run thành công: **45639798218** (completed/success, đậu ngay lần
+  đầu), commit `a2b89e2cf534b7245bd2777a49996e48f40dcd66` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15034828711, bản Debug).
 
 ## Bối cảnh
 

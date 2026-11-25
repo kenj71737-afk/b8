@@ -1,5 +1,6 @@
 package com.dublive.live
 
+import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -151,14 +152,25 @@ class SettingsActivity : AppCompatActivity() {
         dubVolumeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
                 dubVolumeLabel.text = "$progress%"
-                // v1.0.6 — the slider drives the SYSTEM call-stream
-                // volume directly: save at once and apply at once, so
-                // dragging it changes the dub loudness immediately,
-                // no restart needed (works even mid-dubbing).
+                // v1.0.6 — the slider drives the SYSTEM volume of the
+                // stream the voice is on, directly: save at once and
+                // apply at once, so dragging it changes the dub
+                // loudness immediately, no restart needed (works even
+                // mid-dubbing).
+                // v1.0.11 — go through the service, not the call stream
+                // directly: the voice is on MEDIA in the tap modes and
+                // on the call stream in capture/mic, and only the
+                // service knows which one is live right now.
                 if (fromUser) {
                     Prefs.prefs(this@SettingsActivity).edit()
                         .putInt(Prefs.KEY_DUB_VOLUME, progress.coerceIn(0, 100)).apply()
-                    try { VoicePlayer.applyCallVolume(this@SettingsActivity, progress) } catch (_: Exception) { }
+                    try {
+                        val intent = Intent(this@SettingsActivity, DubbingService::class.java).apply {
+                            action = DubbingService.ACTION_APPLY_DUB_VOLUME
+                            putExtra(DubbingService.EXTRA_VOLUME_PCT, progress.coerceIn(0, 100))
+                        }
+                        startService(intent)
+                    } catch (_: Exception) { }
                 }
             }
 

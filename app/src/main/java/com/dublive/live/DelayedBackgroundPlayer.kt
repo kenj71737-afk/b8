@@ -38,18 +38,24 @@ import android.util.Log
  *    element: the element volume must stay 1.0 or the capture itself
  *    goes quiet (the v1.0.2 lesson).
  *
- * The track uses USAGE_VOICE_COMMUNICATION on purpose: STREAM_MUSIC
- * is muted in this mode, so anything DubLive plays must leave the
- * music stream. The capture config only matches USAGE_MEDIA/GAME, so
- * this output is never re-captured — no feedback loop.
+ * The track uses USAGE_VOICE_COMMUNICATION in the system-capture
+ * mode on purpose: STREAM_MUSIC is muted in this mode, so anything
+ * DubLive plays must leave the music stream. The capture config only
+ * matches USAGE_MEDIA/GAME, so this output is never re-captured — no
+ * feedback loop. v1.0.11 — in the local-tap mode the track uses
+ * USAGE_MEDIA instead (the local player is muted with player.volume
+ * = 0, so no stream is muted at all) and no enhancer: the media
+ * stream is loud already.
  *
  * The call stream is quiet even at max index on this user's phone,
  * so the track also carries a LoudnessEnhancer (+8 dB target,
  * 800→500→0 fallbacks, never crashes start — same as the dub voice
- * in VoicePlayer). The Settings "tiếng gốc" slider still drives
- * this track's software gain (the ratio between the two voices);
- * the hardware volume buttons now move BOTH the dub voice and the
- * delayed original together, since they share the call stream.
+ * in VoicePlayer) when it runs on the call stream. The Settings
+ * "tiếng gốc" slider still drives this track's software gain (the
+ * ratio between the two voices); the hardware volume buttons now move
+ * BOTH the dub voice and the delayed original together, since they
+ * share the call stream (capture mode) or the media stream (tap
+ * modes).
  *
  * [feedPcm] is called from the audio-capture thread. Blocks are
  * queued with their arrival time; a playback loop writes each block
@@ -102,9 +108,16 @@ class DelayedBackgroundPlayer(private val context: Context) {
     private val shortIn = ShortArray(CHUNK_BYTES / 2)
     private val byteOut = ByteArray(CHUNK_BYTES)
 
-    fun start() {
+    /**
+     * v1.0.11 — output stream + enhancer are parameters now: the
+     * delayed original plays on USAGE_MEDIA (no enhancer — media is
+     * loud already) in the local-tap mode, and on
+     * USAGE_VOICE_COMMUNICATION (with the +8 dB enhancer, the call
+     * stream is quiet) in the system-capture mode.
+     */
+    fun start(usage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION, useEnhancer: Boolean = true) {
         val audioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setUsage(usage)
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build()
 
@@ -129,32 +142,36 @@ class DelayedBackgroundPlayer(private val context: Context) {
         applyTrackVolume()
         // v1.0.10 — LoudnessEnhancer (see field comment). Any failure
         // just means no boost — start() must never die here.
-        try {
-            val enhancer = try { LoudnessEnhancer(audioTrack!!.audioSessionId) } catch (e: Exception) { null }
-            if (enhancer != null) {
-                var applied = false
-                for (gain in intArrayOf(800, 500, 0)) {
-                    try {
-                        enhancer.setTargetGain(gain)
-                        enhancer.enabled = true
-                        applied = true
-                        Log.i(TAG, "LoudnessEnhancer on, targetGain=$gain mB")
-                        break
-                    } catch (e: Exception) {
-                        Log.w(TAG, "LoudnessEnhancer gain $gain failed", e)
+        // v1.0.11 — call stream only (useEnhancer=false on MEDIA).
+        if (useEnhancer) {
+            try {
+                val enhancer = try { LoudnessEnhancer(audioTrack!!.audioSessionId) } catch (e: Exception) { null }
+                if (enhancer != null) {
+                    var applied = false
+                    for (gain in intArrayOf(800, 500, 0)) {
+                        try {
+                            enhancer.setTargetGain(gain)
+                            enhancer.enabled = true
+                            applied = true
+                            Log.i(TAG, "LoudnessEnhancer on, targetGain=$gain mB")
+                            break
+                        } catch (e: Exception) {
+                            Log.w(TAG, "LoudnessEnhancer gain $gain failed", e)
+                        }
+                    }
+                    if (applied) {
+                        loudnessEnhancer = enhancer
+                    } else {
+                        try { enhancer.release() } catch (_: Exception) { }
                     }
                 }
-                if (applied) {
-                    loudnessEnhancer = enhancer
-                } else {
-                    try { enhancer.release() } catch (_: Exception) { }
-                }
+            } catch (e: Exception) {
+                Log.w(TAG, "LoudnessEnhancer setup failed", e)
+                loudnessEnhancer = null
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "LoudnessEnhancer setup failed", e)
-            loudnessEnhancer = null
         }
-        Log.i(TAG, "Delayed background player started (voice-call stream, ${SAMPLE_RATE}Hz stereo)")
+        val usageName = if (usage == AudioAttributes.USAGE_MEDIA) "media" else "voice-call"
+        Log.i(TAG, "Delayed background player started ($usageName stream, ${SAMPLE_RATE}Hz stereo)")
 
         playbackRunning = true
         playbackThread = Thread({

@@ -15,6 +15,8 @@ import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.util.Base64
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -31,8 +33,11 @@ import androidx.core.content.ContextCompat
  * Main screen: address bar + WebView for web films and YouTube, dub controls,
  * Vietnamese subtitle overlay and a one-line delay HUD.
  *
- * Audio is captured by DubbingService through the system (MediaProjection),
- * never through WebAudio, so cross-origin video without CORS still dubs.
+ * Audio (v1.0.11): the film sound is taken straight from the page
+ * through a WebAudio tap (TapJs) when the page allows it, so the dub
+ * voice can play on the MEDIA stream (loud) with no re-capture echo.
+ * Pages that block the tap (CORS/DRM — NetShort) fall back to system
+ * capture (MediaProjection) with the dub on the call stream, as before.
  *
  * v1.0.1 crash fixes (target device: iQOO Z9 Turbo, OriginOS 6, Android 16):
  *  - RECORD_AUDIO (+ POST_NOTIFICATIONS on Android 13+) is requested at
@@ -111,6 +116,27 @@ class MainActivity : AppCompatActivity() {
 
     /** True when the pending permission request was started by the mic button. */
     private var pendingMicAfterPermission = false
+    /**
+     * v1.0.11 — WebAudio tap mode: true while the session takes the film
+     * sound from the page (TapJs) instead of system capture. While it
+     * is on, the original-audio volume goes to the tap's DelayNode gain
+     * (DubLiveTapSetDuck) instead of the canvas (DubLiveSetVolume), and
+     * the delay goes to both the canvas and the tap (DubLiveTapSetDelay).
+     */
+    private var tapMode = false
+    /** v1.0.11 — the tap has attached and sent PCM at least once. */
+    private var tapActive = false
+    /** v1.0.11 — startDub was pressed but we are waiting for the
+     * service to report running before starting the page tap. */
+    private var pendingTapStart = false
+    /** v1.0.11 — the tap died and the projection dialog is out: the
+     * result is a tap -> capture fallback, not a fresh start. */
+    private var fallbackPending = false
+    /** v1.0.11 — last audio-route label from the service, shown on the
+     * status line next to the status text. */
+    private var lastAudioRouteLabel = ""
+    /** v1.0.11 — "media" | "call" | "mic" (see DubbingService). */
+    private var currentAudioMode = "" 
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -119,7 +145,10 @@ class MainActivity : AppCompatActivity() {
         val wantMic = pendingMicAfterPermission
         pendingMicAfterPermission = false
         if (granted) {
-            if (wantMic) startMicService() else showShareTipThenProjection()
+            // v1.0.11 — the normal start is tap-first now (no capture
+            // dialog); the capture dialog only appears as a fallback
+            // when the tap dies.
+            if (wantMic) startMicService() else startTapDub()
         } else {
             // Mic is the only capture path left, and it needs the same
             // permission — but the app must NOT crash here. Tell the user
@@ -141,10 +170,114 @@ class MainActivity : AppCompatActivity() {
                 action = DubbingService.ACTION_START
                 putExtra(DubbingService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(DubbingService.EXTRA_RESULT_DATA, result.data)
+                // v1.0.11 — this token is a tap -> capture fallback:
+                // the service switches in place (keeps Live + D).
+                putExtra(DubbingService.EXTRA_FALLBACK, fallbackPending)
+                putExtra(DubbingService.EXTRA_SOURCE, DubbingService.SOURCE_WEB)
+            }
+            fallbackPending = false
+            if (tapMode) {
+                // The capture path replays the original audio itself
+                // (DelayedBackgroundPlayer), so the tap's delayed audio
+                // must go quiet — bypass its DelayNode at once.
+                try {
+                    webView.evaluateJavascript("window.DubLiveTapStop()", null)
+                } catch (_: Exception) {
+                }
+                tapMode = false
+                tapActive = false
             }
             startProjectionService(intent, isRetry = false)
         } else {
-            Toast.makeText(this, "Cần cho phép ghi màn hình để lấy tiếng hệ thống", Toast.LENGTH_LONG).show()
+            // v1.0.11 — the user denied the capture dialog during a
+            // tap fallback: dub through the microphone instead of
+            // dying. The tap's delayed audio goes quiet first (the
+            // phone's speakers now play the film directly).
+            if (fallbackPending) {
+                fallbackPending = false
+                try {
+                    webView.evaluateJavascript("window.DubLiveTapStop()", null)
+                } catch (_: Exception) {
+                }
+                tapMode = false
+                tapActive = false
+                Toast.makeText(this, "Không ghi được màn hình — chuyển sang nghe bằng micro, để điện thoại gần loa", Toast.LENGTH_LONG).show()
+                try {
+                    val intent = Intent(this, DubbingService::class.java).apply {
+                        action = DubbingService.ACTION_FALLBACK_MIC
+                    }
+                    startService(intent)
+                } catch (e: Exception) {
+                    Log.w(TAG, "ACTION_FALLBACK_MIC failed", e)
+                }
+            } else {
+                Toast.makeText(this, "Cần cho phép ghi màn hình để lấy tiếng hệ thống", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * v1.0.11 — the page-side end of the WebAudio tap (TapJs). The JS
+     * calls these on the WebView thread, so every call just forwards to
+     * the service (or the queue) and returns immediately — no work is
+     * done here. onPcm decodes the base64 PCM16 and offers it to
+     * TapAudioQueue; the service's tap feeder drains it into the VAD.
+     */
+    private inner class DubLiveAudioBridge {
+        @JavascriptInterface
+        fun onPcm(base64: String?) {
+            if (base64.isNullOrEmpty()) return
+            try {
+                val bytes = Base64.decode(base64, Base64.DEFAULT)
+                if (bytes.isNotEmpty()) {
+                    TapAudioQueue.offerMono16k(bytes)
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        @JavascriptInterface
+        fun onTapAlive() {
+            tapActive = true
+            try {
+                val intent = Intent(this@MainActivity, DubbingService::class.java).apply {
+                    action = DubbingService.ACTION_TAP_ALIVE
+                }
+                startService(intent)
+            } catch (_: Exception) {
+            }
+        }
+
+        @JavascriptInterface
+        fun onTapFailed(reason: String?) {
+            tapActive = false
+            try {
+                val intent = Intent(this@MainActivity, DubbingService::class.java).apply {
+                    action = DubbingService.ACTION_TAP_FAILED
+                    putExtra(DubbingService.EXTRA_MESSAGE, reason.orEmpty())
+                }
+                startService(intent)
+            } catch (_: Exception) {
+            }
+        }
+
+        @JavascriptInterface
+        fun onTapBlocked(reason: String?) {
+            tapActive = false
+            try {
+                val intent = Intent(this@MainActivity, DubbingService::class.java).apply {
+                    action = DubbingService.ACTION_TAP_BLOCKED
+                    putExtra(DubbingService.EXTRA_MESSAGE, reason.orEmpty())
+                }
+                startService(intent)
+            } catch (_: Exception) {
+            }
+        }
+
+        @JavascriptInterface
+        fun onTapStatus(status: String?) {
+            if (status.isNullOrBlank()) return
+            Log.i(TAG, "tap status: $status")
         }
     }
 
@@ -181,7 +314,41 @@ class MainActivity : AppCompatActivity() {
                             )
                         } catch (_: Exception) {
                         }
+                        // v1.0.11 — the same D drives the tap's DelayNode
+                        // (the delayed original audio), so the sound
+                        // follows the picture whenever D moves.
+                        if (tapMode) {
+                            try {
+                                webView.evaluateJavascript(
+                                    "window.DubLiveTapSetDelay(${ms / 1000.0})", null
+                                )
+                            } catch (_: Exception) {
+                            }
+                        }
                     }
+                }
+                DubbingService.TYPE_AUDIO_ROUTE -> {
+                    // v1.0.11 — which stream the dub voice is on now.
+                    // Shown on the status line so the user always knows
+                    // whether the dub is loud (media) or on the call
+                    // stream (a page that blocks the tap).
+                    val mode = intent.getStringExtra(DubbingService.EXTRA_AUDIO_MODE).orEmpty()
+                    val label = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
+                    if (mode.isNotBlank()) currentAudioMode = mode
+                    if (label.isNotBlank()) lastAudioRouteLabel = label
+                    updateStatusLine()
+                }
+                DubbingService.TYPE_NEED_PROJECTION -> {
+                    // v1.0.11 — the tap died (CORS/DRM probe or a
+                    // blocked video): ask for the screen-capture token
+                    // so the service can fall back to system capture.
+                    // No user tap needed to START the fallback — the
+                    // dialog itself is the only thing Android requires.
+                    val reason = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
+                    Log.i(TAG, "tap needs projection fallback: $reason")
+                    statusView.text = "Trạng thái: Trang chặn lấy tiếng, đang xin quyền ghi màn hình để chuyển sang đường cuộc gọi…"
+                    fallbackPending = true
+                    showShareTipThenProjection()
                 }
                 DubbingService.TYPE_DIAG -> {
                     // v1.0.10 — delay diagnostics, refreshed every
@@ -198,8 +365,34 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 DubbingService.TYPE_STATE -> {
-                    if (intent.getStringExtra(DubbingService.EXTRA_STATE) == DubbingService.STATE_STOPPED) {
+                    val state = intent.getStringExtra(DubbingService.EXTRA_STATE)
+                    if (state == DubbingService.STATE_RUNNING) {
+                        // v1.0.11 — the service is up: start the page
+                        // tap now (it needs the service's VAD running
+                        // before the first PCM arrives).
+                        if (pendingTapStart) {
+                            pendingTapStart = false
+                            try {
+                                webView.evaluateJavascript("window.DubLiveTapResume()", null)
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                    if (state == DubbingService.STATE_STOPPED) {
                         dubbing = false
+                        pendingTapStart = false
+                        fallbackPending = false
+                        // v1.0.11 — bypass the tap delay so the video's
+                        // own audio returns to normal at once, and
+                        // forget the route (next session re-detects it).
+                        try {
+                            webView.evaluateJavascript("window.DubLiveTapStop()", null)
+                        } catch (_: Exception) {
+                        }
+                        tapMode = false
+                        tapActive = false
+                        currentAudioMode = ""
+                        lastAudioRouteLabel = ""
                         subtitleView.visibility = View.GONE
                         hudRow.visibility = View.GONE
                         diagView.text = ""
@@ -214,6 +407,8 @@ class MainActivity : AppCompatActivity() {
                     // saw nothing after the Toast vanished).
                     val msg = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
                     if (msg.isNotBlank()) statusView.text = "Trạng thái: $msg"
+                    // v1.0.11 — keep the route label beside it.
+                    updateStatusLine()
                 }
                 DubbingService.TYPE_LEVEL -> {
                     val level = intent.getIntExtra(DubbingService.EXTRA_LEVEL, 0)
@@ -254,6 +449,19 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * v1.0.11 — the status line carries the audio route next to the
+     * status text, e.g. "Trạng thái: … | Âm thanh: phương tiện", so the
+     * user can see at a glance whether the dub is on the loud media
+     * stream or fell back to the call stream.
+     */
+    private fun updateStatusLine() {
+        if (lastAudioRouteLabel.isBlank()) return
+        val cur = statusView.text.toString()
+        val base = cur.substringBefore(" | Âm thanh:").ifBlank { cur }
+        statusView.text = "$base | $lastAudioRouteLabel"
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -290,10 +498,28 @@ class MainActivity : AppCompatActivity() {
         webView.settings.domStorageEnabled = true
         webView.settings.mediaPlaybackRequiresUserGesture = false
         webView.settings.loadWithOverviewMode = true
+        // v1.0.11 — the page-side end of the WebAudio tap. Must be
+        // added before any page loads, so TapJs can call back from
+        // the first video it attaches to.
+        webView.addJavascriptInterface(DubLiveAudioBridge(), "DubLiveAudio")
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 view?.evaluateJavascript(DelayJs.INJECT, null)
+                // v1.0.11 — inject the tap too. A fresh page means a
+                // fresh AudioContext + video element; the tap's own
+                // scan re-attaches automatically, so nothing else is
+                // needed here (the service keeps running through a
+                // reload — only the page side restarts).
+                view?.evaluateJavascript(TapJs.INJECT, null)
+                // v1.0.11 — if dubbing already runs in tap mode (e.g.
+                // the user started it on a blank page and only now
+                // opened a film URL), wake the tap on the new page:
+                // without this the scan never runs and the session
+                // sits silent with no PCM and no fallback.
+                if (dubbing && tapMode) {
+                    view?.evaluateJavascript("window.DubLiveTapResume()", null)
+                }
                 applyBaseDelayToWebView()
             }
 
@@ -332,6 +558,14 @@ class MainActivity : AppCompatActivity() {
                 // delayed original audio and the voice hold must go
                 // live too (restored on exit, see onHideCustomView).
                 setServiceDelayEnabled(false)
+                // v1.0.11 — the tap's DelayNode follows the picture:
+                // live picture => live original audio (delay 0).
+                if (tapMode) {
+                    try {
+                        webView.evaluateJavascript("window.DubLiveTapSetDelay(0)" /* seconds */, null)
+                    } catch (_: Exception) {
+                    }
+                }
                 (window.decorView as ViewGroup).addView(
                     view, ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -393,6 +627,15 @@ class MainActivity : AppCompatActivity() {
                 // off): the delayed original audio and the voice hold
                 // resume with it.
                 setServiceDelayEnabled(delayOn)
+                // v1.0.11 — the tap's DelayNode follows: back to D
+                // (or 0 when the user turned the delay off).
+                if (tapMode) {
+                    val ms = if (delayOn) lastAppliedDelayMs else 0L
+                    try {
+                        webView.evaluateJavascript("window.DubLiveTapSetDelay(${ms / 1000.0})", null)
+                    } catch (_: Exception) {
+                    }
+                }
                 updateDelayButtons()
             }
         }
@@ -437,6 +680,14 @@ class MainActivity : AppCompatActivity() {
         // live too (delayed original audio + voice hold both to 0),
         // or the sound would lag the live picture by D.
         setServiceDelayEnabled(delayOn)
+        // v1.0.11 — the tap's DelayNode follows the same switch.
+        if (tapMode) {
+            val ms = if (delayOn) lastAppliedDelayMs else 0L
+            try {
+                webView.evaluateJavascript("window.DubLiveTapSetDelay(${ms / 1000.0})", null)
+            } catch (_: Exception) {
+            }
+        }
         updateDelayButtons()
     }
 
@@ -478,6 +729,14 @@ class MainActivity : AppCompatActivity() {
             webView.evaluateJavascript("window.DubLiveSetDelay($seed)", null)
         } catch (_: Exception) {
         }
+        // v1.0.11 — the same seed drives the tap's DelayNode, so the
+        // delayed original audio matches the canvas from the start.
+        if (tapMode) {
+            try {
+                webView.evaluateJavascript("window.DubLiveTapSetDelay(${seed / 1000.0})", null)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     /**
@@ -509,6 +768,12 @@ class MainActivity : AppCompatActivity() {
             try {
                 webView.evaluateJavascript("window.DubLiveSetDelay($ms)", null)
             } catch (_: Exception) {
+            }
+            if (tapMode) {
+                try {
+                    webView.evaluateJavascript("window.DubLiveTapSetDelay(${ms / 1000.0})", null)
+                } catch (_: Exception) {
+                }
             }
             hudView.text = "Trễ hình: %.1f s".format(ms / 1000.0)
             hudRow.visibility = View.VISIBLE
@@ -589,6 +854,15 @@ class MainActivity : AppCompatActivity() {
         return list.toTypedArray()
     }
 
+    /**
+     * v1.0.11 — tap-first start: NO screen-capture dialog. The service
+     * starts in TAP_WEB mode (the film sound comes from the page, the
+     * dub voice plays on the MEDIA stream — loud, no echo because no
+     * capture runs). If the page blocks the tap (CORS/DRM), the service
+     * broadcasts TYPE_NEED_PROJECTION and this activity launches the
+     * capture dialog as a fallback (see projectionLauncher).
+     * RECORD_AUDIO is still requested first: the mic fallback needs it.
+     */
     private fun startDub() {
         if (Prefs.geminiKeys(this).isEmpty()) {
             Toast.makeText(this, R.string.need_key_first, Toast.LENGTH_LONG).show()
@@ -601,7 +875,43 @@ class MainActivity : AppCompatActivity() {
             permissionLauncher.launch(requiredPermissions())
             return
         }
-        showShareTipThenProjection()
+        startTapDub()
+    }
+
+    /** v1.0.11 — start the service in WebAudio-tap mode. */
+    private fun startTapDub() {
+        val intent = Intent(this, DubbingService::class.java).apply {
+            action = DubbingService.ACTION_START_TAP
+        }
+        try {
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "startForegroundService (tap) failed, retrying with startService", e)
+            try {
+                startService(intent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "startService (tap) also failed", e2)
+                Toast.makeText(this, R.string.service_failed, Toast.LENGTH_LONG).show()
+                return
+            }
+        }
+        dubbing = true
+        tapMode = true
+        tapActive = false
+        pendingTapStart = true
+        lastAudioRouteLabel = ""
+        currentAudioMode = ""
+        statusView.text = "Trạng thái: Đang thử lấy tiếng trong trang…"
+        levelBar.progress = 0
+        levelValue.text = "0"
+        // Full volume at start (see startMicService): the service ducks
+        // the tap gain only after the first dubbed speech plays.
+        setOriginalVolume(1.0f)
+        hudRow.visibility = View.VISIBLE
+        // Push the base-delay seed into the canvas AND the tap now, so
+        // the picture and the delayed original audio wait the right
+        // amount from the first second.
+        applyBaseDelayToWebView()
     }
 
     /** Mic mode: no screen-capture dialog, no MediaProjection token. */
@@ -726,6 +1036,21 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "stopDub failed", e)
         }
         dubbing = false
+        pendingTapStart = false
+        fallbackPending = false
+        // v1.0.11 — bypass the tap delay so the video's own audio
+        // returns to normal at once (the service also stops, but the
+        // page side must be told directly).
+        if (tapMode) {
+            try {
+                webView.evaluateJavascript("window.DubLiveTapStop()", null)
+            } catch (_: Exception) {
+            }
+            tapMode = false
+            tapActive = false
+        }
+        currentAudioMode = ""
+        lastAudioRouteLabel = ""
     }
 
     /**
@@ -801,9 +1126,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * v1.0.11 — duck the original audio. In tap mode the sound the user
+     * hears comes from the tap's DelayNode, so the duck drives its gain
+     * (DubLiveTapSetDuck); in capture mode it comes from the canvas
+     * (DubLiveSetVolume) as before. The service's duck ticker sends
+     * TYPE_DUCK in both modes — this is where the path splits.
+     */
     private fun setOriginalVolume(vol: Float) {
         try {
-            webView.evaluateJavascript("window.DubLiveSetVolume($vol)", null)
+            if (tapMode) {
+                webView.evaluateJavascript("window.DubLiveTapSetDuck($vol)", null)
+            } else {
+                webView.evaluateJavascript("window.DubLiveSetVolume($vol)", null)
+            }
         } catch (_: Exception) {
         }
     }

@@ -33,23 +33,32 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /**
- * Foreground service that owns the whole dub pipeline:
+ * Foreground service that owns the whole dub pipeline.
  *
- *  system audio stereo 48 kHz (AudioPlaybackCapture via
- *  MediaProjection, mic fallback mono 16 kHz)
- *    -> DelayedBackgroundPlayer: the raw stereo replayed D seconds
- *       late on the voice-call stream while STREAM_MUSIC is muted
- *       (ALDA FIX37, v1.0.10: alarm stream removed at the user's
- *       request) — the original audio matches the delayed
- *       picture; the VAD/Live path gets a mono 16 kHz downmix
- *    -> VAD (speech >= 150 ms, 500 ms pre-roll)
- *    -> Gemini Live (speech-to-speech) with watchdog + key rotation
- *    -> Groq Whisper fallback when Live is unusable
- *    -> VoicePlayer: the dubbed voice HELD until (utterance start
- *       + D) (ALDA FIX32/FIX33 hold), or Vietnamese TTS with the
- *       same hold
- *    -> DubDelayTracker (LatencyEma + burst-start sampling, hold
- *       per burst, clamp 3..max s)
+ * AUDIO PATHS (v1.0.11 — the film sound reaches the VAD three ways):
+ *  - TAP_WEB (primary for web films/YouTube): the sound comes
+ *    straight from the page — MediaElementSource -> DelayNode(D) ->
+ *    speakers on USAGE_MEDIA, plus a ScriptProcessor tap that sends
+ *    live 16 kHz mono PCM to the VAD. NO system capture runs, so the
+ *    dub voice on MEDIA cannot be re-captured (no echo).
+ *  - TAP_LOCAL (local files): the ExoPlayer tap processor copies the
+ *    normalised 48 kHz stereo PCM into the service; the player itself
+ *    is muted (player.volume = 0). No capture runs either.
+ *  - CAPTURE (fallback when a page blocks the tap — CORS/DRM, e.g.
+ *    NetShort): system audio stereo 48 kHz (AudioPlaybackCapture via
+ *    MediaProjection, mic fallback mono 16 kHz) -> DelayedBackground-
+ *    Player: the raw stereo replayed D seconds late on the
+ *    voice-call stream while STREAM_MUSIC is muted (ALDA FIX37) —
+ *    the original audio matches the delayed picture; the VAD/Live
+ *    path gets a mono 16 kHz downmix.
+ *  - MIC: the room microphone.
+ *  All paths feed the same pipeline: VAD (speech >= 150 ms, 500 ms
+ *  pre-roll) -> Gemini Live (speech-to-speech) with watchdog + key
+ *  rotation -> Groq Whisper fallback when Live is unusable ->
+ *  VoicePlayer: the dubbed voice HELD until (utterance start + D)
+ *  (ALDA FIX32/FIX33 hold), or Vietnamese TTS with the same hold ->
+ *  DubDelayTracker (continuous slice measurement + LatencyEma,
+ *  clamp 3..max s).
  *
  * v1.0.9 — ALDA sync, all three pieces: the picture waits D (canvas),
  * the original audio waits D (delayed background player), the dub
@@ -65,8 +74,14 @@ import kotlin.math.roundToInt
  *    output). Watchdog: if 60 s pass with no translated output after output
  *    had started, reconnect (max 5 times), and rotate to the other key
  *    every 5 minutes. Only translated output counts as "alive".
- *  - WebAudio tapping is NOT used: cross-origin video without CORS made
- *    Web Audio output silence. System-audio capture does not depend on CORS.
+ *  - WebAudio tapping IS the primary path now (v1.0.11): the film
+ *    sound comes straight from the page (MediaElementSource ->
+ *    DelayNode -> speakers, ScriptProcessor tap -> Live), so the dub
+ *    voice can play on USAGE_MEDIA without being re-captured. The
+ *    system capture is only the fallback for pages that block the tap
+ *    (CORS/DRM — NetShort). A tainted cross-origin video is skipped
+ *    entirely (ALDA FIX42: never attach, or the graph would output
+ *    silence forever).
  *  - The dub voice is played with USAGE_VOICE_COMMUNICATION so the
  *    USAGE_MEDIA capture never re-captures it (no echo loop).
  *
@@ -98,6 +113,29 @@ class DubbingService : Service() {
          * hold must go live too, or the sound would lag a live picture. */
         const val ACTION_SET_DELAY_ENABLED = "com.dublive.live.SET_DELAY_ENABLED"
         const val EXTRA_ENABLED = "enabled"
+        /** v1.0.11 — start in WebAudio-tap mode (no projection token). */
+        const val ACTION_START_TAP = "com.dublive.live.START_TAP"
+        /** v1.0.11 — start in local-file tap mode (no projection token). */
+        const val ACTION_START_LOCAL_TAP = "com.dublive.live.START_LOCAL_TAP"
+        /** v1.0.11 — the WebAudio tap died (probe) or was blocked (CORS). */
+        const val ACTION_TAP_FAILED = "com.dublive.live.TAP_FAILED"
+        const val ACTION_TAP_BLOCKED = "com.dublive.live.TAP_BLOCKED"
+        /** v1.0.11 — first non-silent PCM arrived through the tap. */
+        const val ACTION_TAP_ALIVE = "com.dublive.live.TAP_ALIVE"
+        /** v1.0.11 — the local player started / paused (tap liveness). */
+        const val ACTION_LOCAL_PLAYING = "com.dublive.live.LOCAL_PLAYING"
+        const val EXTRA_PLAYING = "playing"
+        /** v1.0.11 — give up on the projection fallback, use the mic. */
+        const val ACTION_FALLBACK_MIC = "com.dublive.live.FALLBACK_MIC"
+        /** v1.0.11 — apply the dub-volume slider to the current stream. */
+        const val ACTION_APPLY_DUB_VOLUME = "com.dublive.live.APPLY_DUB_VOLUME"
+        const val EXTRA_VOLUME_PCT = "volume_pct"
+        /** v1.0.11 — which source the session dubs ("web" | "local"). */
+        const val EXTRA_SOURCE = "source"
+        const val SOURCE_WEB = "web"
+        const val SOURCE_LOCAL = "local"
+        /** v1.0.11 — this ACTION_START is a tap->capture fallback. */
+        const val EXTRA_FALLBACK = "fallback"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val ACTION_DUB_EVENT = "com.dublive.live.DUB_EVENT"
@@ -128,6 +166,29 @@ class DubbingService : Service() {
          * number and in the "Xem lỗi Live" dialog.
          */
         const val TYPE_DIAG = "diag"
+        /**
+         * v1.0.11 — audio route broadcast: which stream the dub voice
+         * (and the delayed original audio) is currently on.
+         * EXTRA_AUDIO_MODE is "media" | "call" | "mic"; EXTRA_MESSAGE
+         * carries the Vietnamese label for the status line
+         * ("Âm thanh: phương tiện" / "Âm thanh: cuộc gọi (trang
+         * chặn lấy tiếng)" / "Âm thanh: micro"). The activities show
+         * it next to the status so the user always knows which path
+         * is in use.
+         */
+        const val TYPE_AUDIO_ROUTE = "audio_route"
+        const val EXTRA_AUDIO_MODE = "audio_mode"
+        const val AUDIO_MODE_MEDIA = "media"
+        const val AUDIO_MODE_CALL = "call"
+        const val AUDIO_MODE_MIC = "mic"
+        /**
+         * v1.0.11 — the WebAudio tap died (CORS/DRM probe or blocked
+         * video) or the local tap produced no PCM while playing: the
+         * foreground activity must launch the screen-capture dialog so
+         * the service can fall back to system capture. EXTRA_MESSAGE
+         * carries the reason.
+         */
+        const val TYPE_NEED_PROJECTION = "need_projection"
         const val STATE_RUNNING = "running"
         const val STATE_STOPPED = "stopped"
 
@@ -181,6 +242,29 @@ class DubbingService : Service() {
      */
     private var backgroundPlayer: DelayedBackgroundPlayer? = null
     @Volatile private var delayedBackgroundActive = false
+    /**
+     * v1.0.11 — which audio path this session uses. TAP_WEB: the film
+     * sound comes from the page's WebAudio tap (no capture at all);
+     * TAP_LOCAL: it comes from the ExoPlayer tap processor (no
+     * capture); CAPTURE: system capture (the v1.0.10 path); MIC: the
+     * microphone. The dub voice + delayed original play on MEDIA in
+     * the tap modes and on the call stream in CAPTURE/MIC.
+     */
+    private enum class AudioMode { TAP_WEB, TAP_LOCAL, CAPTURE, MIC }
+    @Volatile private var audioMode = AudioMode.CAPTURE
+    /** "web" | "local" — which source the session dubs. */
+    @Volatile private var source = SOURCE_WEB
+    /** v1.0.11 — the tap died and the fallback is in progress. */
+    @Volatile private var tapDead = false
+    /** v1.0.11 — the 90 s mic-fallback timer is armed. */
+    @Volatile private var fallbackMicArmed = false
+    /** v1.0.11 — tap feeder thread (drains TapAudioQueue into VAD). */
+    private var tapFeederThread: Thread? = null
+    @Volatile private var tapFeederRunning = false
+    /** v1.0.11 — last tap PCM chunk arrival (liveness watchdog). */
+    @Volatile private var lastTapChunkAtMs = 0L
+    /** v1.0.11 — the local player is currently playing (activity). */
+    @Volatile private var localPlaying = false
     /** v1.0.9 — false while the user turned the video delay off
      * (delay toggle / site fullscreen): the picture is live, so the
      * background delay and the voice hold must both be 0. */
@@ -392,6 +476,20 @@ class DubbingService : Service() {
             } catch (e: Exception) {
                 Log.w(TAG, "VAD threshold refresh failed", e)
             }
+            // v1.0.11 — local tap liveness: the player is playing but
+            // no PCM arrived for 10 s -> the tap processor is dead
+            // (exotic codec / a renderer without our processor). Fall
+            // back to system capture like the web tap.
+            if (audioMode == AudioMode.TAP_LOCAL && localPlaying && !tapDead) {
+                val last = lastTapChunkAtMs
+                val sinceStart = now - startedAtMs
+                if ((last == 0L && sinceStart > 10_000L) ||
+                    (last > 0L && now - last > 10_000L)
+                ) {
+                    Log.w(TAG, "Local tap produced no PCM while playing, falling back")
+                    onTapDead("Không lấy được tiếng file local")
+                }
+            }
             if (!useGroqOnly) {
                 if (lastOutputAtMs > 0 && now - lastOutputAtMs > SILENCE_LIMIT_MS) {
                     if (reconnects < MAX_RECONNECTS) {
@@ -434,6 +532,36 @@ class DubbingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             when (intent?.action) {
+                ACTION_START_TAP -> {
+                    startDub(0, null, micOnly = false, source = SOURCE_WEB, tapMode = true)
+                    return START_STICKY
+                }
+                ACTION_START_LOCAL_TAP -> {
+                    startDub(0, null, micOnly = false, source = SOURCE_LOCAL, tapMode = true)
+                    return START_STICKY
+                }
+                ACTION_TAP_FAILED, ACTION_TAP_BLOCKED -> {
+                    onTapDead(intent?.getStringExtra(EXTRA_MESSAGE).orEmpty())
+                    return START_NOT_STICKY
+                }
+                ACTION_TAP_ALIVE -> {
+                    onTapAlive()
+                    return START_NOT_STICKY
+                }
+                ACTION_LOCAL_PLAYING -> {
+                    localPlaying = intent?.getBooleanExtra(EXTRA_PLAYING, false) == true
+                    return START_NOT_STICKY
+                }
+                ACTION_FALLBACK_MIC -> {
+                    fallbackToMic()
+                    return START_NOT_STICKY
+                }
+                ACTION_APPLY_DUB_VOLUME -> {
+                    val pct = intent?.getIntExtra(EXTRA_VOLUME_PCT, Prefs.dubVolumePct(this))
+                        ?: Prefs.dubVolumePct(this)
+                    applyDubStreamVolume(pct)
+                    return START_NOT_STICKY
+                }
                 ACTION_ADJUST_DELAY -> {
                     // v1.0.7 — manual "Trễ −1s / +1s" nudge: shift the
                     // tracker's EMA at once (it broadcasts TYPE_HUD, so
@@ -485,7 +613,15 @@ class DubbingService : Service() {
                         @Suppress("DEPRECATION")
                         intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
                     }
-                    startDub(code, data, micOnly = false)
+                    val isFallback = intent.getBooleanExtra(EXTRA_FALLBACK, false)
+                    val src = intent.getStringExtra(EXTRA_SOURCE) ?: SOURCE_WEB
+                    if (isFallback && capturing) {
+                        // Tap -> capture fallback (or mic -> capture):
+                        // switch in place, keep the Live connection and D.
+                        transitionToCapture(code, data, src)
+                    } else {
+                        startDub(code, data, micOnly = false, source = src, tapMode = false)
+                    }
                     return START_STICKY
                 }
             }
@@ -497,9 +633,27 @@ class DubbingService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startDub(resultCode: Int, resultData: Intent?, micOnly: Boolean) {
+    private fun startDub(
+        resultCode: Int,
+        resultData: Intent?,
+        micOnly: Boolean,
+        source: String = SOURCE_WEB,
+        tapMode: Boolean = false
+    ) {
         if (capturing) return
         this.micOnly = micOnly
+        // v1.0.11 — audio path for this session (see AudioMode).
+        this.source = source
+        audioMode = when {
+            micOnly -> AudioMode.MIC
+            tapMode && source == SOURCE_LOCAL -> AudioMode.TAP_LOCAL
+            tapMode -> AudioMode.TAP_WEB
+            else -> AudioMode.CAPTURE
+        }
+        tapDead = false
+        fallbackMicArmed = false
+        localPlaying = false
+        lastTapChunkAtMs = 0L
         stopped = false
         try { createChannel() } catch (e: Exception) { Log.w(TAG, "createChannel failed", e) }
         val notif = try {
@@ -565,15 +719,23 @@ class DubbingService : Service() {
                 // onAudioChunk, and the hold is applied by the voice
                 // queue itself). Both callbacks are unused now.
                 onSpeechStarted = {},
-                onTtsStarted = {}
+                onTtsStarted = {},
+                // v1.0.11 — MEDIA in the tap modes (no capture runs,
+                // so it cannot echo), call stream in capture/mic.
+                initialUsage = if (tapMode) {
+                    AudioAttributes.USAGE_MEDIA
+                } else {
+                    AudioAttributes.USAGE_VOICE_COMMUNICATION
+                }
             ).also {
                 it.start()
                 // v1.0.6 — track/TTS at max (1.0f); the Settings slider
-                // now drives the SYSTEM call-stream volume, which is
-                // what the user actually hears. Apply the saved slider
-                // value when dubbing starts so it takes effect at once.
+                // now drives the SYSTEM volume of the stream the voice
+                // is on (media in tap modes, call stream otherwise).
+                // Apply the saved slider value when dubbing starts so
+                // it takes effect at once.
                 try { it.setDubVolume(1.0f) } catch (_: Exception) { }
-                try { VoicePlayer.applyCallVolume(this, Prefs.dubVolumePct(this)) } catch (_: Exception) { }
+                try { applyDubStreamVolume() } catch (_: Exception) { }
             }
         } catch (e: Exception) {
             Log.e(TAG, "VoicePlayer failed", e)
@@ -641,47 +803,42 @@ class DubbingService : Service() {
         pendingBytes = 0
         setStatus("Đang nối Gemini Live…")
 
-        if (!micOnly && resultData != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                mediaProjection = mgr.getMediaProjection(resultCode, resultData)
-                if (mediaProjection == null) {
-                    broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
-                } else {
-                    val cb = object : MediaProjection.Callback() {
-                        override fun onStop() {
-                            // User (or OriginOS) stopped sharing mid-session.
-                            // Switch to the mic instead of dying with the token.
-                            Log.w(TAG, "MediaProjection stopped by system/user, switching to mic")
-                            mainHandler.post {
-                                if (capturing && !stopped) {
-                                    broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
-                                    switchCaptureToMic()
-                                }
-                            }
-                        }
-                    }
-                    projectionCallback = cb
-                    try {
-                        mediaProjection?.registerCallback(cb, mainHandler)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "registerCallback failed", e)
-                    }
-                }
-            } catch (e: Exception) {
-                // Single-app token (user picked DubLive itself), OriginOS
-                // blocking the capture, or an expired token: fall back to mic.
-                Log.w(TAG, "getMediaProjection failed, falling back to mic", e)
+        if (!micOnly && !tapMode && resultData != null) {
+            if (!setupMediaProjection(resultCode, resultData)) {
                 mediaProjection = null
-                broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
             }
         }
         capturing = true
-        try {
-            startCapture()
-        } catch (e: Exception) {
-            Log.e(TAG, "startCapture failed", e)
-            broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+        if (tapMode) {
+            // v1.0.11 — no system capture at all in tap mode: the film
+            // sound arrives through TapAudioQueue (WebAudio tap / local
+            // tap processor). The local tap also starts the delayed
+            // original audio (MEDIA, no stream mute: the player itself
+            // is muted with player.volume = 0).
+            if (source == SOURCE_LOCAL) {
+                try { startDelayedBackgroundLocal() } catch (e: Exception) {
+                    Log.w(TAG, "local delayed background failed", e)
+                }
+            }
+            try {
+                startTapFeeder()
+            } catch (e: Exception) {
+                Log.e(TAG, "startTapFeeder failed", e)
+                broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+            }
+            if (source == SOURCE_LOCAL) {
+                broadcastAudioRoute(AUDIO_MODE_MEDIA, "Âm thanh: phương tiện")
+                setStatus("Đang lồng tiếng file local qua âm thanh phương tiện")
+            } else {
+                setStatus("Đang thử lấy tiếng trong trang…")
+            }
+        } else {
+            try {
+                startCapture()
+            } catch (e: Exception) {
+                Log.e(TAG, "startCapture failed", e)
+                broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+            }
         }
         try {
             connectLive()
@@ -1198,13 +1355,19 @@ class DubbingService : Service() {
      * VAD/Live path. Null when the projection token is unusable
      * (single-app token, OEM block) or the device refuses the format.
      */
-    private fun buildPlaybackRecordStereo(minBuf: Int): AudioRecord? {
+    private fun buildPlaybackRecordStereo(minBuf: Int, gameOnly: Boolean = false): AudioRecord? {
         val proj = mediaProjection ?: return null
         return try {
-            val config = AudioPlaybackCaptureConfiguration.Builder(proj)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .build()
+            // v1.0.11 — the capture matching follows the source: a
+            // local file plays on USAGE_GAME, so the fallback capture
+            // matches GAME only (MEDIA is never an input there); the
+            // web fallback keeps MEDIA+GAME as before.
+            val configBuilder = AudioPlaybackCaptureConfiguration.Builder(proj)
+            if (!gameOnly) {
+                configBuilder.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            }
+            configBuilder.addMatchingUsage(AudioAttributes.USAGE_GAME)
+            val config = configBuilder.build()
             val record = AudioRecord.Builder()
                 .setAudioFormat(
                     AudioFormat.Builder()
@@ -1229,13 +1392,15 @@ class DubbingService : Service() {
     }
 
     /** Null when the projection token is unusable (single-app token, OEM block). */
-    private fun buildPlaybackRecordMono(minBuf: Int): AudioRecord? {
+    private fun buildPlaybackRecordMono(minBuf: Int, gameOnly: Boolean = false): AudioRecord? {
         val proj = mediaProjection ?: return null
         return try {
-            val config = AudioPlaybackCaptureConfiguration.Builder(proj)
-                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                .build()
+            val configBuilder = AudioPlaybackCaptureConfiguration.Builder(proj)
+            if (!gameOnly) {
+                configBuilder.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            }
+            configBuilder.addMatchingUsage(AudioAttributes.USAGE_GAME)
+            val config = configBuilder.build()
             val record = AudioRecord.Builder()
                 .setAudioFormat(
                     AudioFormat.Builder()
@@ -1285,9 +1450,15 @@ class DubbingService : Service() {
         }
     }
 
-    private fun startCapture() {
-        try {
-            vad = VadDetector(
+    /**
+     * v1.0.11 — extracted from startCapture: the VAD + its listener
+     * are shared by the system-capture thread AND the tap feeder
+     * thread (WebAudio tap / local tap processor). Returns null on
+     * failure (the caller stops the service).
+     */
+    private fun createVad(): VadDetector? {
+        return try {
+            val detector = VadDetector(
                 // v1.0.5 — threshold from Settings (default 600, ALDA's
                 // value) instead of the hard-coded 250.
                 // v1.0.8 — this is the START threshold; the VAD derives
@@ -1455,10 +1626,17 @@ class DubbingService : Service() {
                         }
                     }
                 }
-            })
+            })            vad = detector
+            detector
         } catch (e: Exception) {
             Log.e(TAG, "VadDetector failed", e)
             broadcast(TYPE_ERROR, message = "Không khởi động được bộ lọc giọng: ${e.message}")
+            null
+        }
+    }
+
+    private fun startCapture() {
+        if (createVad() == null) {
             mainHandler.post { if (capturing) stopDub() }
             return
         }
@@ -1476,9 +1654,12 @@ class DubbingService : Service() {
                 // 16 kHz still works for the Live/VAD path (old
                 // behaviour: direct audio, no delayed original).
                 if (mediaProjection != null) {
-                    record = buildPlaybackRecordStereo(minBufStereo)
+                    // v1.0.11 — local capture fallback matches GAME
+                    // only (the local player is USAGE_GAME).
+                    val gameOnly = source == SOURCE_LOCAL
+                    record = buildPlaybackRecordStereo(minBufStereo, gameOnly)
                     if (record != null) stereo = true
-                    if (record == null) record = buildPlaybackRecordMono(minBuf)
+                    if (record == null) record = buildPlaybackRecordMono(minBuf, gameOnly)
                 }
                 if (record == null && mediaProjection != null) {
                     // Android 16 single-app token (user picked DubLive itself)
@@ -1606,6 +1787,319 @@ class DubbingService : Service() {
         }, "DubLive-Capture").apply { start() }
     }
 
+    /**
+     * v1.0.11 — take the MediaProjection token and register the stop
+     * callback (shared by the normal start and the tap -> capture
+     * fallback transition). Returns false when the token is unusable
+     * (single-app token, OEM block): the caller falls back to the mic.
+     */
+    private fun setupMediaProjection(resultCode: Int, resultData: Intent?): Boolean {
+        if (resultData == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        return try {
+            val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            mediaProjection = mgr.getMediaProjection(resultCode, resultData)
+            if (mediaProjection == null) {
+                broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
+                false
+            } else {
+                val cb = object : MediaProjection.Callback() {
+                    override fun onStop() {
+                        // User (or OriginOS) stopped sharing mid-session.
+                        // Switch to the mic instead of dying with the token.
+                        Log.w(TAG, "MediaProjection stopped by system/user, switching to mic")
+                        mainHandler.post {
+                            if (capturing && !stopped) {
+                                broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
+                                switchCaptureToMic()
+                            }
+                        }
+                    }
+                }
+                projectionCallback = cb
+                try {
+                    mediaProjection?.registerCallback(cb, mainHandler)
+                } catch (e: Exception) {
+                    Log.w(TAG, "registerCallback failed", e)
+                }
+                true
+            }
+        } catch (e: Exception) {
+            // Single-app token (user picked DubLive itself), OriginOS
+            // blocking the capture, or an expired token: fall back to mic.
+            Log.w(TAG, "getMediaProjection failed, falling back to mic", e)
+            mediaProjection = null
+            broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
+            false
+        }
+    }
+
+    /**
+     * v1.0.11 — tap feeder thread: drains TapAudioQueue into the VAD
+     * (and, for stereo, the delayed background player). Runs instead
+     * of the system-capture thread in the tap modes. The VAD listener
+     * is the same as the capture path's, so speech slices, the Groq
+     * path and the level meter all work unchanged.
+     */
+    private fun startTapFeeder() {
+        if (createVad() == null) {
+            mainHandler.post { if (capturing) stopDub() }
+            return
+        }
+        tapFeederRunning = true
+        lastTapChunkAtMs = 0L
+        tapFeederThread = Thread({
+            val monoBuf = ShortArray(1600)
+            val stereoBuf = ShortArray(9600)
+            while (tapFeederRunning && capturing) {
+                val chunk = try {
+                    TapAudioQueue.poll(200L)
+                } catch (e: Exception) {
+                    null
+                } ?: continue
+                lastTapChunkAtMs = System.currentTimeMillis()
+                try {
+                    when (chunk.kind) {
+                        TapAudioQueue.Kind.MONO16K -> feedMono16k(chunk.bytes, monoBuf)
+                        TapAudioQueue.Kind.STEREO48K -> feedStereo48k(chunk.bytes, stereoBuf, monoBuf)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "tap feed failed", e)
+                }
+            }
+        }, "DubLive-TapFeed").apply { start() }
+    }
+
+    private fun stopTapFeeder() {
+        tapFeederRunning = false
+        tapFeederThread?.interrupt()
+        try { tapFeederThread?.join(500) } catch (_: Exception) { }
+        tapFeederThread = null
+        try { TapAudioQueue.clear() } catch (_: Exception) { }
+    }
+
+    /** WebAudio tap: 16 kHz mono PCM16 straight into the VAD. */
+    private fun feedMono16k(bytes: ByteArray, monoBuf: ShortArray) {
+        var offset = 0
+        while (offset < bytes.size) {
+            val len = minOf(3200, bytes.size - offset)
+            val n = bytesToShorts(bytes, offset, len, monoBuf)
+            if (n > 0) {
+                try { vad?.feed(monoBuf, n) } catch (e: Exception) {
+                    Log.w(TAG, "VAD feed failed", e)
+                }
+            }
+            offset += len
+        }
+    }
+
+    /** Local tap: 48 kHz stereo PCM16 — background player first (raw,
+     * before the VAD), then the mono 16 kHz downmix for VAD/Live. */
+    private fun feedStereo48k(bytes: ByteArray, stereoBuf: ShortArray, monoBuf: ShortArray) {
+        try { backgroundPlayer?.feedPcm(bytes) } catch (e: Exception) {
+            Log.w(TAG, "bg feed failed", e)
+        }
+        var offset = 0
+        while (offset + 4 <= bytes.size) {
+            val len = minOf(19200, (bytes.size - offset) / 4 * 4)
+            val n = bytesToShorts(bytes, offset, len, stereoBuf)
+            if (n > 0) {
+                val monoCount = downmixStereo48kToMono16k(stereoBuf, n, monoBuf)
+                if (monoCount > 0) {
+                    try { vad?.feed(monoBuf, monoCount) } catch (e: Exception) {
+                        Log.w(TAG, "VAD feed failed", e)
+                    }
+                }
+            }
+            offset += len
+        }
+    }
+
+    /** Little-endian PCM16 bytes -> shorts. Returns the count written. */
+    private fun bytesToShorts(bytes: ByteArray, offset: Int, byteLen: Int, out: ShortArray): Int {
+        val count = minOf(byteLen / 2, out.size)
+        for (i in 0 until count) {
+            val lo = bytes[offset + i * 2].toInt() and 0xFF
+            val hi = bytes[offset + i * 2 + 1].toInt()
+            out[i] = ((hi shl 8) or lo).toShort()
+        }
+        return count
+    }
+
+    /**
+     * v1.0.11 — delayed original audio for LOCAL tap mode: the
+     * ExoPlayer tap processor's stereo PCM replayed D seconds late
+     * on USAGE_MEDIA (no enhancer — media is loud already). NO
+     * stream mute: the live player audio is already silent
+     * (player.volume = 0 in the activity); muting STREAM_MUSIC here
+     * would silence this very player, since it is on MEDIA too.
+     */
+    private fun startDelayedBackgroundLocal() {
+        if (delayedBackgroundActive) return
+        try {
+            backgroundPlayer?.stop()
+            backgroundPlayer = DelayedBackgroundPlayer(this).also {
+                it.start(AudioAttributes.USAGE_MEDIA, useEnhancer = false)
+                it.setVolume(1.0f, false)
+                it.setDelayMs(
+                    if (delayEnabled) {
+                        tracker?.currentDelayMs ?: Prefs.baseDelayMs(this)
+                    } else {
+                        0L
+                    }
+                )
+            }
+            delayedBackgroundActive = true
+            Log.i(TAG, "Delayed background (local tap) active on MEDIA, delay ${tracker?.currentDelayMs}ms")
+        } catch (e: Exception) {
+            Log.e(TAG, "DelayedBackgroundPlayer (local) start failed", e)
+            delayedBackgroundActive = false
+            backgroundPlayer = null
+        }
+    }
+
+    /** v1.0.11 — the dub slider drives the stream the voice is on. */
+    private fun applyDubStreamVolume(pct: Int = Prefs.dubVolumePct(this)) {
+        try {
+            if (audioMode == AudioMode.TAP_WEB || audioMode == AudioMode.TAP_LOCAL) {
+                VoicePlayer.applyMediaVolume(this, pct)
+            } else {
+                VoicePlayer.applyCallVolume(this, pct)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "applyDubStreamVolume failed", e)
+        }
+    }
+
+    /** v1.0.11 — tell the activities which audio path is in use. */
+    private fun broadcastAudioRoute(mode: String, label: String) {
+        try {
+            val intent = Intent(ACTION_DUB_EVENT).setPackage(packageName)
+            intent.putExtra(EXTRA_TYPE, TYPE_AUDIO_ROUTE)
+            intent.putExtra(EXTRA_AUDIO_MODE, mode)
+            intent.putExtra(EXTRA_MESSAGE, label)
+            sendBroadcast(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "broadcastAudioRoute failed", e)
+        }
+    }
+
+    /**
+     * v1.0.11 — the WebAudio tap died (probe) or was blocked (CORS).
+     * Ask the foreground activity for a screen-capture token so the
+     * session can fall back to system capture; arm the 90 s mic
+     * safety net in case no activity answers. The Live connection
+     * and D survive — only the audio input path changes.
+     */
+    private fun onTapDead(reason: String) {
+        if (stopped || !capturing) return
+        if (audioMode != AudioMode.TAP_WEB && audioMode != AudioMode.TAP_LOCAL) return
+        if (tapDead) return
+        tapDead = true
+        Log.w(TAG, "Tap dead: $reason")
+        setStatus("Trang chặn lấy tiếng, đang chuyển sang đường cuộc gọi…")
+        broadcast(TYPE_NEED_PROJECTION, message = reason)
+        if (!fallbackMicArmed) {
+            fallbackMicArmed = true
+            try { mainHandler.postDelayed(fallbackMicCheck, 90_000L) } catch (_: Exception) { }
+        }
+    }
+
+    private fun onTapAlive() {
+        if (stopped || !capturing) return
+        if (audioMode != AudioMode.TAP_WEB) return
+        broadcastAudioRoute(AUDIO_MODE_MEDIA, "Âm thanh: phương tiện")
+        setStatus("Đã nhận tiếng trong trang — lồng tiếng qua âm thanh phương tiện")
+    }
+
+    /** 90 s after a tap death with no projection token: use the mic. */
+    private val fallbackMicCheck = Runnable {
+        if (fallbackMicArmed && tapDead && capturing && !stopped &&
+            (audioMode == AudioMode.TAP_WEB || audioMode == AudioMode.TAP_LOCAL)
+        ) {
+            Log.w(TAG, "No projection fallback in 90 s, switching to mic")
+            fallbackToMic()
+        }
+    }
+
+    /**
+     * v1.0.11 — tap (or mic) -> system-capture transition, in place.
+     * The projection token arrives from the activity's fallback flow.
+     * The Live connection, the tracker (D) and the queued dub voice
+     * survive; only the audio input path and the output stream
+     * change. The tap feeder stops, the voice goes back to the call
+     * stream, the capture thread starts (its stereo path mutes
+     * STREAM_MUSIC and starts the delayed background player, exactly
+     * like the v1.0.10 start).
+     */
+    private fun transitionToCapture(resultCode: Int, resultData: Intent?, src: String) {
+        if (stopped || !capturing) return
+        fallbackMicArmed = false
+        tapDead = false
+        try { mainHandler.removeCallbacks(fallbackMicCheck) } catch (_: Exception) { }
+        try { stopTapFeeder() } catch (e: Exception) {
+            Log.w(TAG, "stopTapFeeder failed", e)
+        }
+        try { stopDelayedBackground() } catch (e: Exception) {
+            Log.w(TAG, "stopDelayedBackground failed", e)
+        }
+        source = src
+        audioMode = AudioMode.CAPTURE
+        try {
+            voicePlayer?.setOutputUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        } catch (e: Exception) {
+            Log.w(TAG, "voice->call failed", e)
+        }
+        try { applyDubStreamVolume() } catch (_: Exception) { }
+        // Stop the current capture thread first (mic mode), if any.
+        val oldThread = captureThread
+        capturing = false
+        try { oldThread?.join(1500) } catch (_: Exception) { }
+        captureThread = null
+        if (!setupMediaProjection(resultCode, resultData)) {
+            // Token unusable after all: mic mode instead of dying.
+            mediaProjection = null
+            fallbackToMic()
+            return
+        }
+        capturing = true
+        try {
+            startCapture()
+        } catch (e: Exception) {
+            Log.e(TAG, "transition startCapture failed", e)
+            broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+        }
+        broadcastAudioRoute(AUDIO_MODE_CALL, "Âm thanh: cuộc gọi (trang chặn lấy tiếng)")
+        setStatus("Đã chuyển sang đường cuộc gọi — lồng tiếng tiếp tục")
+    }
+
+    /**
+     * v1.0.11 — give up on the tap AND on the projection fallback:
+     * hear the film through the microphone (the phone's speakers play
+     * it) and dub on the call stream, like the old mic mode. Used
+     * when the user denies the screen-capture dialog during a
+     * fallback, and by the 90 s safety timer when no activity ever
+     * answers the projection request.
+     */
+    private fun fallbackToMic() {
+        if (stopped || !capturing) return
+        if (audioMode == AudioMode.MIC) return
+        fallbackMicArmed = false
+        tapDead = false
+        try { stopTapFeeder() } catch (e: Exception) { }
+        try { stopDelayedBackground() } catch (e: Exception) { }
+        audioMode = AudioMode.MIC
+        source = SOURCE_WEB
+        try {
+            voicePlayer?.setOutputUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+        } catch (e: Exception) {
+            Log.w(TAG, "voice->call failed", e)
+        }
+        try { applyDubStreamVolume() } catch (_: Exception) { }
+        broadcastAudioRoute(AUDIO_MODE_MIC, "Âm thanh: micro (trang chặn lấy tiếng — để điện thoại gần loa)")
+        setStatus("Trang chặn lấy tiếng, đang nghe bằng micro — để điện thoại gần loa")
+        switchCaptureToMic()
+    }
+
     private fun stopForegroundSafely() {
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
     }
@@ -1613,6 +2107,15 @@ class DubbingService : Service() {
     private fun stopDub() {
         stopped = true
         capturing = false
+        // v1.0.11 — stop the tap feeder + drop queued tap audio, and
+        // disarm the mic-fallback timer (no fallback after a real stop).
+        tapDead = false
+        fallbackMicArmed = false
+        localPlaying = false
+        try { mainHandler.removeCallbacks(fallbackMicCheck) } catch (_: Exception) { }
+        try { stopTapFeeder() } catch (_: Exception) { }
+        audioMode = AudioMode.CAPTURE
+        source = SOURCE_WEB
         try { mainHandler.removeCallbacks(watchdog) } catch (_: Exception) { }
         try { mainHandler.removeCallbacks(levelTicker) } catch (_: Exception) { }
         try { mainHandler.removeCallbacks(duckTicker) } catch (_: Exception) { }

@@ -17,12 +17,24 @@ import kotlin.math.roundToInt
  * Plays the dubbed Vietnamese voice.
  *
  * Two sources:
- *  - Gemini Live audio (24 kHz PCM) played through AudioTrack. It uses
- *    USAGE_VOICE_COMMUNICATION on purpose: the system-audio capture is
- *    configured for USAGE_MEDIA only, so the dub voice itself is NOT
- *    re-captured (that echo loop made the old app hear its own voice).
+ *  - Gemini Live audio (24 kHz PCM) played through AudioTrack.
  *  - TextToSpeech fallback (Vietnamese) when the model returns text only.
  *    Reading speeds up to catch up: lag > 2 s -> 1.2x, lag > 4 s -> 1.35x.
+ *
+ * OUTPUT STREAM (v1.0.11 — selectable, was always the call stream):
+ *  - USAGE_VOICE_COMMUNICATION (default): the system-capture mode.
+ *    The capture only matches USAGE_MEDIA/GAME, so the dub voice is
+ *    NOT re-captured (no echo loop). The call stream is quiet, so the
+ *    track carries a LoudnessEnhancer (+8 dB).
+ *  - USAGE_MEDIA: the WebAudio-tap and local-tap modes. The film
+ *    sound comes from INSIDE the page / the ExoPlayer tap processor,
+ *    never from the system capture — so no capture runs at all and
+ *    the dub voice on MEDIA cannot be re-captured. Loud and on the
+ *    stream the user's volume buttons already control; no enhancer
+ *    (media is loud already, +8 dB would clip).
+ *  [setOutputUsage] rebuilds the AudioTrack live (mode switch on tap
+ *  fallback) WITHOUT clearing the hold queue — in-flight dubbed audio
+ *  survives the switch.
  *
  * v1.0.9 — VOICE HOLD (ALDA mechanism, per burst): the translated
  * voice must NOT play the moment it arrives — it must wait until
@@ -38,34 +50,34 @@ import kotlin.math.roundToInt
 class VoicePlayer(
     context: Context,
     private val onSpeechStarted: () -> Unit,
-    private val onTtsStarted: () -> Unit = {}
+    private val onTtsStarted: () -> Unit = {},
+    /** v1.0.11 — output stream for this session (see class doc). */
+    initialUsage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION
 ) {
     companion object {
         private const val TAG = "DubLive-Voice"
 
         /**
-         * v1.0.6 — the dub voice plays on STREAM_VOICE_CALL
-         * (USAGE_VOICE_COMMUNICATION), a SEPARATE stream from media:
-         * turning up the media volume does nothing for it, which is why
-         * the user reported "giọng dịch nhỏ quá" no matter how loud the
-         * video was. Map the 0..100% slider straight onto the system's
-         * call-stream volume (0..max), effective immediately, no restart
-         * needed. Needs MODIFY_AUDIO_SETTINGS (a normal permission,
-         * already in the manifest — no runtime request). USAGE stays
-         * VOICE_COMMUNICATION on purpose: switching to USAGE_MEDIA would
-         * let AudioPlaybackCapture re-capture the dub voice (echo loop).
-         *
-         * v1.0.10 — the alarm option is GONE (user: "Không dùng qua
-         * báo thức nhé"): the slider always drives the call stream
-         * now. The delayed original audio shares the same stream
-         * (DelayedBackgroundPlayer), so the hardware buttons move
-         * both voices together; the two in-app sliders set the
-         * ratio between them.
+         * v1.0.11 — the dub slider drives the SYSTEM volume of the
+         * stream the voice is currently on: STREAM_VOICE_CALL in
+         * capture mode, STREAM_MUSIC in tap mode (media). The service
+         * picks the right one for the current audio mode
+         * (DubbingService.applyDubStreamVolume); Settings sends
+         * ACTION_APPLY_DUB_VOLUME so a mid-session drag lands on the
+         * stream that is actually playing.
          */
         fun applyCallVolume(context: Context, pct: Int) {
+            applyStreamVolume(context, AudioManager.STREAM_VOICE_CALL, pct)
+        }
+
+        /** v1.0.11 — dub slider -> media-stream volume (tap modes). */
+        fun applyMediaVolume(context: Context, pct: Int) {
+            applyStreamVolume(context, AudioManager.STREAM_MUSIC, pct)
+        }
+
+        private fun applyStreamVolume(context: Context, stream: Int, pct: Int) {
             try {
                 val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                val stream = AudioManager.STREAM_VOICE_CALL
                 val max = am.getStreamMaxVolume(stream).coerceAtLeast(1)
                 val index = ((pct.coerceIn(0, 100) / 100f) * max).roundToInt().coerceIn(0, max)
                 am.setStreamVolume(stream, index, AudioManager.FLAG_SHOW_UI)
@@ -75,18 +87,26 @@ class VoicePlayer(
         }
 
         /**
-         * v1.0.10 — the dub voice always uses USAGE_VOICE_COMMUNICATION
-         * (the alarm option was removed at the user's request).
-         * Still NOT captured: DubbingService.buildPlaybackRecord only
-         * matches USAGE_MEDIA + USAGE_GAME, so a call-stream dub voice
-         * cannot be re-captured (no echo loop). USAGE_MEDIA is
-         * deliberately never used here.
+         * v1.0.10 — the dub voice used USAGE_VOICE_COMMUNICATION
+         * always (the alarm option was removed at the user's request).
+         * v1.0.11 — the usage is per-session now: the call stream in
+         * system-capture mode, USAGE_MEDIA in the tap modes (no
+         * capture runs there, so MEDIA cannot echo). Kept for
+         * callers that need the capture-mode usage.
          */
         fun dubUsage(context: Context): Int =
             AudioAttributes.USAGE_VOICE_COMMUNICATION
     }
 
     private val appContext = context.applicationContext
+
+    /**
+     * v1.0.11 — current output stream. Changed live by
+     * [setOutputUsage] on a mode switch (tap -> capture fallback);
+     * the hold queue survives the rebuild.
+     */
+    var outputUsage: Int = initialUsage
+        private set
 
     /**
      * v1.0.9 — the dubbed voice waits behind its burst hold instead of
@@ -165,10 +185,19 @@ class VoicePlayer(
 
     fun start() {
         if (running) return
+        buildTrack()
+    }
+
+    /**
+     * v1.0.11 — build (or rebuild) the AudioTrack + playback thread
+     * for the current [outputUsage]. The hold queue is NOT touched:
+     * chunks queued before a mode switch keep playing after it.
+     * The LoudnessEnhancer only applies to the call stream — the
+     * media stream is loud already and +8 dB would clip it.
+     */
+    private fun buildTrack() {
         val attrs = AudioAttributes.Builder()
-            // v1.0.10 — always the call stream (the alarm option was
-            // removed). Never USAGE_MEDIA.
-            .setUsage(dubUsage(appContext))
+            .setUsage(outputUsage)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         val format = AudioFormat.Builder()
@@ -207,31 +236,35 @@ class VoicePlayer(
         // v1.0.7 — LoudnessEnhancer: boost the dub voice beyond the
         // 1.0f gain ceiling (+8 dB target). Try 800 mB, then 500, then
         // 0 (enabled but no gain); any failure just means no boost —
-        // start() must never die here.
-        try {
-            val enhancer = try { LoudnessEnhancer(track.audioSessionId) } catch (e: Exception) { null }
-            if (enhancer != null) {
-                var applied = false
-                for (gain in intArrayOf(800, 500, 0)) {
-                    try {
-                        enhancer.setTargetGain(gain)
-                        enhancer.enabled = true
-                        applied = true
-                        Log.i(TAG, "LoudnessEnhancer on, targetGain=$gain mB")
-                        break
-                    } catch (e: Exception) {
-                        Log.w(TAG, "LoudnessEnhancer gain $gain failed", e)
+        // start() must never die here. v1.0.11 — call stream only:
+        // on USAGE_MEDIA the enhancer would clip a stream that is
+        // already loud.
+        if (outputUsage == AudioAttributes.USAGE_VOICE_COMMUNICATION) {
+            try {
+                val enhancer = try { LoudnessEnhancer(track.audioSessionId) } catch (e: Exception) { null }
+                if (enhancer != null) {
+                    var applied = false
+                    for (gain in intArrayOf(800, 500, 0)) {
+                        try {
+                            enhancer.setTargetGain(gain)
+                            enhancer.enabled = true
+                            applied = true
+                            Log.i(TAG, "LoudnessEnhancer on, targetGain=$gain mB")
+                            break
+                        } catch (e: Exception) {
+                            Log.w(TAG, "LoudnessEnhancer gain $gain failed", e)
+                        }
+                    }
+                    if (applied) {
+                        loudnessEnhancer = enhancer
+                    } else {
+                        try { enhancer.release() } catch (_: Exception) { }
                     }
                 }
-                if (applied) {
-                    loudnessEnhancer = enhancer
-                } else {
-                    try { enhancer.release() } catch (_: Exception) { }
-                }
+            } catch (e: Exception) {
+                Log.w(TAG, "LoudnessEnhancer setup failed", e)
+                loudnessEnhancer = null
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "LoudnessEnhancer setup failed", e)
-            loudnessEnhancer = null
         }
         playerThread = Thread({
             while (running) {
@@ -263,9 +296,42 @@ class VoicePlayer(
         }, "DubLive-AudioOut").apply { start() }
     }
 
+    /** Stop the track + thread, keep the hold queue (mode switch). */
+    private fun releaseTrack() {
+        running = false
+        playerThread?.interrupt()
+        try { playerThread?.join(500) } catch (_: Exception) { }
+        playerThread = null
+        try { loudnessEnhancer?.release() } catch (_: Exception) { }
+        loudnessEnhancer = null
+        try { audioTrack?.stop() } catch (_: Exception) { }
+        try { audioTrack?.release() } catch (_: Exception) { }
+        audioTrack = null
+    }
+
+    /**
+     * v1.0.11 — switch the output stream live (tap -> capture
+     * fallback: MEDIA -> VOICE_COMMUNICATION). No-op when the usage
+     * is unchanged or the track was never started (the usage is
+     * applied at the next start() instead). The hold queue and the
+     * current hold survive the rebuild; only the AudioTrack is swapped.
+     */
+    fun setOutputUsage(usage: Int) {
+        if (usage == outputUsage) return
+        outputUsage = usage
+        if (audioTrack == null && !running) return
+        try {
+            releaseTrack()
+            buildTrack()
+        } catch (e: Exception) {
+            Log.w(TAG, "setOutputUsage rebuild failed", e)
+        }
+    }
+
     /** v1.0.6 — track gain is always max (1.0f); the parameter is kept
-     * for callers but ignored — loudness now comes from the system
-     * call-stream volume (applyCallVolume), not from scaling the track. */
+     * for callers but ignored — loudness now comes from the SYSTEM
+     * volume of the stream the voice is on (applyCallVolume /
+     * applyMediaVolume), not from scaling the track. */
     fun setDubVolume(vol: Float) {
         try { audioTrack?.setVolume(1.0f) } catch (_: Exception) { }
     }
@@ -313,9 +379,10 @@ class VoicePlayer(
             tts.setSpeechRate(rate)
             tts.setAudioAttributes(
                 AudioAttributes.Builder()
-                    // v1.0.10 — same output as the Live track: the call
-                    // stream, always.
-                    .setUsage(dubUsage(appContext))
+                    // v1.0.11 — same output as the Live track: the
+                    // current session usage (media in tap modes,
+                    // call stream in capture mode).
+                    .setUsage(outputUsage)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
@@ -337,15 +404,8 @@ class VoicePlayer(
     }
 
     fun stop() {
-        running = false
-        playerThread?.interrupt()
-        playerThread = null
+        releaseTrack()
         holdQueue.clear()
-        try { loudnessEnhancer?.release() } catch (_: Exception) { }
-        loudnessEnhancer = null
-        try { audioTrack?.stop() } catch (_: Exception) { }
-        try { audioTrack?.release() } catch (_: Exception) { }
-        audioTrack = null
         try { tts?.stop() } catch (_: Exception) { }
     }
 

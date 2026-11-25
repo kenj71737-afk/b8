@@ -26,7 +26,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 
 /**
@@ -38,6 +43,12 @@ import androidx.media3.exoplayer.ExoPlayer
  * When delay is off, the overlay hides and the TextureView shows directly.
  * Frame snapshots are capped at 960 px wide by the TextureView size; this
  * costs CPU, so v1 snapshots at 15 fps on purpose.
+ *
+ * Audio (v1.0.11): the film sound reaches the service through a tap
+ * processor on the player's audio pipeline (LocalTapProcessor), so the
+ * dub voice can play on the MEDIA stream with no re-capture echo — no
+ * system capture runs. If the tap yields no PCM while playing, the
+ * service falls back to system capture (GAME only) or the mic.
  */
 class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
@@ -56,6 +67,13 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private var currentDelayMs = 5000L
     private val uiHandler = Handler(Looper.getMainLooper())
     private var pendingMicAfterPermission = false
+    /** v1.0.11 — the tap processor on the player's audio pipeline. */
+    private lateinit var tapProcessor: LocalTapProcessor
+    /** v1.0.11 — true while the session takes the film sound from the
+     * tap processor instead of system capture. */
+    private var tapMode = false
+    /** v1.0.11 — the tap died and the projection dialog is out. */
+    private var fallbackPending = false
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -64,7 +82,10 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         val wantMic = pendingMicAfterPermission
         pendingMicAfterPermission = false
         if (granted) {
-            if (wantMic) startMicService() else showShareTipThenProjection()
+            // v1.0.11 — the normal start is tap-first now (no capture
+            // dialog); the capture dialog only appears as a fallback
+            // when the tap dies.
+            if (wantMic) startMicService() else startLocalTapDub()
         } else {
             Toast.makeText(this, R.string.need_mic_permission, Toast.LENGTH_LONG).show()
             if (!wantMic) {
@@ -78,6 +99,24 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private val pumpHandler = Handler(Looper.getMainLooper())
     private var lastSnapshotAt = 0L
     private var shownBitmap: Bitmap? = null
+
+    /**
+     * v1.0.11 — the service's local-tap watchdog needs to know whether
+     * the player is actually playing: no PCM while playing for 10 s
+     * means the tap processor is dead (exotic codec / a renderer that
+     * bypasses it) and the service falls back to system capture.
+     */
+    private val playerListener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            try {
+                val intent = Intent(this@LocalPlayerActivity, DubbingService::class.java).apply {
+                    action = DubbingService.ACTION_LOCAL_PLAYING
+                    putExtra(DubbingService.EXTRA_PLAYING, isPlaying)
+                }
+                startService(intent)
+            } catch (_: Exception) { }
+        }
+    }
 
     private val pickFileLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent()
@@ -93,10 +132,44 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
                 action = DubbingService.ACTION_START
                 putExtra(DubbingService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(DubbingService.EXTRA_RESULT_DATA, result.data)
+                // v1.0.11 — this token is a tap -> capture fallback:
+                // the service switches in place (keeps Live + D) and
+                // matches GAME only.
+                putExtra(DubbingService.EXTRA_FALLBACK, fallbackPending)
+                putExtra(DubbingService.EXTRA_SOURCE, DubbingService.SOURCE_LOCAL)
+            }
+            fallbackPending = false
+            if (tapMode) {
+                // The capture path replays the original audio itself,
+                // so the tap stops — and the player must be audible
+                // again BEFORE the capture starts, or it records
+                // silence (the v1.0.2 lesson).
+                tapMode = false
+                tapProcessor.enabled = false
+                player?.volume = 1.0f
             }
             startProjectionService(intent, isRetry = false)
         } else {
-            Toast.makeText(this, "Cần cho phép ghi màn hình để lấy tiếng hệ thống", Toast.LENGTH_LONG).show()
+            // v1.0.11 — the user denied the capture dialog during a
+            // tap fallback: dub through the microphone instead of
+            // dying. The player goes audible again so the mic hears it.
+            if (fallbackPending) {
+                fallbackPending = false
+                tapMode = false
+                tapProcessor.enabled = false
+                player?.volume = 1.0f
+                Toast.makeText(this, "Không ghi được màn hình — chuyển sang nghe bằng micro, để điện thoại gần loa", Toast.LENGTH_LONG).show()
+                try {
+                    val intent = Intent(this, DubbingService::class.java).apply {
+                        action = DubbingService.ACTION_FALLBACK_MIC
+                    }
+                    startService(intent)
+                } catch (e: Exception) {
+                    Log.w(TAG, "ACTION_FALLBACK_MIC failed", e)
+                }
+            } else {
+                Toast.makeText(this, "Cần cho phép ghi màn hình để lấy tiếng hệ thống", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -120,11 +193,45 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
                 DubbingService.TYPE_STATE -> {
                     if (intent.getStringExtra(DubbingService.EXTRA_STATE) == DubbingService.STATE_STOPPED) {
                         dubbing = false
+                        // v1.0.11 — the session is over: stop the tap
+                        // and give the player its direct audio back.
+                        tapMode = false
+                        tapProcessor.enabled = false
                         subtitleView.visibility = View.GONE
                         hudView.visibility = View.GONE
                         delayedFrameView.visibility = View.GONE
                         player?.volume = 1.0f
                     }
+                }
+                DubbingService.TYPE_AUDIO_ROUTE -> {
+                    // v1.0.11 — the dub moved streams. On "call" (the
+                    // capture fallback) the live player must be audible
+                    // again: the capture records the GAME stream, and
+                    // a muted player (volume 0) records silence (the
+                    // v1.0.2 lesson). On "mic" the same: the microphone
+                    // needs to hear the speakers.
+                    val mode = intent.getStringExtra(DubbingService.EXTRA_AUDIO_MODE).orEmpty()
+                    if (mode == DubbingService.AUDIO_MODE_CALL ||
+                        mode == DubbingService.AUDIO_MODE_MIC
+                    ) {
+                        if (tapMode) {
+                            tapMode = false
+                            tapProcessor.enabled = false
+                        }
+                        player?.volume = 1.0f
+                    }
+                    val label = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
+                    if (label.isNotBlank()) {
+                        Toast.makeText(this@LocalPlayerActivity, label, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                DubbingService.TYPE_NEED_PROJECTION -> {
+                    // v1.0.11 — the local tap produced no PCM while
+                    // playing: ask for the screen-capture token so the
+                    // service can fall back to system capture (GAME
+                    // only). No user tap needed to start it.
+                    fallbackPending = true
+                    showShareTipThenProjection()
                 }
                 DubbingService.TYPE_ERROR, DubbingService.TYPE_FALLBACK -> {
                     val msg = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
@@ -155,7 +262,32 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         hudView = findViewById(R.id.localHudView)
         textureView.surfaceTextureListener = this
 
-        player = ExoPlayer.Builder(this).build()
+        // v1.0.11 — the tap processor sits on the player's audio
+        // pipeline (it copies the normalised 48 kHz stereo PCM to the
+        // service BEFORE the track volume, so player.volume = 0 silences
+        // the speakers without starving the tap — the v1.0.2 lesson).
+        // The player itself plays on USAGE_GAME: the dub voice +
+        // delayed original play on MEDIA, and the capture fallback
+        // matches GAME only, so it never re-captures the dub (no echo).
+        tapProcessor = LocalTapProcessor()
+        // v1.0.11 — the processor's output goes straight into the
+        // service's tap queue (STEREO48K); without this line the
+        // local tap delivers nothing.
+        tapProcessor.onPcm = { bytes -> TapAudioQueue.offerStereo48k(bytes) }
+        player = ExoPlayer.Builder(this)
+            .setRenderersFactory(
+                DefaultRenderersFactory(this)
+                    .setAudioProcessors(arrayOf<AudioProcessor>(tapProcessor))
+            )
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_GAME)
+                    .setContentType(C.CONTENT_TYPE_MOVIE)
+                    .build(),
+                true
+            )
+            .build()
+        player?.addListener(playerListener)
         findViewById<Button>(R.id.pickFileButton).setOnClickListener {
             pickFileLauncher.launch("video/*")
         }
@@ -207,7 +339,42 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
             permissionLauncher.launch(requiredPermissions())
             return
         }
-        showShareTipThenProjection()
+        startLocalTapDub()
+    }
+
+    /**
+     * v1.0.11 — tap-first start for local files: NO screen-capture
+     * dialog. The service starts in TAP_LOCAL mode; the film sound
+     * reaches it through the tap processor, and the dub voice +
+     * delayed original play on the MEDIA stream. If the tap yields no
+     * PCM while playing, the service broadcasts TYPE_NEED_PROJECTION
+     * and this activity launches the capture dialog as a fallback.
+     */
+    private fun startLocalTapDub() {
+        val intent = Intent(this, DubbingService::class.java).apply {
+            action = DubbingService.ACTION_START_LOCAL_TAP
+        }
+        try {
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "startForegroundService (local tap) failed, retrying with startService", e)
+            try {
+                startService(intent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "startService (local tap) also failed", e2)
+                Toast.makeText(this, R.string.service_failed, Toast.LENGTH_LONG).show()
+                return
+            }
+        }
+        dubbing = true
+        tapMode = true
+        tapProcessor.enabled = true
+        // The live player audio goes silent — its sound reaches the
+        // service through the tap processor instead, and comes back D
+        // seconds late on the media stream. The duck drives the delayed
+        // background player directly (service-side), never this volume.
+        player?.volume = 0f
+        hudView.visibility = View.VISIBLE
     }
 
     private fun startMicDub() {
@@ -309,6 +476,12 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
             Log.w(TAG, "stopDub failed", e)
         }
         dubbing = false
+        // v1.0.11 — stop the tap at once and give the player its
+        // direct audio back (the TYPE_STATE branch does the same when
+        // the service's stopped broadcast arrives).
+        tapMode = false
+        tapProcessor.enabled = false
+        player?.volume = 1.0f
     }
 
     // ---- TextureView frame delay ----

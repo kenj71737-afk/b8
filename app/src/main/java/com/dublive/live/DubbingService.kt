@@ -1007,16 +1007,22 @@ class DubbingService : Service() {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
-                        // v1.0.10 — continuous slice measurement + ALDA
-                        // voice hold (FIX32/FIX33). The hold still
-                        // comes from the burst start (hold = D −
+                        // v1.0.14 — continuous slice measurement +
+                        // ALDA voice hold (FIX32/FIX33). The hold
+                        // still comes from the burst start (hold = D −
                         // latency of that burst), but the MEASUREMENT
-                        // is now continuous: every 500 ms of arriving
-                        // dub (24 kHz PCM: ms = bytes / 48) pairs
-                        // against the oldest 500 ms speech slice, and
-                        // every 4 s the window median feeds the EMA —
-                        // so D moves even when neither the speech nor
-                        // the dub ever pauses. While the video delay
+                        // is now anchored on turn boundaries: every
+                        // 500 ms of arriving dub (24 kHz PCM: ms =
+                        // bytes / 48) pairs against the speech slice
+                        // at (anchor + paired dub × ratio) — the dub
+                        // is ~1.3x the source, so positional FIFO
+                        // pairing pinned every sample at the floor
+                        // (the 05:08 report: D frozen at 3.4 s, 1421
+                        // deferrals) — and every 4 s the window
+                        // median feeds the EMA, so D moves even when
+                        // neither the speech nor the dub ever pauses.
+                        // turnComplete / burst re-anchor exactly
+                        // (see DubDelayTracker). While the video delay
                         // is off (site fullscreen / delay toggle) the
                         // hold is 0: the picture is live, so the voice
                         // plays at once.
@@ -1025,7 +1031,6 @@ class DubbingService : Service() {
                             val h = tracker?.onDubAudioArrival(
                                 nowMs,
                                 (pcm24k.size / 48).toLong(),
-                                currentUtteranceStartMs,
                                 firstAudioSentAtMs
                             ) ?: 0L
                             if (delayEnabled) h else 0L
@@ -1050,6 +1055,22 @@ class DubbingService : Service() {
 
                     override fun onTurnComplete() {
                         if (!isCurrent()) return
+                        // v1.0.14 — the server finished a turn: the
+                        // tracker pairs it against the VAD turn
+                        // markers, feeds the boundary sample and
+                        // re-anchors exactly. audioPlayedThisTurn
+                        // gates it: a noise-only turn with no dub
+                        // must not re-anchor (its dub position never
+                        // advanced for this turn). Read before the
+                        // reset at the end of this method.
+                        try {
+                            tracker?.onDubTurnComplete(
+                                System.currentTimeMillis(),
+                                audioPlayedThisTurn
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "tracker turnComplete failed", e)
+                        }
                         val text = pendingText.toString().trim()
                         pendingText.clear()
                         if (!SpeechFilter.isMeaningful(text)) {
@@ -1562,6 +1583,16 @@ class DubbingService : Service() {
                     // silence (no dub for it), so only the head counts.
                     // The head audio ended at `now`, so stamping it at
                     // `now` matches the slice end-time convention.
+                    // v1.0.14 — the turn starts: the tracker records
+                    // the marker (for the turnComplete/burst anchor)
+                    // BEFORE the head is counted, so the marker's
+                    // audio position is the speech position at the
+                    // turn start.
+                    try {
+                        tracker?.onSpeechTurnStart(now)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker turnStart failed", e)
+                    }
                     try {
                         val headMs = minOf(160L, (preRollAndHead.size / 16).toLong())
                         tracker?.onSpeechMs(headMs, now)
@@ -1641,6 +1672,16 @@ class DubbingService : Service() {
                 }
 
                 override fun onSpeechEnd() {
+                    // v1.0.14 — this sentence ended: the tracker
+                    // completes the oldest not-yet-done turn marker
+                    // (a turn's 'end' can arrive after the next
+                    // turn's 'start' when the pause is shorter than
+                    // the 700 ms VAD tail).
+                    try {
+                        tracker?.onSpeechTurnEnd()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker turnEnd failed", e)
+                    }
                     // v1.0.9 — this sentence ended. The Live stream is
                     // NOT cut here (endTurn below only tells the model
                     // the turn is over); the utterance start is kept

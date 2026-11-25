@@ -1,3 +1,103 @@
+# DubLive v1.0.13 — TAP CHỈ 1 VIDEO CHÍNH + CANVAS TRỄ HÌNH VIẾT LẠI (cswold ep-2)
+
+Build xong 26/11/2026 (04:18 user thử v1.0.12 trên cswold video 8053 ep-2: tap sống, đo trễ sống — 97 mẫu/60 s, D 3,4 s, Mức tiếng 884 — nhưng tiếng gốc live chồng lên tiếng trễ, hình không trễ và đứng hình).
+APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.13.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.13.apk`)
+- Kích thước: 9.521.362 bytes (9,1 MB). MD5: bc1557b15f9abfcc0162306faa4be59b.
+- aapt2: package `com.dublive.live`, versionCode 14, versionName 1.0.13,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+  Code mới có trong dex: `__dubLiveTapBest` (x9), `DubLiveTapDuckVol`,
+  `onDelayFailed`, canvas z-index `2147483000`, chuỗi "Không tìm thấy
+  video chính trên trang"; hotfix v1.0.11 còn nguyên (field
+  `deferredTooSmall` + chuỗi chẩn đoán "bỏ %d lát/%d mẫu (nhỏ %d hoãn/lớn %d)").
+- Actions run thành công: **45704894920** (completed/success), commit
+  `d7b5012c3fb331c2ecdb6179f9e90feae080ff01` trên nhánh `dublive-v1`
+  (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
+  `alad-apks` (id 15065236602, bản Debug). Build 1 lần là đậu, không tốn lượt retry.
+
+## Lỗi (A) — tiếng gốc live chồng lên tiếng trễ: tap gắn nhầm video quảng cáo
+
+Đọc HTML thật của trang (curl qua proxy): trang chạy xgplayer trong
+`#cyberPlayer` ở TOP document (KHÔNG iframe — 0 thẻ iframe, embed URL
+`huangguodrama.io/videos/embed/8053` chỉ nằm trong meta twitter:player /
+og:video, không dùng làm iframe) + 1 video quảng cáo nổi góc trái dưới
+("广告", preroll-ad.css + API `/api/media/prerolls/:id/playback`).
+`TapJs.findVideo()` cũ xếp hạng theo ĐỘ PHÂN GIẢI GỐC
+(videoWidth x videoHeight) + diện tích rect — quảng cáo 1080p hiển thị
+nhỏ vẫn thắng phim chính 720p hiển thị lớn — và `scan()` chỉ gắn
+`pool[0]`. Tap ngồi trên QUẢNG CÁO (Mức tiếng 884 = tiếng quảng cáo),
+phim chính phát live thẳng ra loa, cạnh tiếng quảng cáo đã trễ + giọng
+dịch (dịch nhầm tiếng quảng cáo). Giả thuyết iframe đã bị LOẠI bằng
+chứng cứ HTML, không phải đoán mò.
+Sửa trong `TapJs.kt` (theo đúng userscript v1.9.1 đã chạy được trên
+đúng trang này): `findVideo` chấm theo DIỆN TÍCH HIỂN THỊ (x10 khi
+đang phát, tối thiểu 100x60), quét cả document + shadow root +
+iframe cùng miền; chỉ video tốt nhất hiện tại (`__dubLiveTapBest`)
+mới gửi PCM lên Live (cổng trong `onaudioprocess`) và chỉ gain của nó
+mới sống (duck chỉ áp cho best); video bị giáng cấp thì gain về 0, video
+NHỎ bị giáng cấp thì `muted = true` luôn (không bao giờ rò tiếng live);
+thăng cấp thì unmute + khôi phục gain duck. Probe im lặng 2,2 s chỉ
+phán xét video best (video bị mute theo thiết kế không được làm rơi
+fallback). Không tìm thấy video chính nào trong 8 s khi tap đang bật
+-> `onTapFailed` 1 lần -> fallback capture như thường (thay vì im lặng
+mãi, vd trình phát nằm trong iframe khác miền).
+Kiểm chứng bằng test Node (stub DOM, video quảng cáo 1920x1080 hiển
+thị 240x140 vs phim 1280x720 hiển thị 864x490): best luôn là phim
+chính (kể cả khi phim tạm dừng mà quảng cáo đang phát: 423k > 330k);
+PCM chỉ đi từ video best; video nhỏ bị giáng cấp thì mute, video lớn
+không bao giờ bị mute.
+
+## Lỗi (B) — hình không trễ + đứng hình: bộ đệm canvas tính theo SỐ khung
+
+`DelayJs` cũ: cap bộ đệm = `ceil((delayMs + 2000) / 33) + 5` khung — tức
+giả định 30 fps. Nhưng `requestAnimationFrame` chạy theo tần số quét
+màn hình (60 Hz, 144 Hz trên iQOO Z9 Turbo): ở D = 3,4 s, cap 169 khung
+chỉ giữ được ~2,8 s (60 Hz) / ~1,2 s (144 Hz) hình — khung cũ nhất
+KHÔNG BAO GIỜ đủ 3,4 s tuổi nên `due` luôn null, canvas không bao giờ
+vẽ, hình ở nguyên live. Mô phỏng Python xác nhận: code cũ 0/601 tick
+có due ở 60 Hz, 0/1440 ở 144 Hz. Đứng hình: snapshot mỗi tick rAF cho
+MỌI video ở 960x540 (new canvas + 2 drawImage/tick/video) làm rAF
+giật không đều; lúc rAF tụt thì có due -> canvas hiện, video opacity 0;
+rAF hồi lại -> hết due -> canvas ĐÓNG BĂNG ở khung cuối trong khi video
+đang ẩn. Cộng thêm: canvas cho cả quảng cáo, opacity 0 (một số bản
+Chromium ngừng cấp khung mới cho video trong suốt hoàn toàn).
+Sửa trong `DelayJs.kt` — viết lại theo đúng userscript v1.9.1: MỘT
+canvas duy nhất `position:fixed`, z-index 2147483000, chỉ cho video
+chính (cùng cách chấm điểm như TapJs, đánh giá lại mỗi 500 ms);
+snapshot tối đa mỗi 30 ms (~30 fps), rộng tối đa 640 px; bộ đệm cắt
+theo THỜI GIAN (bỏ khung cũ hơn delay + 2 s), không cắt theo số lượng
+— khung đủ tuổi D luôn tồn tại ở mọi tần số quét; video ẩn bằng
+opacity 0.01 (compositor vẫn cấp khung mới cho drawImage); chưa đủ
+khung trễ (mới bắt đầu/tua) thì ẨN canvas, hiện video gốc — không bao
+giờ đen hay đóng băng; seek/loadstart/emptied xóa khung cũ, trễ hiệu
+dụng tăng dần 0 -> D; drawImage lỗi (web chặn lấy khung) thì tắt trễ
+êm (hiện video gốc) + báo qua `DubLiveAudio.onDelayFailed` (bridge mới
+trong `MainActivity`: hiện trạng thái + Toast). Toàn màn hình của trang
+vẫn tắt trễ theo hợp đồng cũ (MainActivity đã đặt delay âm thanh/giọng
+về 0 + Toast).
+Mô phỏng Python code mới (D = 3,4 s): due ở 396/601 tick (60 Hz),
+792/1200 (120 Hz), 950/1440 (144 Hz) — phần còn lại là ~3,4 s đầu
+đệm hình, trong đó hiện video gốc; 0 tick kẹt sau khi đã vẽ.
+
+## Giữ nguyên
+
+v1.0.11 (tap WebAudio + fallback capture, hotfix đo lát cắt) và v1.0.12
+(FGS chọn kiểu theo mode). Cổng phổ tần số lọc nhạc nền (SpectralGate)
+đã BẬT mặc định và đã đi qua VAD chung nên đã áp cho cả đường tap —
+không cần sửa thêm. Yêu cầu "tai phone thì âm đường báo thức qua tai
+phone" thuộc về ALDA FIX44 (chat phụ 26/11 04:14), KHÔNG phải DubLive
+(DubLive đã bỏ hẳn đường báo thức theo yêu cầu user 25/11 21:54).
+
+## Checklist thử lại (đưa user)
+
+Xem cswold video 8053 ep-2 2–3 phút: chỉ nghe 1 tiếng gốc duy nhất
+(đã trễ, khớp giọng dịch — không còn tiếng live chồng lên); hình chạy
+đều và trễ đúng D, không đứng hình, không đen; dòng chẩn đoán vẫn
+"N mẫu/60 s" tăng, D đổi mỗi ~4 s. Nếu web chặn lấy khung hình thì
+dòng trạng thái báo rõ "đã tắt trễ hình" và hình hiện live (giọng vẫn
+dịch bình thường).
+
 # DubLive v1.0.12 — SỬA CRASH FGS mediaProjection KHI BẤM "Bắt đầu lồng tiếng" (TAP + MIC)
 
 Build xong 26/11/2026 (03:43 user báo crash v1.0.11 trên NetShort tập 4, Mức tiếng 0).

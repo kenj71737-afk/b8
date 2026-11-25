@@ -51,6 +51,54 @@ package com.dublive.live
  *     cleared, the window is dropped, and no stale sample is ever
  *     emitted. Measuring resumes with the next speech slice.
  *
+ * v1.0.11 (hotfix) — THE QUEUE-COLLAPSE BUG (22:35 screenshot,
+ * NetShort ep. 4: "D 4,3 s · mẫu cuối 1,8 s (67 s trước) · 0 mẫu/60 s
+ * · chờ 0 lát · VAD: đang nói · bỏ 0 lát/133 mẫu"). The app DID
+ * measure (133 pairings in ~67 s, the right ~2/s rate) but EVERY one
+ * was rejected and the queue sat EMPTY while the VAD kept speaking
+ * and the dub kept playing. Checked and RULED OUT: (a) clock/unit
+ * mismatch — both sides use System.currentTimeMillis() in ms, speech
+ * ms = samples/16 (16 kHz mono), dub ms = bytes/48 (24 kHz mono);
+ * (b) LIFO pairing — the code pops the OLDEST slice
+ * (removeFirstOrNull). The real defect: the slice queue is a fragile
+ * integrator whose depth is (speech ms counted − dub ms counted)/500
+ * plus the initial latency backlog — and the two sides never count
+ * the same audio, so the depth drifts to zero or to the cap:
+ *  - UNDERCOUNT (drain → the 22:35 failure): the 160 ms utterance
+ *    head sent to Live was never fed to onSpeechMs (fixed in the
+ *    service), the dub keeps popping through source gaps while
+ *    speech pushes stop, and a translation longer than the original
+ *    pops MORE than the speech pushes. Once the depth hit zero, the
+ *    old code popped the just-pushed slice anyway, got a <500 ms
+ *    sample, dropped it AND consumed the slice, so the depth could
+ *    never rebuild: a death spiral, and D froze. A key rotation
+ *    (every 5 min) clears the queue outright and lands in the same
+ *    regime. Fix: PEEK BEFORE POPPING — a too-fresh oldest slice is
+ *    left in the queue (its dub credit kept, not spent) so it ages
+ *    and the queue rebuilds; only a too-old slice is popped-and-
+ *    dropped.
+ *  - OVERCOUNT (growth → D runs away): v1.0.10 fed EVERY in-speech
+ *    frame to onSpeechMs, including the 700 ms VAD silence tail
+ *    after each sentence — frames below the END threshold that are
+ *    NEVER sent to Live and have NO dub. That overcounts ~700 ms
+ *    per utterance, so with a translation the same length as the
+ *    original the queue grows, samples inflate and D runs away
+ *    (simulation: D 5.0 → 11.2 s). Fix (service): count EXACTLY
+ *    what Live hears — feed onSpeechMs only for frames with
+ *    rms >= vadEndThreshold (the same gate that sends audio to
+ *    Live), so speech counted ≈ speech duration that gets
+ *    translated, and the drift is only the translation's own
+ *    length difference. The head fix + the tail fix together make
+ *    the accounting exact: counted = head + loud chunks, i.e.
+ *    everything sent to Live that produces dub.
+ * The diagnostic counts WHY pairings failed: "nhỏ" = pairings
+ * DEFERRED because the oldest slice was too fresh (<500 ms, starved
+ * queue — the slice survives, the dub credit is kept, so this is NOT
+ * a destruction); "lớn" = samples DESTROYED as stale (>20 s). A
+ * screenshot with 0 valid samples and "nhỏ" growing = starved
+ * pairing (the 22:35 failure); "lớn" growing = stale queue / the
+ * dub running shorter than the original.
+ *
  * DIAGNOSTICS: [diagnostics] renders one line for the HUD (and the
  * "Xem lỗi Live" dialog): current D, last accepted sample + its age,
  * samples in the last 60 s, slices waiting in the queue, current
@@ -117,8 +165,31 @@ class DubDelayTracker(
     private var lastSampleAtMs = 0L
     private val sampleTimes60s = ArrayDeque<Long>()
     private var droppedSlices = 0
+    /** Samples actually DESTROYED as stale (>20 s). In the fixed
+     * code a too-small sample is never destroyed (it is deferred),
+     * so droppedSamples == droppedTooLarge. */
     private var droppedSamples = 0
     private var emptyPairings = 0
+    /**
+     * v1.0.11 (hotfix) — WHY a pairing did not become a measurement.
+     * [deferredTooSmall]: the oldest slice was too FRESH (<500 ms)
+     * to pair — the queue is starved (the 22:35 failure mode: every
+     * pairing attempt hit a just-pushed slice). This is a DEFERRAL,
+     * not a destruction: the slice stays in the queue, ages, and is
+     * paired later, and the dub credit is kept — so it is NOT
+     * counted in [droppedSamples]. Counting deferrals as "dropped"
+     * would make a healthy starved-then-recovering run show
+     * "bỏ 900 mẫu" while valid samples are flowing. [droppedTooLarge]:
+     * a slice was popped but its sample was >20 s (stale queue, or
+     * the dub running shorter than the original) — a real
+     * destruction, counted in [droppedSamples]. A screenshot with
+     * 0 valid samples and "nhỏ" growing = starved pairing; "lớn"
+     * growing = stale queue. Both are session-cumulative, like
+     * [droppedSlices]/[droppedSamples]; both reset in [stop()], not
+     * in [resetForReconnect()].
+     */
+    private var deferredTooSmall = 0
+    private var droppedTooLarge = 0
 
     val currentDelayMs: Long get() = delayMs
     val currentHoldMs: Long get() = lastHoldMs
@@ -206,6 +277,25 @@ class DubDelayTracker(
      * sample per 500 ms of dub. A stalled source (no new speech
      * slice for > [STALL_MS]) stops measuring entirely: the queue is
      * cleared and no stale sample is emitted.
+     *
+     * v1.0.11 (hotfix) — PEEK BEFORE POPPING. The old code popped the
+     * oldest slice first and THEN checked the range, so when the
+     * queue had drained to (near) zero it popped a slice pushed
+     * moments ago, got a <500 ms sample, dropped it AND consumed the
+     * slice — the queue could never rebuild, and every later sample
+     * was dropped the same way (the 22:35 screenshot: 133 dropped,
+     * 0 valid, queue empty, VAD speaking, dub playing). The queue
+     * drains because the speech side systematically undercounts
+     * (the 160 ms utterance head sent to Live was never counted —
+     * fixed in the service — plus the dub keeps popping through
+     * source gaps while speech pushes stop) and a key rotation
+     * (every 5 min) clears the queue outright. Now a too-fresh
+     * oldest slice is LEFT in the queue (its dub credit is kept,
+     * not spent) so it ages and the queue rebuilds; pairing resumes
+     * when the oldest is old enough. A too-old slice is still popped
+     * and dropped (it is stale — try the next-oldest). A too-fresh
+     * pairing is a DEFERRAL (counted in deferredTooSmall, not in
+     * droppedSamples): the slice survives and pairs later.
      */
     private fun pairDubSlices(dubMs: Long, nowMs: Long) {
         if (dubMs <= 0L) return
@@ -226,31 +316,54 @@ class DubDelayTracker(
         }
         dubAccumMs += dubMs
         while (dubAccumMs >= SLICE_MS) {
-            dubAccumMs -= SLICE_MS
-            val slice = speechSlices.removeFirstOrNull()
-            if (slice == null) {
+            val oldest = speechSlices.firstOrNull()
+            if (oldest == null) {
                 // Dub flowing while the source is silent (a long
                 // translated sentence): no sample, and crucially no
-                // pairing against anything else.
+                // pairing against anything else. The dub credit is
+                // spent (this 500 ms of dub has no speech to pair
+                // with) so it cannot pile up and pair against a
+                // FUTURE sentence.
+                dubAccumMs -= SLICE_MS
                 emptyPairings++
                 continue
             }
-            val sample = nowMs - slice
-            if (sample in MIN_SAMPLE_MS..MAX_SAMPLE_MS) {
-                if (windowStartMs == 0L) windowStartMs = nowMs
-                windowSamples.add(sample)
-                lastSampleMs = sample
-                lastSampleAtMs = nowMs
-                sampleTimes60s.addLast(nowMs)
-                while (sampleTimes60s.isNotEmpty() &&
-                    nowMs - sampleTimes60s.first() > SAMPLES_WINDOW_MS
-                ) {
-                    sampleTimes60s.removeFirst()
-                }
-            } else {
-                // One bad sample (e.g. a music gap): drop JUST this
-                // sample and keep pairing. Never clear the queue.
+            val sample = nowMs - oldest
+            if (sample < MIN_SAMPLE_MS) {
+                // Too fresh to pair: the queue is starved and this
+                // slice was pushed moments ago. Do NOT pop it and do
+                // NOT spend the dub credit — it stays, ages, and the
+                // queue rebuilds. Counted as "nhỏ" (a DEFERRAL, not
+                // a drop) so the diagnostic shows the starved regime
+                // instead of hiding it; it is deliberately NOT
+                // counted in droppedSamples, because no sample was
+                // destroyed — the same slice pairs later, when old
+                // enough. (Counting deferrals as drops made a
+                // recovering run report "bỏ 900 mẫu" while valid
+                // samples were flowing.)
+                deferredTooSmall++
+                break
+            }
+            // Old enough to pair: consume the slice and the dub credit.
+            speechSlices.removeFirst()
+            dubAccumMs -= SLICE_MS
+            if (sample > MAX_SAMPLE_MS) {
+                // Stale slice (a long dub silence let the queue go
+                // stale, or the clocks drifted): drop JUST this
+                // sample and try the next-oldest.
                 droppedSamples++
+                droppedTooLarge++
+                continue
+            }
+            if (windowStartMs == 0L) windowStartMs = nowMs
+            windowSamples.add(sample)
+            lastSampleMs = sample
+            lastSampleAtMs = nowMs
+            sampleTimes60s.addLast(nowMs)
+            while (sampleTimes60s.isNotEmpty() &&
+                nowMs - sampleTimes60s.first() > SAMPLES_WINDOW_MS
+            ) {
+                sampleTimes60s.removeFirst()
             }
         }
     }
@@ -333,8 +446,21 @@ class DubDelayTracker(
         } else {
             "VAD: nghỉ"
         }
-        val droppedPart = if (droppedSlices > 0 || droppedSamples > 0) {
-            " · bỏ %d lát/%d mẫu".format(droppedSlices, droppedSamples)
+        val droppedPart = if (droppedSlices > 0 || droppedSamples > 0 ||
+            deferredTooSmall > 0 || droppedTooLarge > 0
+        ) {
+            // v1.0.11 — the rejection breakdown. "nhỏ … hoãn" =
+            // pairings DEFERRED because the oldest slice was too fresh
+            // (<500 ms, starved queue): the slice survives and pairs
+            // later, so this is NOT part of the "bỏ … mẫu" count.
+            // "lớn" = samples DESTROYED because the slice was stale
+            // (>20 s); those ARE the "bỏ … mẫu". A screenshot with
+            // 0 valid samples and "nhỏ" growing = the 22:35
+            // starved-pairing failure; "lớn" growing = stale queue /
+            // the dub running shorter than the original.
+            " · bỏ %d lát/%d mẫu (nhỏ %d hoãn/lớn %d)".format(
+                droppedSlices, droppedSamples, deferredTooSmall, droppedTooLarge
+            )
         } else {
             ""
         }
@@ -382,6 +508,8 @@ class DubDelayTracker(
         sampleTimes60s.clear()
         droppedSlices = 0
         droppedSamples = 0
+        deferredTooSmall = 0
+        droppedTooLarge = 0
         emptyPairings = 0
     }
 }

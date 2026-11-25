@@ -3,10 +3,17 @@
 Build xong 25/11/2026. APK Debug, cài được.
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.11.apk`
   (symlink `~/workspace/your_files/DubLive-v1.0.11.apk`)
-- aapt2: package `com.dublive.live`, versionCode 12, versionName 1.0.11.
-- Actions run thành công: **RUN_ID** (completed/success), commit `COMMIT` trên nhánh
-  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
-  artifact `alad-apks` (bản Debug).
+- Kích thước: 9.517.346 bytes (9,1 MB). MD5: a77771424f74e67d1bfb5b91c575f78f.
+- aapt2: package `com.dublive.live`, versionCode 12, versionName 1.0.11,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+  Các class mới có trong dex: TapJs, TapAudioQueue, LocalTapProcessor,
+  TapRenderersFactory; chuỗi `settings_dub_volume_note` mới đã vào APK;
+  1 tham chiếu `USAGE_ALARM` còn lại trong dex thuộc thư viện media3,
+  không phải code DubLive (bản v1.0.11 không dùng báo thức).
+- Actions run thành công: **45646438468** (completed/success), commit
+  `53568b3003762e1e2700d871768ecd763debb4e0` trên nhánh `dublive-v1`
+  (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
+  `alad-apks` (id 15038351106, bản Debug).
 
 ## Bối cảnh
 

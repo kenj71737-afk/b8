@@ -1475,6 +1475,28 @@ class DubbingService : Service() {
                     currentUtteranceStartMs = now
                     lastUtteranceStartMs = now
                     if (firstAudioSentAtMs == 0L) firstAudioSentAtMs = now
+                    // v1.0.11 (hotfix) — the 160 ms head that triggered
+                    // this utterance is sent to Live (below) but was
+                    // NEVER counted as speech time: onSpeechMs is only
+                    // called from onSpeechChunk, and the 8 loud frames
+                    // that opened the utterance never reach it. Each
+                    // utterance therefore undercounted ~160 ms of speech
+                    // against the dub (which translates the head), and
+                    // the slice queue drained a little every sentence
+                    // until it hit zero — then every sample was <500 ms
+                    // and dropped (the 22:35 screenshot: 133 dropped,
+                    // 0 valid, queue empty, VAD speaking). The head is
+                    // exactly the 8 frames (8 x 20 ms) the VAD needed
+                    // to trigger; the pre-roll before it is mostly
+                    // silence (no dub for it), so only the head counts.
+                    // The head audio ended at `now`, so stamping it at
+                    // `now` matches the slice end-time convention.
+                    try {
+                        val headMs = minOf(160L, (preRollAndHead.size / 16).toLong())
+                        tracker?.onSpeechMs(headMs, now)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker head feed failed", e)
+                    }
                     try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
                     utteranceBytes.reset()
                     val bytes = shortsToBytes(preRollAndHead)
@@ -1496,19 +1518,34 @@ class DubbingService : Service() {
                 override fun onSpeechChunk(samples: ShortArray) {
                     val bytes = shortsToBytes(samples)
                     utteranceBytes.write(bytes)
-                    // v1.0.10 — continuous slice measurement: every
-                    // in-speech frame feeds the tracker (16 kHz mono:
-                    // 16 samples = 1 ms). Frames below the END
-                    // threshold still count as speech time — the
-                    // slice is about WHEN speech happened, not what
-                    // was sent to Live.
-                    try {
-                        tracker?.onSpeechMs(
-                            (samples.size / 16).toLong(),
-                            System.currentTimeMillis()
-                        )
-                    } catch (e: Exception) {
-                        Log.w(TAG, "tracker onSpeechMs failed", e)
+                    // v1.0.11 (hotfix) — count EXACTLY what Live
+                    // hears. v1.0.10 fed every in-speech frame to the
+                    // tracker, including the 700 ms VAD silence tail
+                    // after each sentence — frames below the END
+                    // threshold that are NEVER sent to Live and have
+                    // NO dub. That overcounts ~700 ms per utterance,
+                    // so with a translation the same length as the
+                    // original the slice queue grows, samples inflate
+                    // and D runs away (simulation: D 5.0 -> 11.2 s).
+                    // The tracker now uses the same rms gate as the
+                    // Live send below: only frames loud enough to be
+                    // sent to Live (rms >= END threshold) count as
+                    // speech time. Quiet syllables between END and
+                    // START threshold are still sent and still counted
+                    // (v1.0.8); the silence tail is not. Together
+                    // with the head counted in onSpeechStart, counted
+                    // speech = head + loud chunks = everything sent
+                    // to Live that produces dub.
+                    val rms = rmsOf(samples)
+                    if (rms >= vadEndThreshold) {
+                        try {
+                            tracker?.onSpeechMs(
+                                (samples.size / 16).toLong(),
+                                System.currentTimeMillis()
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "tracker onSpeechMs failed", e)
+                        }
                     }
                     if (liveConnected) {
                         // v1.0.8 — hysteresis send gate: inside an
@@ -1522,7 +1559,7 @@ class DubbingService : Service() {
                         // the END threshold are withheld. (They still go
                         // into utteranceBytes for the Groq path — Whisper
                         // tolerates noise far better than Live does.)
-                        if (rmsOf(samples) >= vadEndThreshold) {
+                        if (rms >= vadEndThreshold) {
                             try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
                                 Log.w(TAG, "sendAudio failed", e)
                             }

@@ -127,6 +127,15 @@ class SettingsActivity : AppCompatActivity() {
         dubVolumeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
                 dubVolumeLabel.text = "$progress%"
+                // v1.0.6 — the slider drives the SYSTEM call-stream
+                // volume directly: save at once and apply at once, so
+                // dragging it changes the dub loudness immediately,
+                // no restart needed (works even mid-dubbing).
+                if (fromUser) {
+                    Prefs.prefs(this@SettingsActivity).edit()
+                        .putInt(Prefs.KEY_DUB_VOLUME, progress.coerceIn(0, 100)).apply()
+                    try { VoicePlayer.applyCallVolume(this@SettingsActivity, progress) } catch (_: Exception) { }
+                }
             }
 
             override fun onStartTrackingTouch(seek: SeekBar?) {}

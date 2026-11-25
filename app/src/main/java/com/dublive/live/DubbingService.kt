@@ -235,10 +235,10 @@ class DubbingService : Service() {
      * v1.0.5 — duck ticker: every 500 ms, compare the dub voice state
      * with the current duck state and only send a TYPE_DUCK broadcast
      * when it CHANGES, so the WebView volume is not hammered every tick.
-     * Speaking -> original drops to the user's level (default 60%,
-     * 0..1 float from Prefs.originalVolume — verified 0.5 for 50%, NOT
-     * 50). Silent -> original back to 100% so the user can hear the
-     * film's own sound between dubbed lines.
+     * Speaking -> original drops to the user's level (default 80% in
+     * v1.0.6, 0..1 float from Prefs.originalVolume — verified 0.5 for
+     * 50%, NOT 50). Silent -> original back to 100% so the user can
+     * hear the film's own sound between dubbed lines.
      */
     private val duckTicker = object : Runnable {
         override fun run() {
@@ -398,8 +398,12 @@ class DubbingService : Service() {
                 tracker?.onDubSpeechStarted()
             }.also {
                 it.start()
-                // v1.0.5 — dub voice volume from Settings (default 90%).
-                try { it.setDubVolume(Prefs.dubVolume(this)) } catch (_: Exception) { }
+                // v1.0.6 — track/TTS at max (1.0f); the Settings slider
+                // now drives the SYSTEM call-stream volume, which is
+                // what the user actually hears. Apply the saved slider
+                // value when dubbing starts so it takes effect at once.
+                try { it.setDubVolume(1.0f) } catch (_: Exception) { }
+                try { VoicePlayer.applyCallVolume(this, Prefs.dubVolumePct(this)) } catch (_: Exception) { }
             }
         } catch (e: Exception) {
             Log.e(TAG, "VoicePlayer failed", e)

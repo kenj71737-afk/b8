@@ -75,20 +75,24 @@ object Prefs {
     }
 
     fun originalVolume(context: Context): Float {
-        // v1.0.5: default 60% (was 50%). This is the level the original
-        // audio drops to WHILE the dubbed voice is speaking — and only
-        // while it is speaking (see the duck ticker in DubbingService).
-        // It returns 0..1 (percent / 100), the same scale
-        // DelayJs.DubLiveSetVolume expects; callers must NOT send 60.
+        // v1.0.6: default 80% (was 60% in v1.0.5). This is the level the
+        // original audio drops to WHILE the dubbed voice is speaking —
+        // and only while it is speaking (see the duck ticker in
+        // DubbingService). It returns 0..1 (percent / 100), the same
+        // scale DelayJs.DubLiveSetVolume expects; callers must NOT
+        // send 80.
         return (originalVolumePct(context) / 100f)
     }
 
     fun originalVolumePct(context: Context): Int {
-        val pct = prefs(context).getInt(KEY_ORIGINAL_VOLUME, 60)
+        val pct = prefs(context).getInt(KEY_ORIGINAL_VOLUME, 80)
         return pct.coerceIn(0, 100)
     }
 
-    /** Dub voice volume, 0..1. Default 90%. */
+    /** Dub voice volume as a 0..100% slider value. v1.0.6: this is the
+     * SYSTEM call-stream (STREAM_VOICE_CALL) volume, NOT a track gain —
+     * VoicePlayer.applyCallVolume maps it onto the stream (default 90%).
+     * The AudioTrack/TTS gain itself is always max (1.0f). */
     fun dubVolume(context: Context): Float {
         return (dubVolumePct(context) / 100f)
     }

@@ -178,6 +178,17 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- v1.0.6 — the dub voice plays on the CALL stream
+         (STREAM_VOICE_CALL), separate from media volume: turning up
+         the media volume does nothing for it. While the dub voice is
+         speaking, the phone's volume buttons adjust the dub voice. -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="2dp"
+        android:text="@string/call_volume_hint"
+        android:textSize="11sp" />
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"

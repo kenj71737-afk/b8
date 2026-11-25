@@ -11,6 +11,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
+import kotlin.math.roundToInt
 
 /**
  * Plays the dubbed Vietnamese voice.
@@ -29,6 +30,31 @@ class VoicePlayer(
 ) {
     companion object {
         private const val TAG = "DubLive-Voice"
+
+        /**
+         * v1.0.6 — the dub voice plays on STREAM_VOICE_CALL
+         * (USAGE_VOICE_COMMUNICATION), a SEPARATE stream from media:
+         * turning up the media volume does nothing for it, which is why
+         * the user reported "giọng dịch nhỏ quá" no matter how loud the
+         * video was. Map the 0..100% slider straight onto the system's
+         * call-stream volume (0..max), effective immediately, no restart
+         * needed. Needs MODIFY_AUDIO_SETTINGS (a normal permission,
+         * already in the manifest — no runtime request). USAGE stays
+         * VOICE_COMMUNICATION on purpose: switching to USAGE_MEDIA would
+         * let AudioPlaybackCapture re-capture the dub voice (echo loop).
+         */
+        fun applyCallVolume(context: Context, pct: Int) {
+            try {
+                val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                val max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(1)
+                val index = ((pct.coerceIn(0, 100) / 100f) * max).roundToInt().coerceIn(0, max)
+                am.setStreamVolume(
+                    AudioManager.STREAM_VOICE_CALL, index, AudioManager.FLAG_SHOW_UI
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "setStreamVolume (voice call) failed", e)
+            }
+        }
     }
 
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
@@ -36,8 +62,6 @@ class VoicePlayer(
     private var playerThread: Thread? = null
     @Volatile private var running = false
     @Volatile private var speechStartedSignalled = false
-    /** v1.0.5 — dub voice volume 0..1 (Settings, default 0.9). */
-    @Volatile private var dubVolume = 0.9f
     /**
      * v1.0.5 — when the last dubbed audio chunk was taken from the
      * queue (Live audio) or TTS started. The service's duck ticker
@@ -126,7 +150,7 @@ class VoicePlayer(
         }
         audioTrack = track
         running = true
-        try { track.setVolume(dubVolume) } catch (_: Exception) { }
+        try { track.setVolume(1.0f) } catch (_: Exception) { }
         playerThread = Thread({
             while (running) {
                 try {
@@ -144,11 +168,11 @@ class VoicePlayer(
         }, "DubLive-AudioOut").apply { start() }
     }
 
-    /** v1.0.5 — dub voice volume 0..1, applied to the live AudioTrack
-     * immediately and used for the next TTS utterance. */
+    /** v1.0.6 — track gain is always max (1.0f); the parameter is kept
+     * for callers but ignored — loudness now comes from the system
+     * call-stream volume (applyCallVolume), not from scaling the track. */
     fun setDubVolume(vol: Float) {
-        dubVolume = vol.coerceIn(0f, 1f)
-        try { audioTrack?.setVolume(dubVolume) } catch (_: Exception) { }
+        try { audioTrack?.setVolume(1.0f) } catch (_: Exception) { }
     }
 
     /**
@@ -189,7 +213,9 @@ class VoicePlayer(
             speechStartedSignalled = false
             lastDubAudioAtMs = System.currentTimeMillis()
             val params = Bundle().apply {
-                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, dubVolume)
+                // v1.0.6 — TTS at max too; loudness comes from the
+                // system call-stream volume, not from scaling the voice.
+                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
             }
             tts.speak(text, TextToSpeech.QUEUE_ADD, params, "dublive-${System.currentTimeMillis()}")
         } catch (e: Exception) {

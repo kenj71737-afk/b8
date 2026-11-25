@@ -4,65 +4,27 @@ plugins {
 }
 
 android {
-    namespace = "com.alad.app"
+    namespace = "com.dublive.live"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.alad.app"
-        minSdk = 29
+        applicationId = "com.dublive.live"
+        minSdk = 26
         targetSdk = 34
-        versionCode = 27
-        versionName = "1.2.22"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
-        }
-    }
-
-    signingConfigs {
-        create("release") {
-            val releaseKeystore = rootProject.file("alad-release.jks")
-            val legacyKeystore = rootProject.file("alad-key.jks")
-            if (releaseKeystore.exists()) {
-                storeFile = releaseKeystore
-                storePassword = "alad123456"
-                keyAlias = "alad"
-                keyPassword = "alad123456"
-                enableV1Signing = true
-                enableV2Signing = true
-                enableV3Signing = true
-                enableV4Signing = true
-            } else if (legacyKeystore.exists()) {
-                storeFile = legacyKeystore
-                storePassword = project.findProperty("ALAD_STORE_PASSWORD")?.toString()
-                    ?: System.getenv("ALAD_STORE_PASSWORD") ?: ""
-                keyAlias = project.findProperty("ALAD_KEY_ALIAS")?.toString()
-                    ?: System.getenv("ALAD_KEY_ALIAS") ?: "key0"
-                keyPassword = project.findProperty("ALAD_KEY_PASSWORD")?.toString()
-                    ?: System.getenv("ALAD_KEY_PASSWORD") ?: ""
-                enableV1Signing = true
-                enableV2Signing = true
-                enableV3Signing = true
-                enableV4Signing = true
-            }
-        }
+        versionCode = 1
+        versionName = "1.0.0"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            val releaseKeystore = rootProject.file("alad-release.jks")
-            if (releaseKeystore.exists()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
-    lint {
-        checkReleaseBuilds = false
-        abortOnError = false
-    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -70,53 +32,16 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-    buildFeatures {
-        compose = true
-    }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-    }
 }
 
 dependencies {
-
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-service:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-    
-    // Compose
-    implementation("androidx.activity:activity-compose:1.8.2")
-    implementation(platform("androidx.compose:compose-bom:2024.02.00"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    
-    // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    
-    // DataStore (Standard Preferences)
-    implementation("androidx.datastore:datastore-preferences:1.0.0")
-
-    // OkHttp for WebSocket
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
+    implementation("androidx.media3:media3-common:1.3.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-
-    // Accompanist for Permissions (if needed)
-    implementation("com.google.accompanist:accompanist-permissions:0.34.0")
-
-    // Testing
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    androidTestImplementation(platform("androidx.compose:compose-bom:2024.02.00"))
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
+    implementation("com.squareup.okio:okio:3.6.0")
 }

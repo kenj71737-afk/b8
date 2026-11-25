@@ -53,9 +53,7 @@
     <string name="subtitle_show">Hiện phụ đề</string>
     <string name="settings_original_volume">Âm lượng tiếng gốc khi lồng tiếng (lúc giọng dịch đang nói)</string>
     <string name="settings_dub_volume">Âm lượng giọng dịch</string>
-    <string name="settings_dub_volume_note">Âm lượng này chỉnh đúng đường tiếng của giọng dịch (cuộc gọi hoặc báo thức, theo lựa chọn bên dưới), khác âm lượng media của video</string>
-    <string name="settings_dub_output">Giọng dịch phát qua</string>
-    <string name="settings_dub_output_note">Đổi xong thì Dừng rồi Bắt đầu lại để có tác dụng. Âm lượng báo thức chỉnh riêng bằng nút âm lượng lúc giọng đang nói, hoặc trong Cài đặt âm thanh hệ thống.</string>
+    <string name="settings_dub_volume_note">Giọng dịch và tiếng gốc cùng đi đường âm lượng cuộc gọi: nút âm lượng trên thân máy lúc đang xem sẽ chỉnh chung cả hai; hai thanh trượt trong app chỉnh tỉ lệ giữa hai tiếng. Không dùng đường báo thức.</string>
     <string name="call_volume_hint">Giọng dịch dùng âm lượng cuộc gọi: lúc giọng đang nói, bấm nút tăng âm lượng trên điện thoại để tăng riêng giọng dịch</string>
     <string name="settings_vad_threshold">Độ nhạy nghe tiếng — ngưỡng càng cao càng ít tạp âm (250–900)</string>
     <string name="settings_vad_threshold_hint">Kéo cao quá giọng dịch sẽ bị nghẹn, nói ngắt quãng — nếu bị nghẹn thì kéo xuống 400–600</string>

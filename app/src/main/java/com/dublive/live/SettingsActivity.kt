@@ -45,8 +45,6 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var originalVolumeLabel: TextView
     private lateinit var dubVolumeSeek: SeekBar
     private lateinit var dubVolumeLabel: TextView
-    /** v1.0.7 — dub voice output stream: call (default) or alarm. */
-    private lateinit var dubOutputSpinner: Spinner
     private lateinit var vadThresholdSeek: SeekBar
     private lateinit var vadThresholdLabel: TextView
     /** v1.0.8 — spectral gate toggle (default ON). */
@@ -75,7 +73,6 @@ class SettingsActivity : AppCompatActivity() {
         originalVolumeLabel = findViewById(R.id.originalVolumeLabel)
         dubVolumeSeek = findViewById(R.id.dubVolumeSeek)
         dubVolumeLabel = findViewById(R.id.dubVolumeLabel)
-        dubOutputSpinner = findViewById(R.id.dubOutputSpinner)
         vadThresholdSeek = findViewById(R.id.vadThresholdSeek)
         vadThresholdLabel = findViewById(R.id.vadThresholdLabel)
         spectralGateCheck = findViewById(R.id.spectralGateCheck)
@@ -103,18 +100,6 @@ class SettingsActivity : AppCompatActivity() {
             .firstOrNull { it.value == Prefs.voiceName(this) }?.key
             ?: Prefs.VOICES.keys.first()
         voiceSpinner.setSelection(Prefs.VOICES.keys.indexOf(voiceLabel).coerceAtLeast(0))
-
-        // v1.0.7 — dub voice output stream: call (default, quiet on this
-        // phone even at max) or alarm (louder, still echo-free because
-        // capture only matches MEDIA + GAME). Applies from the next dub
-        // session — VoicePlayer reads it when the track is created.
-        dubOutputSpinner.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_item,
-            Prefs.DUB_OUTPUTS.keys.toList()
-        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        dubOutputSpinner.setSelection(
-            Prefs.DUB_OUTPUTS.keys.indexOf(Prefs.dubOutputLabel(this)).coerceAtLeast(0)
-        )
 
         val initialDelay = (Prefs.maxDelayMs(this) / 1000).toInt()
         maxDelaySeek.progress = (initialDelay - 3).coerceIn(0, 17)
@@ -210,7 +195,6 @@ class SettingsActivity : AppCompatActivity() {
     private fun save() {
         val langLabel = sourceLangSpinner.selectedItem as String
         val voiceLabel = voiceSpinner.selectedItem as String
-        val outputLabel = dubOutputSpinner.selectedItem as String
         Prefs.prefs(this).edit()
             .putString(Prefs.KEY_GEMINI_1, key1Input.text.toString().trim())
             .putString(Prefs.KEY_GEMINI_2, key2Input.text.toString().trim())
@@ -218,7 +202,6 @@ class SettingsActivity : AppCompatActivity() {
             .putString(Prefs.KEY_SOURCE_LANG, Prefs.SOURCE_LANGS[langLabel] ?: "auto")
             .putBoolean(Prefs.KEY_WHOLE_SENTENCE, wholeSentenceCheck.isChecked)
             .putString(Prefs.KEY_VOICE, Prefs.VOICES[voiceLabel] ?: "Aoede")
-            .putString(Prefs.KEY_DUB_OUTPUT, Prefs.DUB_OUTPUTS[outputLabel] ?: "call")
             .putInt(Prefs.KEY_MAX_DELAY_SEC, maxDelaySeek.progress + 3)
             .putInt(Prefs.KEY_BASE_DELAY_SEC, baseDelaySeek.progress + 3)
             .putInt(Prefs.KEY_ORIGINAL_VOLUME, originalVolumeSeek.progress.coerceIn(0, 100))

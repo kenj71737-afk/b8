@@ -62,6 +62,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hudView: TextView
     /** v1.0.7 — the HUD row: delay text + "Trễ −1s / +1s" buttons. */
     private lateinit var hudRow: View
+    /** v1.0.10 — delay diagnostics line under the HUD delay number. */
+    private lateinit var diagView: TextView
     private lateinit var delayMinusButton: Button
     private lateinit var delayPlusButton: Button
     private lateinit var fsDelayMinusButton: Button
@@ -104,6 +106,8 @@ class MainActivity : AppCompatActivity() {
     private val uiHandler = Handler(Looper.getMainLooper())
     /** v1.0.4 — full Live error history (last 8), shown by "Xem lỗi Live". */
     private var liveErrorHistoryText = ""
+    /** v1.0.10 — last delay-diagnostics line (also shown in that dialog). */
+    private var lastDiagText = ""
 
     /** True when the pending permission request was started by the mic button. */
     private var pendingMicAfterPermission = false
@@ -179,11 +183,26 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
+                DubbingService.TYPE_DIAG -> {
+                    // v1.0.10 — delay diagnostics, refreshed every
+                    // second by the service: D, last sample + age,
+                    // samples/60 s, queued slices, voice hold, VAD
+                    // state. Lives under the HUD delay number (inside
+                    // hudRow, so it follows it to decorView in
+                    // fullscreen) and is kept for the "Xem lỗi Live"
+                    // dialog below.
+                    val msg = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
+                    if (msg.isNotBlank()) {
+                        lastDiagText = msg
+                        diagView.text = msg
+                    }
+                }
                 DubbingService.TYPE_STATE -> {
                     if (intent.getStringExtra(DubbingService.EXTRA_STATE) == DubbingService.STATE_STOPPED) {
                         dubbing = false
                         subtitleView.visibility = View.GONE
                         hudRow.visibility = View.GONE
+                        diagView.text = ""
                         levelBar.progress = 0
                         levelValue.text = "0"
                         setOriginalVolume(1.0f)
@@ -242,6 +261,7 @@ class MainActivity : AppCompatActivity() {
         urlInput = findViewById(R.id.urlInput)
         subtitleView = findViewById(R.id.subtitleView)
         hudView = findViewById(R.id.hudView)
+        diagView = findViewById(R.id.diagView)
         hudRow = findViewById(R.id.hudRow)
         delayMinusButton = findViewById(R.id.delayMinusButton)
         delayPlusButton = findViewById(R.id.delayPlusButton)
@@ -717,11 +737,19 @@ class MainActivity : AppCompatActivity() {
      * received history stays on screen.
      */
     private fun showLiveErrors() {
+        // v1.0.10 — the delay diagnostics ride along: the same
+        // numbers as under the HUD delay number, so a screenshot of
+        // this dialog shows whether the delay is actually updating.
+        val diagPart = if (lastDiagText.isBlank()) {
+            ""
+        } else {
+            "\n\n— Chẩn đoán trễ —\n$lastDiagText"
+        }
         val textView = TextView(this).apply {
             text = if (liveErrorHistoryText.isBlank()) {
-                getString(R.string.live_errors_empty)
+                getString(R.string.live_errors_empty) + diagPart
             } else {
-                liveErrorHistoryText
+                liveErrorHistoryText + diagPart
             }
             setPadding(32, 24, 32, 24)
             textSize = 13f

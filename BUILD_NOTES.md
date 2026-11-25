@@ -1,14 +1,111 @@
+# DubLive v1.0.10 — ĐO TRỄ LIÊN TỤC THEO ĐOẠN ÂM THANH GỐC + BỎ HẲN ĐƯỜNG BÁO THỨC
+
+Build xong 25/11/2026 (giờ VN, điền sau khi Actions xong). APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.10.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.10.apk`)
+- aapt2: package `com.dublive.live`, versionCode 11, versionName 1.0.10,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **(điền run id)**, commit `(điền commit)` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (bản Debug).
+
+## Bối cảnh
+
+User báo 21:51 sau khi thử v1.0.9: "Chưa khớp với hình. Độ trễ hình
+không tự động cập nhật theo đoạn âm thanh gốc". Nguyên nhân đã xác
+định: đo trễ kiểu ALDA ở v1.0.9 (burst-start sampling) cần 2 điều kiện
+— (a) giọng dịch có khoảng im ≥500 ms để mở burst mới, (b) bắt đầu
+câu gốc còn mới (<20 s). Thoại Quảng Đông liên tục + giọng dịch
+stream liên tục thì không có khoảng im nào và một lượt nói VAD kéo
+dài nhiều phút, nên không có mẫu hợp lệ nào → D đứng yên. Chính ghi
+chú FIX39/FIX43 của ALDA cũng thừa nhận cái bẫy này (delay đóng
+băng ở seed khi không có burst). Đo theo sự kiện (burst/câu) không
+bao giờ ổn với thoại liên tục — phải đo LIÊN TỤC theo từng đoạn âm
+thanh gốc, không chờ ranh giới.
+
+User yêu cầu thêm 21:54: "Không dùng qua báo thức nhé" — bỏ hẳn mọi
+dùng đường báo thức (USAGE_ALARM / STREAM_ALARM) trong app.
+
+## Đã sửa — đo trễ liên tục (giữ nguyên máy đồng bộ v1.0.9)
+
+- `DubDelayTracker` viết lại (thay burst-start-only sampling, giữ
+  LatencyEma + AudioBurstDetector làm nguồn phụ):
+  * Phía thoại: mỗi 500 ms audio trong lượt nói (VAD onSpeechChunk)
+    đẩy mốc thời gian vào hàng đợi FIFO, tối đa 40 mốc (20 s); đầy
+    thì bỏ mốc cũ nhất và đếm (KHÔNG xóa sạch hàng đợi như
+    v1.0.7/v1.0.8 — xóa sạch làm mất ghép cặp mỗi lần có khoảng nhạc).
+  * Phía giọng: mỗi 500 ms giọng dịch TỚI (arrival, KHÔNG phải lúc
+    phát — đo lúc phát thì hold làm mẫu tự khẳng định) lấy mốc CŨ
+    NHẤT, mẫu = lúc tới − mốc thoại. Mẫu trong [500 ms, 20000 ms]
+    mới nhận; mẫu ngoài khoảng BỎ ĐÚNG MẪU ĐÓ và tiếp tục. Giọng tới
+    mà hàng đợi thoại rỗng thì không sinh mẫu sai.
+  * Tổng hợp theo ĐOẠN ÂM THANH GỐC: gom mẫu trong cửa sổ 4 s theo
+    đồng hồ tường (không chờ ranh giới câu), hết 4 s lấy TRUNG VỊ →
+    LatencyEma (EMA 0.3 + 2000 ms biên, kẹp 3–20 s, deadband 500 ms)
+    → D. D cập nhật tối đa mỗi 4 s, đúng 1 lần mỗi đoạn 4 s của âm
+    thanh gốc.
+  * Mẫu burst-start kiểu ALDA giữ làm nguồn phụ: burst start nào có
+    bắt đầu câu gốc còn mới (<20 s) thì vào EMA ngay, không chờ cửa
+    sổ 4 s.
+  * Ngừng đo khi không có lát thoại mới >10 s (im lặng/nhạc): xóa
+    hàng đợi + cửa sổ, không phát mẫu cũ; đo lại khi thoại trở lại.
+- Giữ NGUYÊN từ v1.0.9: giọng dịch giữ lại tới (câu gốc + D) theo
+  burst qua DelayedAudioQueue, tiếng gốc trễ theo hình qua
+  DelayedBackgroundPlayer, mute STREAM_MUSIC hệ thống (khôi phục khi
+  dừng), phụ đề hiện lúc giọng bắt đầu phát, nút ±1s, thanh trượt
+  trễ cơ bản, VAD hysteresis, cổng phổ, LoudnessEnhancer.
+- CHẨN ĐOÁN TRÊN MÀN HÌNH (mới): dòng nhỏ dưới số "Trễ hình" (cùng
+  nội dung trong dialog "Xem lỗi Live"), cập nhật mỗi giây: D hiện
+  tại, mẫu trễ cuối + cách đây bao nhiêu giây, số mẫu trong 60 s
+  qua, số lát thoại đang chờ, hold giọng hiện tại, trạng thái VAD
+  (đang nói / nghỉ), số lát/mẫu đã bỏ (nếu có).
+
+## Đã sửa — bỏ hẳn đường báo thức (user 21:54)
+
+- `DelayedBackgroundPlayer`: USAGE_ALARM → USAGE_VOICE_COMMUNICATION
+  (cùng đường với giọng dịch). Capture chỉ bắt USAGE_MEDIA/GAME nên
+  tiếng phát qua VOICE_COMMUNICATION vẫn KHÔNG bị thu lại gây vọng.
+  Gắn LoudnessEnhancer +8 dB (800→500→0, không crash) vào AudioTrack
+  của player này như giọng dịch (đường cuộc gọi vốn nhỏ tiếng);
+  thanh trượt "tiếng gốc" vẫn điều khiển gain của track này.
+- XÓA hẳn lựa chọn "Giọng dịch phát qua: Âm lượng báo thức" trong
+  Cài đặt (spinner + chuỗi + `Prefs.KEY_DUB_OUTPUT` / `DUB_OUTPUTS` /
+  `dubOutputAlarm()` / `dubOutputLabel()`); giọng dịch chỉ còn đường
+  cuộc gọi duy nhất. Xóa mọi `setStreamVolume(STREAM_ALARM)` và
+  lưu/khôi phục âm lượng báo thức (`initialAlarmVolume`).
+- Hệ quả (ghi trong Cài đặt, chuỗi `settings_dub_volume_note`): cả
+  giọng dịch lẫn tiếng gốc giờ cùng đi đường cuộc gọi — nút âm lượng
+  trên thân máy lúc đang xem chỉnh chung cả hai; hai thanh trượt
+  trong app chỉnh tỉ lệ giữa hai tiếng. `startDelayedBackground`
+  đặt STREAM_VOICE_CALL bằng max(thanh trượt giọng, thanh trượt
+  tiếng gốc), không hiện UI âm lượng giữa phiên. Giữ nguyên mute
+  STREAM_MUSIC ở mức hệ thống và khôi phục âm lượng media khi dừng.
+
+## Kiểm tra logic trước khi build
+
+- Thoại + giọng đều liên tục → mỗi 500 ms một mẫu, D thay đổi mỗi
+  4 s (trung vị cửa sổ → EMA, deadband 500 ms).
+- Thoại im 10 s → không có mẫu mới (hàng đợi + cửa sổ đã xóa).
+- Giọng tới nhưng thoại đã im (dịch câu dài) → hàng đợi thoại cạn,
+  không sinh mẫu sai (chỉ đếm emptyPairings).
+- Không còn `USAGE_ALARM` / `STREAM_ALARM` / `dubOutputAlarm` /
+  `KEY_DUB_OUTPUT` nào trong code (chỉ còn ghi chú v1.0.10 trong
+  comment và chuỗi ghi chú Cài đặt).
+
+---
+
 # DubLive v1.0.9 — ĐỒNG BỘ HÌNH + TIẾNG GỐC + GIỌNG DỊCH ĐÚNG NHƯ ALDA
 
-Build xong 25/11/2026 21:XX VN. APK Debug, cài được.
+Build xong 25/11/2026 21:25 VN. APK Debug, cài được.
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.9.apk`
   (symlink `~/workspace/your_files/DubLive-v1.0.9.apk`)
-- Kích thước: X bytes (X MB). MD5: XXX.
+- Kích thước: 9.497.530 bytes (9,1 MB). MD5: e519e0983f9c24304ef67212420661ea.
 - aapt2: package `com.dublive.live`, versionCode 10, versionName 1.0.9,
   minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
-- Actions run thành công: **XXX** (completed/success), commit `XXX` trên nhánh
+- Actions run thành công: **45633169640** (completed/success, đậu ngay lần
+  đầu), commit `ac1e6948b0d5cf0daa42da9af36fab5b5ea525f9` trên nhánh
   `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
-  artifact `alad-apks` (id XXX, bản Debug).
+  artifact `alad-apks` (id 15031378443, bản Debug).
 
 ## Bối cảnh
 

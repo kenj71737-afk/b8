@@ -226,41 +226,64 @@
              cạnh số trễ: bấm là hình chờ thêm/bớt 1 s ngay, không cần
              vào Cài đặt. Nằm trong hudRow để khi vào fullscreen của
              trang web thì cả cụm (số + 2 nút) chuyển sang decorView
-             cùng nhau như trước đây hudView đi một mình. -->
+             cùng nhau như trước đây hudView đi một mình.
+             v1.0.10 — hudRow thành dọc: hàng trên là số trễ + 2 nút,
+             hàng dưới là dòng chẩn đoán trễ (D, mẫu cuối, mẫu/60 s,
+             hàng đợi lát, hold, trạng thái VAD), cập nhật mỗi giây. -->
         <LinearLayout
             android:id="@+id/hudRow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|end"
-            android:orientation="horizontal"
+            android:orientation="vertical"
             android:visibility="gone">
 
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/hudView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@color/dub_black"
+                    android:padding="6dp"
+                    android:textColor="@color/dub_accent"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/delayMinusButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="4dp"
+                    android:minHeight="36dp"
+                    android:text="@string/delay_minus"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/delayPlusButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="4dp"
+                    android:minHeight="36dp"
+                    android:text="@string/delay_plus"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
             <TextView
-                android:id="@+id/hudView"
-                android:layout_width="wrap_content"
+                android:id="@+id/diagView"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
                 android:background="@color/dub_black"
+                android:ellipsize="end"
+                android:gravity="end"
+                android:maxLines="2"
                 android:padding="6dp"
-                android:textColor="@color/dub_accent"
-                android:textSize="12sp" />
-
-            <Button
-                android:id="@+id/delayMinusButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginLeft="4dp"
-                android:minHeight="36dp"
-                android:text="@string/delay_minus"
-                android:textSize="12sp" />
-
-            <Button
-                android:id="@+id/delayPlusButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginLeft="4dp"
-                android:minHeight="36dp"
-                android:text="@string/delay_plus"
-                android:textSize="12sp" />
+                android:textColor="@color/dub_white"
+                android:textSize="11sp" />
         </LinearLayout>
 
         <!-- v1.0.6 — thanh công cụ khi ở chế độ toàn màn hình của app:

@@ -55,20 +55,17 @@ class VoicePlayer(
          * VOICE_COMMUNICATION on purpose: switching to USAGE_MEDIA would
          * let AudioPlaybackCapture re-capture the dub voice (echo loop).
          *
-         * v1.0.7 — the slider now drives whichever stream the dub voice
-         * actually uses (Settings "Giọng dịch phát qua"): the call
-         * stream by default, or STREAM_ALARM in alarm mode. The stream
-         * is picked from the saved setting at call time, so dragging
-         * the slider in Settings applies to the right stream at once.
+         * v1.0.10 — the alarm option is GONE (user: "Không dùng qua
+         * báo thức nhé"): the slider always drives the call stream
+         * now. The delayed original audio shares the same stream
+         * (DelayedBackgroundPlayer), so the hardware buttons move
+         * both voices together; the two in-app sliders set the
+         * ratio between them.
          */
         fun applyCallVolume(context: Context, pct: Int) {
             try {
                 val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                val stream = if (Prefs.dubOutputAlarm(context)) {
-                    AudioManager.STREAM_ALARM
-                } else {
-                    AudioManager.STREAM_VOICE_CALL
-                }
+                val stream = AudioManager.STREAM_VOICE_CALL
                 val max = am.getStreamMaxVolume(stream).coerceAtLeast(1)
                 val index = ((pct.coerceIn(0, 100) / 100f) * max).roundToInt().coerceIn(0, max)
                 am.setStreamVolume(stream, index, AudioManager.FLAG_SHOW_UI)
@@ -78,21 +75,15 @@ class VoicePlayer(
         }
 
         /**
-         * v1.0.7 — which AudioAttributes usage the dub voice uses.
-         * Call (default): USAGE_VOICE_COMMUNICATION. Alarm:
-         * USAGE_ALARM — the alarm stream is much louder than the call
-         * stream on this user's phone, and it is still NOT captured:
-         * DubbingService.buildPlaybackRecord only matches USAGE_MEDIA
-         * + USAGE_GAME, so an alarm-stream dub voice cannot be
-         * re-captured (no echo loop). USAGE_MEDIA is deliberately
-         * never used here.
+         * v1.0.10 — the dub voice always uses USAGE_VOICE_COMMUNICATION
+         * (the alarm option was removed at the user's request).
+         * Still NOT captured: DubbingService.buildPlaybackRecord only
+         * matches USAGE_MEDIA + USAGE_GAME, so a call-stream dub voice
+         * cannot be re-captured (no echo loop). USAGE_MEDIA is
+         * deliberately never used here.
          */
         fun dubUsage(context: Context): Int =
-            if (Prefs.dubOutputAlarm(context)) {
-                AudioAttributes.USAGE_ALARM
-            } else {
-                AudioAttributes.USAGE_VOICE_COMMUNICATION
-            }
+            AudioAttributes.USAGE_VOICE_COMMUNICATION
     }
 
     private val appContext = context.applicationContext
@@ -175,8 +166,8 @@ class VoicePlayer(
     fun start() {
         if (running) return
         val attrs = AudioAttributes.Builder()
-            // v1.0.7 — usage follows Settings "Giọng dịch phát qua":
-            // call (default) or alarm (louder). Never USAGE_MEDIA.
+            // v1.0.10 — always the call stream (the alarm option was
+            // removed). Never USAGE_MEDIA.
             .setUsage(dubUsage(appContext))
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
@@ -322,7 +313,8 @@ class VoicePlayer(
             tts.setSpeechRate(rate)
             tts.setAudioAttributes(
                 AudioAttributes.Builder()
-                    // v1.0.7 — same output choice as the Live track.
+                    // v1.0.10 — same output as the Live track: the call
+                    // stream, always.
                     .setUsage(dubUsage(appContext))
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()

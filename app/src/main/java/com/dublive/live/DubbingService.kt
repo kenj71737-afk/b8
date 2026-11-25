@@ -38,8 +38,9 @@ import kotlin.math.roundToInt
  *  system audio stereo 48 kHz (AudioPlaybackCapture via
  *  MediaProjection, mic fallback mono 16 kHz)
  *    -> DelayedBackgroundPlayer: the raw stereo replayed D seconds
- *       late on the alarm stream while STREAM_MUSIC is muted
- *       (ALDA FIX37) — the original audio matches the delayed
+ *       late on the voice-call stream while STREAM_MUSIC is muted
+ *       (ALDA FIX37, v1.0.10: alarm stream removed at the user's
+ *       request) — the original audio matches the delayed
  *       picture; the VAD/Live path gets a mono 16 kHz downmix
  *    -> VAD (speech >= 150 ms, 500 ms pre-roll)
  *    -> Gemini Live (speech-to-speech) with watchdog + key rotation
@@ -120,6 +121,13 @@ class DubbingService : Service() {
         const val EXTRA_RMS = "rms"
         /** Full Live error history (last 8), as one multi-line text. */
         const val TYPE_LIVE_ERRORS = "live_errors"
+        /**
+         * v1.0.10 — delay diagnostics line (one line, refreshed every
+         * second): current D, last sample + age, samples/60 s, queued
+         * slices, voice hold, VAD state. Shown under the HUD delay
+         * number and in the "Xem lỗi Live" dialog.
+         */
+        const val TYPE_DIAG = "diag"
         const val STATE_RUNNING = "running"
         const val STATE_STOPPED = "stopped"
 
@@ -165,8 +173,9 @@ class DubbingService : Service() {
     private var vad: VadDetector? = null
     /**
      * v1.0.9 — delayed original audio (ALDA FIX37): the captured
-     * system audio replayed D seconds late on the alarm stream while
-     * STREAM_MUSIC is muted. Only active when the system capture is
+     * system audio replayed D seconds late on the voice-call stream
+     * (v1.0.10: was the alarm stream, removed at the user's request)
+     * while STREAM_MUSIC is muted. Only active when the system capture is
      * stereo 48 kHz; mic mode and the mono-capture fallback keep the
      * old direct-audio behaviour.
      */
@@ -176,10 +185,9 @@ class DubbingService : Service() {
      * (delay toggle / site fullscreen): the picture is live, so the
      * background delay and the voice hold must both be 0. */
     @Volatile private var delayEnabled = true
-    /** System volumes saved when the delayed mode mutes STREAM_MUSIC
+    /** System volume saved when the delayed mode mutes STREAM_MUSIC
      * (restored on stop). -1 = not saved. */
     private var initialMusicVolume = -1
-    private var initialAlarmVolume = -1
     /** True while the capture thread is reading stereo 48 kHz. */
     @Volatile private var captureIsStereo48k = false
     /**
@@ -227,6 +235,8 @@ class DubbingService : Service() {
     private var subtitleGen = 0
     private var lastStatus = ""
     private var lastHeardAtMs = 0L
+    /** v1.0.10 — last diagnostics broadcast (throttled to 1 s). */
+    private var lastDiagAtMs = 0L
 
     /**
      * v1.0.4 — generation guard (with GeminiLiveClient's own socket
@@ -288,8 +298,21 @@ class DubbingService : Service() {
             val level = (ln(1.0 + rms) / ln(1.0 + 8000.0) * 1000.0)
                 .toInt().coerceIn(0, 1000)
             broadcast(TYPE_LEVEL, level = level, rms = rms)
-            // Silence diagnosis: capturing but nothing heard for a while.
+            // v1.0.10 — delay diagnostics, throttled to 1 s: the HUD
+            // line under the delay number (and the "Xem lỗi Live"
+            // dialog) shows D, the last sample + its age, samples in
+            // the last 60 s, queued slices, voice hold and VAD state
+            // — so a frozen delay is diagnosable from a screenshot.
             val now = System.currentTimeMillis()
+            if (now - lastDiagAtMs >= 1000L) {
+                lastDiagAtMs = now
+                try {
+                    tracker?.let { broadcast(TYPE_DIAG, message = it.diagnostics(now)) }
+                } catch (e: Exception) {
+                    Log.w(TAG, "diagnostics broadcast failed", e)
+                }
+            }
+            // Silence diagnosis: capturing but nothing heard for a while.
             if (lastOutputAtMs == 0L && lastHeardAtMs > 0L &&
                 now - lastHeardAtMs > 15_000L
             ) {
@@ -756,19 +779,24 @@ class DubbingService : Service() {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
-                        // v1.0.9 — ALDA voice hold (FIX32/FIX33): sample
-                        // the latency at burst-start ARRIVAL and get
-                        // this burst's hold = max(0, D − latency). The
-                        // voice queue holds each chunk until its hold
-                        // has elapsed, so the voice starts speaking at
-                        // (utterance start + D) — the moment the
-                        // delayed picture reaches that sentence. While
-                        // the video delay is off (site fullscreen /
-                        // delay toggle) the hold is 0: the picture is
-                        // live, so the voice plays at once.
+                        // v1.0.10 — continuous slice measurement + ALDA
+                        // voice hold (FIX32/FIX33). The hold still
+                        // comes from the burst start (hold = D −
+                        // latency of that burst), but the MEASUREMENT
+                        // is now continuous: every 500 ms of arriving
+                        // dub (24 kHz PCM: ms = bytes / 48) pairs
+                        // against the oldest 500 ms speech slice, and
+                        // every 4 s the window median feeds the EMA —
+                        // so D moves even when neither the speech nor
+                        // the dub ever pauses. While the video delay
+                        // is off (site fullscreen / delay toggle) the
+                        // hold is 0: the picture is live, so the voice
+                        // plays at once.
+                        val nowMs = System.currentTimeMillis()
                         val holdMs = try {
-                            val h = tracker?.onAudioChunkArrival(
-                                System.currentTimeMillis(),
+                            val h = tracker?.onDubAudioArrival(
+                                nowMs,
+                                (pcm24k.size / 48).toLong(),
                                 currentUtteranceStartMs,
                                 firstAudioSentAtMs
                             ) ?: 0L
@@ -1297,6 +1325,20 @@ class DubbingService : Service() {
                 override fun onSpeechChunk(samples: ShortArray) {
                     val bytes = shortsToBytes(samples)
                     utteranceBytes.write(bytes)
+                    // v1.0.10 — continuous slice measurement: every
+                    // in-speech frame feeds the tracker (16 kHz mono:
+                    // 16 samples = 1 ms). Frames below the END
+                    // threshold still count as speech time — the
+                    // slice is about WHEN speech happened, not what
+                    // was sent to Live.
+                    try {
+                        tracker?.onSpeechMs(
+                            (samples.size / 16).toLong(),
+                            System.currentTimeMillis()
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker onSpeechMs failed", e)
+                    }
                     if (liveConnected) {
                         // v1.0.8 — hysteresis send gate: inside an
                         // utterance the VAD forwards frames down to the
@@ -1491,7 +1533,7 @@ class DubbingService : Service() {
                 }
                 // v1.0.9 — stereo system capture: start the delayed
                 // background player (mutes STREAM_MUSIC, replays the
-                // captured audio delayed by D on the alarm stream).
+                // captured audio delayed by D on the voice-call stream).
                 // The record is non-null here (every null path above
                 // returned from the thread).
                 val rec: AudioRecord = record ?: return@Thread
@@ -1632,12 +1674,14 @@ class DubbingService : Service() {
      *     (v.volume = 0): the element volume IS applied at the track,
      *     so the capture — and with it the delayed player AND the
      *     Live input — would go silent (the v1.0.2 lesson).
-     *  2. The alarm stream carries the delayed original audio: set
-     *     it to the louder of the dub slider and the original level,
-     *     so both the dub voice and the delayed original are audible.
-     *     (They share STREAM_ALARM only in alarm dub mode; in call
-     *     mode the alarm stream is free.) Both saved volumes are
-     *     restored by [stopDelayedBackground].
+     *  2. The call stream now carries BOTH the dub voice and the
+     *     delayed original audio (v1.0.10: the alarm stream is gone
+     *     entirely at the user's request). Set STREAM_VOICE_CALL to
+     *     the louder of the dub slider and the original level, so
+     *     both are audible; the two in-app sliders set the ratio
+     *     between them (track gains), and the hardware buttons move
+     *     both together. The saved music volume is restored by
+     *     [stopDelayedBackground].
      *  3. Start [DelayedBackgroundPlayer] with the current D (its
      *     queue reads the live delay every poll, so later D changes
      *     follow at once) at full volume — the duck ticker drives its
@@ -1655,29 +1699,24 @@ class DubbingService : Service() {
                     -1
                 }
             }
-            if (initialAlarmVolume < 0) {
-                initialAlarmVolume = try {
-                    am.getStreamVolume(AudioManager.STREAM_ALARM)
-                } catch (e: Exception) {
-                    Log.w(TAG, "getStreamVolume (alarm) failed", e)
-                    -1
-                }
-            }
             try {
                 am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
             } catch (e: Exception) {
                 Log.w(TAG, "mute STREAM_MUSIC failed", e)
             }
+            // v1.0.10 — the shared call stream (dub voice + delayed
+            // original) gets the louder of the two sliders; flag 0,
+            // no volume UI flash mid-session.
             try {
-                val maxAlarm = am.getStreamMaxVolume(AudioManager.STREAM_ALARM).coerceAtLeast(1)
+                val maxCall = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(1)
                 val frac = maxOf(
                     Prefs.dubVolumePct(this),
                     Prefs.originalVolumePct(this)
                 ) / 100f
-                val target = (frac * maxAlarm).roundToInt().coerceIn(0, maxAlarm)
-                am.setStreamVolume(AudioManager.STREAM_ALARM, target, 0)
+                val target = (frac * maxCall).roundToInt().coerceIn(0, maxCall)
+                am.setStreamVolume(AudioManager.STREAM_VOICE_CALL, target, 0)
             } catch (e: Exception) {
-                Log.w(TAG, "set STREAM_ALARM failed", e)
+                Log.w(TAG, "set STREAM_VOICE_CALL failed", e)
             }
         } catch (e: Exception) {
             Log.w(TAG, "delayed-background volume setup failed", e)
@@ -1696,7 +1735,7 @@ class DubbingService : Service() {
                 )
             }
             delayedBackgroundActive = true
-            setStatus("Tiếng gốc đang trễ theo hình qua kênh báo thức")
+            setStatus("Tiếng gốc đang trễ theo hình qua đường cuộc gọi")
             Log.i(TAG, "Delayed background active (delay ${tracker?.currentDelayMs}ms)")
         } catch (e: Exception) {
             Log.e(TAG, "DelayedBackgroundPlayer start failed", e)
@@ -1706,7 +1745,7 @@ class DubbingService : Service() {
     }
 
     /** Stop the delayed original audio and restore the system
-     * volumes saved by [startDelayedBackground]. No-op when the
+     * volume saved by [startDelayedBackground]. No-op when the
      * delayed mode never started. */
     private fun stopDelayedBackground() {
         if (!delayedBackgroundActive && backgroundPlayer == null) return
@@ -1724,18 +1763,10 @@ class DubbingService : Service() {
                     Log.w(TAG, "restore STREAM_MUSIC failed", e)
                 }
             }
-            if (initialAlarmVolume >= 0) {
-                try {
-                    am.setStreamVolume(AudioManager.STREAM_ALARM, initialAlarmVolume, 0)
-                } catch (e: Exception) {
-                    Log.w(TAG, "restore STREAM_ALARM failed", e)
-                }
-            }
         } catch (e: Exception) {
             Log.w(TAG, "restore system volumes failed", e)
         }
         initialMusicVolume = -1
-        initialAlarmVolume = -1
     }
 
     /**

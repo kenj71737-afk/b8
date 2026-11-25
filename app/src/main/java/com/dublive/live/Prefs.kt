@@ -22,16 +22,6 @@ object Prefs {
     const val KEY_BASE_DELAY_SEC = "base_delay_sec"
     const val KEY_ORIGINAL_VOLUME = "original_volume_pct"
     const val KEY_DUB_VOLUME = "dub_volume_pct"
-    /** v1.0.7 — "Giọng dịch phát qua": "call" (default) or "alarm". */
-    const val KEY_DUB_OUTPUT = "dub_output"
-
-    /** Display name to dub-output value. Alarm is louder than the call
-     * stream on the user's phone, and still echo-free: capture only
-     * matches USAGE_MEDIA + USAGE_GAME, never USAGE_ALARM. */
-    val DUB_OUTPUTS = linkedMapOf(
-        "Âm lượng cuộc gọi (mặc định, không vọng)" to "call",
-        "Âm lượng báo thức (to hơn, không vọng)" to "alarm"
-    )
     const val KEY_VAD_THRESHOLD = "vad_threshold"
     /** v1.0.8 — spectral gate toggle (default ON). */
     const val KEY_SPECTRAL_GATE = "spectral_gate"
@@ -130,18 +120,6 @@ object Prefs {
     fun dubVolumePct(context: Context): Int {
         val pct = prefs(context).getInt(KEY_DUB_VOLUME, 90)
         return pct.coerceIn(0, 100)
-    }
-
-    /** v1.0.7 — true when the dub voice should play on the alarm
-     * stream instead of the call stream. Applies from the next dub
-     * session (VoicePlayer reads it when the track is created). */
-    fun dubOutputAlarm(context: Context): Boolean =
-        prefs(context).getString(KEY_DUB_OUTPUT, "call").orEmpty() == "alarm"
-
-    fun dubOutputLabel(context: Context): String {
-        val value = prefs(context).getString(KEY_DUB_OUTPUT, "call").orEmpty()
-        return DUB_OUTPUTS.entries.firstOrNull { it.value == value }?.key
-            ?: DUB_OUTPUTS.keys.first()
     }
 
     /**

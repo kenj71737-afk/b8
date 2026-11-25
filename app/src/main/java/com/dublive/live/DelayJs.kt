@@ -33,7 +33,14 @@ object DelayJs {
     document.querySelectorAll('video').forEach(function (v) {
       var wrap = v.__dubLiveWrap;
       if (!wrap) return;
-      v.style.opacity = on ? '0' : '1';
+      // v1.0.6 — khi bật lại trễ (vd thoát toàn màn hình), xóa các khung
+      // cũ trong bộ đệm: chúng là hình từ TRƯỚC lúc tắt trễ, tick sẽ ăn
+      // hết chúng một lượt và canvas hiện hình cũ sai thời điểm. Video
+      // giữ opacity 1 cho tới khi tick vẽ khung trễ đầu tiên (tick tự
+      // đặt opacity 0 lúc đó), nên không có khoảng màn đen ~5 s chờ đệm
+      // đầy lại.
+      if (on) wrap.frames.length = 0;
+      v.style.opacity = '1';
       wrap.canvas.style.display = on ? 'block' : 'none';
     });
   };

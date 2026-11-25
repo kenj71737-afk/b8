@@ -251,6 +251,24 @@ class MainActivity : AppCompatActivity() {
                 }
                 customView = view
                 customViewCallback = callback
+                // v1.0.6 (bổ sung) — LÝ DO THẬT khiến "không xem full màn
+                // hình được": khi trễ hình bật, DelayJs đặt thẻ video thật
+                // opacity 0 và chỉ hiện canvas trễ đè lên TRONG TRANG.
+                // Bấm toàn màn hình thì trình duyệt đưa THẺ VIDEO (đang
+                // opacity 0) lên surface toàn màn hình, canvas ở lại
+                // trong trang — toàn màn hình chỉ thấy MÀN ĐEN. Vì vậy
+                // TRƯỚC khi hiện toàn màn hình phải TẮT trễ hình để
+                // video trở lại opacity 1 (canvas ẩn): video xem được
+                // bình thường, chỉ là lúc này giọng dịch đi sau hình
+                // (đã có Toast cảnh báo bên dưới). delayOn KHÔNG đổi ở
+                // đây — nó là lựa chọn của user, để onHide bật lại đúng
+                // theo nó.
+                try {
+                    webView.evaluateJavascript(
+                        "window.DubLiveSetEnabled(false)", null
+                    )
+                } catch (_: Exception) {
+                }
                 (window.decorView as ViewGroup).addView(
                     view, ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -294,6 +312,20 @@ class MainActivity : AppCompatActivity() {
                 subtitleSavedParent = null
                 restoreOverlay(hudSavedParent, hudView)
                 hudSavedParent = null
+                // v1.0.6 (bổ sung) — bật trễ hình TRỞ LẠI sau khi thoát
+                // toàn màn hình, nhưng CHỈ khi user chưa tự tắt nó bằng
+                // nút "Tắt trễ hình" (delayOn vẫn là lựa chọn của user,
+                // không bị toàn màn hình làm lệch). Đồng bộ lại chữ nút
+                // cho đúng trạng thái thật.
+                try {
+                    webView.evaluateJavascript(
+                        "window.DubLiveSetEnabled($delayOn)", null
+                    )
+                } catch (_: Exception) {
+                }
+                delayToggleButton.setText(
+                    if (delayOn) R.string.delay_off else R.string.delay_on
+                )
             }
         }
 

@@ -17,8 +17,8 @@ object SpeechFilter {
     fun isMeaningful(text: String): Boolean {
         val clean = text.trim()
             .lowercase()
-            .replace(Regex("[.,!?…~\-"'()\[\]]"), " ")
-            .replace(Regex("\s+"), " ")
+            .replace(Regex("[.,!?…~\\-\"'()\\[\\]]"), " ")
+            .replace(Regex("\\s+"), " ")
             .trim()
         if (clean.isEmpty()) return false
         if (clean in noiseOnly) return false

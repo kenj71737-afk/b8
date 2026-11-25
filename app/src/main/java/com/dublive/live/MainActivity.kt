@@ -66,11 +66,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var delayToggleButton: Button
     private lateinit var subtitleToggleButton: Button
     private var delayOn = true
+    /** v1.0.6 — delay (ms) last pushed to the WebView canvas via
+     * DubLiveSetDelay. Starts at the 5000 ms seed set in onPageFinished;
+     * TYPE_HUD updates it whenever the measured delay moves > 200 ms. */
+    private var lastAppliedDelayMs = 5000L
     /** v1.0.5 — user can hide subtitles and listen to the dub only. */
     private var subtitlesVisible = true
     private var dubbing = false
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+    /** v1.0.6 — fullscreen: saved parents so subtitleView/hudView can be
+     * moved onto decorView while fullscreen and restored on hide (see
+     * moveOverlayToDecor/restoreOverlay below). */
+    private var subtitleSavedParent: Triple<ViewGroup, Int, ViewGroup.LayoutParams>? = null
+    private var hudSavedParent: Triple<ViewGroup, Int, ViewGroup.LayoutParams>? = null
     private val uiHandler = Handler(Looper.getMainLooper())
     /** v1.0.4 — full Live error history (last 8), shown by "Xem lỗi Live". */
     private var liveErrorHistoryText = ""
@@ -131,6 +140,23 @@ class MainActivity : AppCompatActivity() {
                     val ms = intent.getLongExtra(DubbingService.EXTRA_DELAY_MS, 0L)
                     hudView.text = "Trễ hình: %.1f s".format(ms / 1000.0)
                     hudView.visibility = View.VISIBLE
+                    // v1.0.6 — the main bug: until now this branch only
+                    // updated the HUD TEXT and never told the WebView the
+                    // new delay, so the canvas always delayed exactly the
+                    // 5000 ms seed from onPageFinished while the HUD showed
+                    // 7 s / 12 s / 19,4 s — the dub voice (7–15 s behind
+                    // the real speech) always lagged the picture. Apply
+                    // the measured delay to the canvas whenever it moved
+                    // more than 200 ms (avoids spamming JS on every tick).
+                    if (ms > 0 && kotlin.math.abs(ms - lastAppliedDelayMs) > 200) {
+                        lastAppliedDelayMs = ms
+                        try {
+                            webView.evaluateJavascript(
+                                "window.DubLiveSetDelay($ms)", null
+                            )
+                        } catch (_: Exception) {
+                        }
+                    }
                 }
                 DubbingService.TYPE_STATE -> {
                     if (intent.getStringExtra(DubbingService.EXTRA_STATE) == DubbingService.STATE_STOPPED) {
@@ -232,6 +258,30 @@ class MainActivity : AppCompatActivity() {
                     )
                 )
                 hudView.visibility = if (dubbing) View.VISIBLE else View.GONE
+                // v1.0.6 — fullscreen: the custom view is added to
+                // decorView, ON TOP of the activity layout, so the delay
+                // canvas stays behind in the page and the Android subtitle
+                // + HUD (children of the activity layout) would be covered
+                // — bringToFront() alone cannot help, it only reorders
+                // inside their own parent. Move both overlays onto
+                // decorView itself (subtitle at the bottom, HUD at the
+                // top) so they stay visible over the fullscreen video,
+                // and warn plainly that the video delay does NOT run in
+                // fullscreen: the dub voice will lag the picture there.
+                // (No canvas is drawn into fullscreen in this version.)
+                subtitleSavedParent = moveOverlayToDecor(
+                    subtitleView, android.view.Gravity.BOTTOM
+                )
+                hudSavedParent = moveOverlayToDecor(
+                    hudView, android.view.Gravity.TOP
+                )
+                subtitleView.bringToFront()
+                hudView.bringToFront()
+                Toast.makeText(
+                    this@MainActivity,
+                    "Xem toàn màn hình thì trễ hình không chạy, giọng dịch sẽ đi sau hình — xem ở chế độ thường để hình khớp giọng",
+                    Toast.LENGTH_LONG
+                ).show()
             }
 
             override fun onHideCustomView() {
@@ -239,6 +289,11 @@ class MainActivity : AppCompatActivity() {
                 customView = null
                 customViewCallback?.onCustomViewHidden()
                 customViewCallback = null
+                // v1.0.6 — put the overlays back where they belong.
+                restoreOverlay(subtitleSavedParent, subtitleView)
+                subtitleSavedParent = null
+                restoreOverlay(hudSavedParent, hudView)
+                hudSavedParent = null
             }
         }
 
@@ -451,6 +506,43 @@ class MainActivity : AppCompatActivity() {
             .setView(scroll)
             .setPositiveButton(android.R.string.ok, null)
             .show()
+    }
+
+    /**
+     * v1.0.6 — move an overlay (subtitle / HUD) from the activity layout
+     * onto decorView so it renders above a fullscreen custom view, which
+     * lives on decorView itself. Returns the saved parent/index/params
+     * for restoreOverlay(), or null when the view has no parent.
+     */
+    private fun moveOverlayToDecor(
+        view: View, gravity: Int
+    ): Triple<ViewGroup, Int, ViewGroup.LayoutParams>? {
+        val parent = view.parent as? ViewGroup ?: return null
+        val index = parent.indexOfChild(view)
+        val params = view.layoutParams
+        parent.removeView(view)
+        val decor = window.decorView as ViewGroup
+        val margin = (16 * resources.displayMetrics.density).toInt()
+        val lp = android.widget.FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            gravity
+        ).apply { setMargins(margin, margin, margin, margin) }
+        decor.addView(view, lp)
+        return Triple(parent, index, params)
+    }
+
+    /** v1.0.6 — put an overlay moved by moveOverlayToDecor back. */
+    private fun restoreOverlay(
+        saved: Triple<ViewGroup, Int, ViewGroup.LayoutParams>?, view: View
+    ) {
+        if (saved == null) return
+        (view.parent as? ViewGroup)?.removeView(view)
+        try {
+            saved.first.addView(view, saved.second, saved.third)
+        } catch (_: Exception) {
+            try { saved.first.addView(view) } catch (_: Exception) { }
+        }
     }
 
     private fun setOriginalVolume(vol: Float) {

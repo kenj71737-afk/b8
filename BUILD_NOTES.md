@@ -1,3 +1,148 @@
+# DubLive v1.0.5 — SỬA 4 LỖI TRẢI NGHIỆM (PHỤ ĐỀ / TIẾNG GỐC / TRỄ / TẠP ÂM)
+
+Build xong 25/11/2026 19:32 VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.5.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.5.apk`)
+- Kích thước: 9.1 MB. MD5: fe66904b52d161ec74f6f9d9ed1e2b11.
+- aapt2: package `com.dublive.live`, versionCode 6, versionName 1.0.5,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **45614046606** (completed/success, đậu ngay lần
+  đầu, 0 lần build lỗi), commit `d5ca22738e89681f1914e81780b609e534b5cf9b`
+  trên nhánh `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15020849337, bản Debug; bản Release unsigned trong
+  cùng artifact thì không cài được nên không giao).
+- Đẩy bằng script mới `~/workspace/dub-live-moi/.push_b8.py` (Git Data API
+  cho nhánh b8/dublive-v1; `.push.py` cũ đẩy lên dublive-live/main).
+  LƯU Ý khi đẩy lần sau: GitHub trả 404 cho mọi entry `.github/workflows/*`
+  qua API vì PAT thiếu scope `workflow` — script đã bỏ qua file
+  `.github/workflows/build.yml` (đã có sẵn trên nhánh, không đổi) và cả
+  `gradle-wrapper.jar` (binary, không đổi); base_tree giữ nguyên 2 file đó.
+
+## Bối cảnh — v1.0.4 ĐÃ NỐI ĐƯỢC Live (tiến bộ lớn)
+
+User thử v1.0.4 lúc 19:21 trên video NetShort "hồng diện sát": Trạng thái
+"Đang nghe câu nói…", Mức tiếng 823 (RMS 1632), phụ đề Việt hiện, nghe
+được giọng dịch. Live đã nối được — nhưng user báo 4 lỗi trải nghiệm
+(xem ảnh 19:21). v1.0.5 sửa cả 4, không sửa gì khác.
+
+## 1. Phụ đề che hết video (nặng nhất)
+
+- Nguyên nhân: `DubbingService.onTranslatedText` append mọi mảnh dịch vào
+  `pendingText` và broadcast TOÀN BỘ, chỉ xóa khi `turnComplete`; model
+  translate-preview stream liên tục, ít khi gửi `turnComplete`, nên
+  `pendingText` phình vô hạn — ảnh 19:21 hiện một khối chữ khổng lồ che
+  kín video (cả một đoạn thoại dài).
+- Sửa phía service (`showSubtitle` + `trimSubtitle`): mỗi lần broadcast
+  chỉ gửi 1–2 câu gần nhất — tách theo dấu kết thúc câu `. ? ! … 。 ！ ？`
+  và xuống dòng, giữ tối đa 2 câu, tối đa ~120 ký tự (dài quá 200 ký tự
+  thì giữ đuôi 120 ký tự, bỏ từ bị cắt dở). Phụ đề tự ẩn 6 s sau mảnh
+  cuối cùng (hẹn giờ + generation counter, mảnh mới hủy hẹn giờ cũ);
+  lượt không có nghĩa (`SpeechFilter`) thì ẩn ngay. Đường Groq cũng dùng
+  chung `showSubtitle`.
+- Sửa phía UI (`activity_main.xml` + `MainActivity`): `subtitleView`
+  18sp → **15sp**, `maxLines=3`, `ellipsize=end`, nền đen mờ 60%
+  (`#99000000`, màu mới `dub_black_60`), neo đáy video, margin 12dp —
+  không bao giờ che quá 3 dòng / ~1/3 màn hình. Thêm nút **"Ẩn/Hiện phụ
+  đề"** cạnh nút "Tắt trễ hình" (cờ `subtitlesVisible`; ẩn thì giữ
+  `subtitleView` GONE dù service vẫn gửi).
+
+## 2. Chỉ nghe giọng dịch, không nghe được tiếng gốc
+
+- Nguyên nhân: `applyDuckOnce()` hạ tiếng gốc xuống mức
+  `Prefs.originalVolume` NGAY khi giọng dịch đầu tiên phát và KHÔNG BAO
+  GIỜ trả lại cho tới khi dừng hẳn; giọng dịch nói liên tục nên tiếng
+  gốc chìm hẳn.
+- Sửa: duck theo nhịp nói thật — `duckTicker` mỗi 500 ms đọc
+  `VoicePlayer.isSpeaking()` (chunk Live mới lấy trong 1,5 s qua, hoặc
+  TTS đang đọc); đang nói → duck xuống mức user chọn, im quá 1,5 s →
+  trả tiếng gốc về **100%**. Chỉ gửi `TYPE_DUCK` khi trạng thái đổi, và
+  `stopDub` cũng trả về 1.0. `VoicePlayer` thêm `setDubVolume()` (áp
+  dụng ngay cho AudioTrack + tham số TTS) và `isSpeaking()`.
+- Đã kiểm chứng: `Prefs.originalVolume()` trả về **0..1** (pct/100 — 50%
+  → 0.5, KHÔNG phải 50), đúng thang `DelayJs.DubLiveSetVolume` nhận
+  (`v.volume = vol`); `MainActivity` cũng đã gửi đúng thang đó.
+- Cài đặt thêm 2 thanh trượt: **"Âm lượng tiếng gốc khi lồng tiếng"
+  (mặc định 60%, 0–100%)** và **"Âm lượng giọng dịch" (mặc định 90%)**.
+  Lưu ý: duck làm WebView nhỏ tiếng, và AudioPlaybackCapture thu tiếng
+  SAU khi duck — nếu user kéo tiếng gốc về 0% thì VAD cũng đói tiếng
+  (bài học v1.0.2); mức duck 60% thì RMS 1632 còn ~980, vẫn trên ngưỡng
+  VAD 600 nên an toàn.
+
+## 3. Trễ hình vẫn leo tới 19,4 s (v1.0.4 nói đã đóng băng ở 5,2 s)
+
+- Nguyên nhân thật: v1.0.4 chỉ đóng băng khi CHƯA CÓ output nào; ở đây
+  ĐÃ có output, và tick 2 s cứ cộng mẫu `(now - utteranceStart)` trong
+  lúc giọng dịch đang phát. Phim nói liên tục, VAD không bao giờ thấy
+  700 ms lặng nên lượt nói không bao giờ kết thúc, `utteranceStart` cũ
+  mãi, mẫu cứ tăng tới trần 20 s → 19,4 s trong ảnh 19:21.
+- Sửa `DubDelayTracker`: **lấy mẫu ĐÚNG 1 LẦN mỗi lượt nói** — tại
+  `onDubSpeechStarted()`, mẫu = `now - utteranceStart` (chính là độ trễ
+  thật từ lúc nhân vật bắt đầu nói tới lúc giọng dịch bắt đầu phát),
+  rồi không lấy mẫu nữa cho tới lượt nói mới (cờ `dubSpokeThisTurn`).
+  **Bỏ hẳn tick cộng mẫu định kỳ** — tick chỉ còn làm watchdog: lượt
+  nói nào chạy quá 30 s mà chưa có giọng dịch thì reset `utteranceStart`
+  về hiện tại (coi như lượt mới) để mẫu không phình. Vẫn kẹp
+  [3 s, maxDelay], EMA alpha 0.3; chưa có output thì đóng băng ở seed
+  5,2 s như v1.0.4.
+- Kiểm chứng bằng logic: phim nói liên tục 5 phút, mỗi lượt nói lấy 1
+  mẫu ≈ độ trễ nghe+dịch (~5 s) → trễ ổn định quanh 5–8 s, không leo
+  dần tới 19–20 s.
+
+## 4. Tạp âm vẫn bị dịch
+
+- Nguyên nhân: ngưỡng VAD hard-code **250** quá thấp so với RMS thực tế
+  **1632** (nhạc nền + tiếng ồn lúc nào cũng vượt ngưỡng) nên VAD luôn
+  tưởng đang có lời nói, gửi cả nhạc/ồn lên Live và model dịch/bịa
+  thành chữ.
+- Sửa: ngưỡng VAD mặc định lên **600 (bằng ALDA)** — `VadDetector` nhận
+  `energyThreshold` qua constructor, service đọc `Prefs.vadThreshold`
+  mỗi lần bắt đầu lồng tiếng. Cài đặt thêm thanh trượt **"Độ nhạy nghe
+  tiếng" (ngưỡng RMS 250–1200, mặc định 600)** — càng cao càng ít tạp
+  âm, càng thấp càng bắt được tiếng nhỏ.
+- Cổng ồn thứ hai ở service: trong `onSpeechChunk`, VAD còn chuyển tiếp
+  cả frame lặng xen giữa các từ (cho tới khi đủ 700 ms lặng mới kết thúc
+  lượt); chunk nào có RMS < ngưỡng thì **không gửi lên Live**
+  (`rmsOf()`), chỉ giữ trong `utteranceBytes` cho đường Groq (Whisper
+  chịu ồn tốt hơn Live nhiều). Giữ nguyên lời dặn "nghe không rõ thì im"
+  và `SpeechFilter` làm lớp thứ hai.
+- Giới hạn nói thẳng: nhạc nền TO (RMS vượt cả 600) vẫn có thể kích VAD
+  thành một lượt nói — ngưỡng chỉ giảm chứ không triệt tiêu hoàn toàn;
+  khi đó model + SpeechFilter là lớp chặn cuối (lượt chỉ toàn nhạc sẽ
+  bị ẩn phụ đề ngay ở `turnComplete`).
+
+## Checklist thử lại cho user
+
+1. Gỡ v1.0.4, cài v1.0.5 (key Gemini/Groq lưu trong SharedPreferences sẽ
+   mất khi gỡ app — nhập lại key trong Cài đặt nếu app hỏi; nếu chỉ cập
+   nhật đè thì key còn nguyên).
+2. Mở video NetShort "hồng diện sát", Play có tiếng, "Bắt đầu lồng
+   tiếng" → Micro → "Chia sẻ toàn bộ màn hình".
+3. **Phụ đề:** chỉ hiện tối đa 2 câu (~3 dòng) ở đáy video, câu mới thay
+   câu cũ, không dồn đống; im 6 s thì phụ đề tự ẩn. Nút "Ẩn phụ đề" tắt
+   hẳn phụ đề khi chỉ muốn nghe.
+4. **Tiếng gốc:** khi nhân vật im (giọng dịch không nói) thì tiếng gốc
+   phải nghe rõ 100%; khi giọng dịch nói thì tiếng gốc nhỏ xuống
+   (mặc định 60%) nhưng vẫn nghe lờ mờ. Chỉnh 2 thanh trượt trong Cài
+   đặt nếu muốn.
+5. **Trễ hình:** xem liên tục 5 phút, trễ phải ổn định quanh 5–8 s,
+   KHÔNG leo dần tới 19–20 s.
+6. **Tạp âm:** đoạn chỉ có nhạc nền thì trạng thái không hiện "Đang
+   dịch…" và không ra phụ đề (nếu nhạc quá to vẫn lọt thì tăng ngưỡng
+   "Độ nhạy nghe tiếng" trong Cài đặt lên 800–1000 rồi thử lại).
+7. Báo lại: phụ đề có gọn không, tiếng gốc có nghe được khi giọng dịch
+   im không, trễ đứng ở bao nhiêu giây sau 5 phút, đoạn nhạc có ra phụ
+   đề không.
+
+## Giới hạn
+
+- Chưa kiểm chứng trên máy thật (iQOO Z9 Turbo / OriginOS 6 / Android
+  16) — mới kiểm chứng ở mức biên dịch + đóng gói + đối chiếu code đã
+  đẩy; đang chờ user chạy checklist trên.
+- LocalPlayerActivity (xem file trên máy) nhận phụ đề đã rút gọn từ
+  service nên cũng gọn hơn, nhưng layout phụ đề của nó chưa sửa theo
+  chuẩn 3 dòng như MainActivity (ngoài phạm vi 4 lỗi của bản này).
+
+---
 # DubLive v1.0.4 — SỬA RACE SOCKET CŨ PHÁ SOCKET MỚI + KHỚP ALDA TỪNG DÒNG
 
 Build xong 25/11/2026 19:15 VN. APK Debug, cài được.

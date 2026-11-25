@@ -13,9 +13,12 @@ import kotlin.math.min
  * after >= 1 s of silence). Fast Cantonese dialogue has no such gaps, so
  * there was never a burst start and never a sample.
  *
- * v1.0.5 — ONE sample per utterance, taken exactly when the dubbed voice
- * STARTS speaking: sample = now - utteranceStart (the real latency from
- * the character starting to speak to the Vietnamese voice starting).
+ * v1.0.6 — EMA alpha 0.3 -> 0.5 so the delay tracks the real latency
+ * of each sentence faster; samples over 15 s are ignored (the first
+ * sample after connecting can include stale pre-connect buffer and
+ * does not represent the real latency). One sample per utterance,
+ * clamped to [3 s, maxDelay]. While no translation has ever arrived the
+ * delay stays FROZEN at the 5.2 s seed (v1.0.4).
  * v1.0.4 sampled again every 2 s WHILE the dub was speaking, so with
  * continuous dialogue (VAD never sees a 700 ms silence, so the utterance
  * never ends) the sample grew with the utterance length and the delay
@@ -96,9 +99,12 @@ class DubDelayTracker(
     }
 
     private fun addSample(sampleMs: Long) {
-        if (sampleMs < 500L || sampleMs > 60_000L) return
+        // v1.0.6: ignore samples over 15 s — the first sample after
+        // connecting can include stale pre-connect buffer, and a 15 s+
+        // latency is not a real per-sentence delay.
+        if (sampleMs < 500L || sampleMs > 15_000L) return
         val clamped = min(max(sampleMs, Prefs.MIN_DELAY_MS), maxDelayMs)
-        emaMs = (0.7 * emaMs + 0.3 * clamped).toLong()
+        emaMs = (0.5 * emaMs + 0.5 * clamped).toLong()
         onDelayChanged(emaMs)
     }
 }

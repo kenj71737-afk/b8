@@ -6,7 +6,7 @@
 set -e
 APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -f "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" ]; then
-    exec java -jar "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" "$@"
+    exec java -cp "$APP_HOME/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
 elif command -v gradle >/dev/null 2>&1; then
     exec gradle "$@"
 else

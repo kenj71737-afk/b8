@@ -60,6 +60,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var urlInput: EditText
     private lateinit var subtitleView: TextView
     private lateinit var hudView: TextView
+    /** v1.0.7 — the HUD row: delay text + "Trễ −1s / +1s" buttons. */
+    private lateinit var hudRow: View
+    private lateinit var delayMinusButton: Button
+    private lateinit var delayPlusButton: Button
+    private lateinit var fsDelayMinusButton: Button
+    private lateinit var fsDelayPlusButton: Button
     private lateinit var statusView: TextView
     private lateinit var levelBar: android.widget.ProgressBar
     private lateinit var levelValue: TextView
@@ -154,7 +160,7 @@ class MainActivity : AppCompatActivity() {
                 DubbingService.TYPE_HUD -> {
                     val ms = intent.getLongExtra(DubbingService.EXTRA_DELAY_MS, 0L)
                     hudView.text = "Trễ hình: %.1f s".format(ms / 1000.0)
-                    hudView.visibility = View.VISIBLE
+                    hudRow.visibility = View.VISIBLE
                     // v1.0.6 — the main bug: until now this branch only
                     // updated the HUD TEXT and never told the WebView the
                     // new delay, so the canvas always delayed exactly the
@@ -177,7 +183,7 @@ class MainActivity : AppCompatActivity() {
                     if (intent.getStringExtra(DubbingService.EXTRA_STATE) == DubbingService.STATE_STOPPED) {
                         dubbing = false
                         subtitleView.visibility = View.GONE
-                        hudView.visibility = View.GONE
+                        hudRow.visibility = View.GONE
                         levelBar.progress = 0
                         levelValue.text = "0"
                         setOriginalVolume(1.0f)
@@ -236,6 +242,14 @@ class MainActivity : AppCompatActivity() {
         urlInput = findViewById(R.id.urlInput)
         subtitleView = findViewById(R.id.subtitleView)
         hudView = findViewById(R.id.hudView)
+        hudRow = findViewById(R.id.hudRow)
+        delayMinusButton = findViewById(R.id.delayMinusButton)
+        delayPlusButton = findViewById(R.id.delayPlusButton)
+        fsDelayMinusButton = findViewById(R.id.fsDelayMinusButton)
+        fsDelayPlusButton = findViewById(R.id.fsDelayPlusButton)
+        // v1.0.7 — the canvas seed is the Settings base delay, not a
+        // hard-coded 5000 ms any more.
+        lastAppliedDelayMs = try { Prefs.baseDelayMs(this) } catch (_: Exception) { 5000L }
         statusView = findViewById(R.id.statusView)
         levelBar = findViewById(R.id.levelBar)
         levelValue = findViewById(R.id.levelValue)
@@ -260,7 +274,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 view?.evaluateJavascript(DelayJs.INJECT, null)
-                view?.evaluateJavascript("window.DubLiveSetDelay(5000)", null)
+                applyBaseDelayToWebView()
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
@@ -300,7 +314,7 @@ class MainActivity : AppCompatActivity() {
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                 )
-                hudView.visibility = if (dubbing) View.VISIBLE else View.GONE
+                hudRow.visibility = if (dubbing) View.VISIBLE else View.GONE
                 // v1.0.6 — fullscreen: the custom view is added to
                 // decorView, ON TOP of the activity layout, so the delay
                 // canvas stays behind in the page and the Android subtitle
@@ -315,11 +329,14 @@ class MainActivity : AppCompatActivity() {
                 subtitleSavedParent = moveOverlayToDecor(
                     subtitleView, android.view.Gravity.BOTTOM
                 )
+                // v1.0.7 — the whole HUD row (delay text + ±1s buttons)
+                // moves together, so the manual buttons stay usable over
+                // the web page's fullscreen too.
                 hudSavedParent = moveOverlayToDecor(
-                    hudView, android.view.Gravity.TOP
+                    hudRow, android.view.Gravity.TOP
                 )
                 subtitleView.bringToFront()
-                hudView.bringToFront()
+                hudRow.bringToFront()
                 Toast.makeText(
                     this@MainActivity,
                     "Xem toàn màn hình thì trễ hình không chạy, giọng dịch sẽ đi sau hình — xem ở chế độ thường để hình khớp giọng. Muốn hình khớp giọng ở màn hình lớn, bấm nút Phóng to của app thay vì nút toàn màn hình của trang web",
@@ -335,7 +352,7 @@ class MainActivity : AppCompatActivity() {
                 // v1.0.6 — put the overlays back where they belong.
                 restoreOverlay(subtitleSavedParent, subtitleView)
                 subtitleSavedParent = null
-                restoreOverlay(hudSavedParent, hudView)
+                restoreOverlay(hudSavedParent, hudRow)
                 hudSavedParent = null
                 // v1.0.6 (bổ sung) — bật trễ hình TRỞ LẠI sau khi thoát
                 // toàn màn hình, nhưng CHỈ khi user chưa tự tắt nó bằng
@@ -367,6 +384,11 @@ class MainActivity : AppCompatActivity() {
         fsDelayToggleButton.setOnClickListener { toggleDelay() }
         expandButton.setOnClickListener { enterAppFullscreen() }
         collapseButton.setOnClickListener { exitAppFullscreen() }
+        // v1.0.7 — manual delay nudge, normal screen and app fullscreen.
+        delayMinusButton.setOnClickListener { adjustDelay(-1000L) }
+        delayPlusButton.setOnClickListener { adjustDelay(1000L) }
+        fsDelayMinusButton.setOnClickListener { adjustDelay(-1000L) }
+        fsDelayPlusButton.setOnClickListener { adjustDelay(1000L) }
         // v1.0.5 — hide/show subtitles; the service keeps sending them,
         // the view just stays hidden while the flag is off.
         subtitleToggleButton.setOnClickListener {
@@ -390,6 +412,58 @@ class MainActivity : AppCompatActivity() {
         val res = if (delayOn) R.string.delay_off else R.string.delay_on
         delayToggleButton.setText(res)
         fsDelayToggleButton.setText(res)
+    }
+
+    /**
+     * v1.0.7 — push the Settings base delay ("Trễ hình cơ bản") into
+     * the WebView canvas. Used on page load and when dubbing starts, so
+     * the canvas never sits on a stale seed while the tracker is still
+     * waiting for its first FIFO sample.
+     */
+    private fun applyBaseDelayToWebView() {
+        val seed = try { Prefs.baseDelayMs(this) } catch (_: Exception) { 5000L }
+        lastAppliedDelayMs = seed
+        hudView.text = "Trễ hình: %.1f s".format(seed / 1000.0)
+        try {
+            webView.evaluateJavascript("window.DubLiveSetDelay($seed)", null)
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * v1.0.7 — manual delay nudge from the "Trễ −1s / +1s" buttons.
+     * While dubbing: the service's tracker shifts its EMA by the delta
+     * and broadcasts TYPE_HUD — the HUD branch forwards it to the
+     * canvas, and later automatic samples keep EMA-ing from this manual
+     * value instead of pulling it back. While NOT dubbing: nudge the
+     * base seed itself (Settings "Trễ hình cơ bản") and apply it to the
+     * canvas at once, so the next session starts from the tuned value.
+     */
+    private fun adjustDelay(deltaMs: Long) {
+        if (dubbing) {
+            try {
+                val intent = Intent(this, DubbingService::class.java).apply {
+                    action = DubbingService.ACTION_ADJUST_DELAY
+                    putExtra(DubbingService.EXTRA_DELAY_DELTA_MS, deltaMs)
+                }
+                startService(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "adjustDelay failed", e)
+            }
+        } else {
+            val sec = ((Prefs.baseDelayMs(this) / 1000).toInt() +
+                (deltaMs / 1000).toInt()).coerceIn(3, 20)
+            Prefs.setBaseDelaySec(this, sec)
+            val ms = sec * 1000L
+            lastAppliedDelayMs = ms
+            try {
+                webView.evaluateJavascript("window.DubLiveSetDelay($ms)", null)
+            } catch (_: Exception) {
+            }
+            hudView.text = "Trễ hình: %.1f s".format(ms / 1000.0)
+            hudRow.visibility = View.VISIBLE
+            Toast.makeText(this, getString(R.string.base_delay_set, sec), Toast.LENGTH_SHORT).show()
+        }
     }
 
     /**
@@ -522,7 +596,11 @@ class MainActivity : AppCompatActivity() {
         // records the ducked sound). The service ducks it only after the
         // first dubbed speech actually plays.
         setOriginalVolume(1.0f)
-        hudView.visibility = View.VISIBLE
+        hudRow.visibility = View.VISIBLE
+        // v1.0.7 — push the base-delay seed into the canvas now, so the
+        // picture waits the right amount from the first second instead
+        // of sitting on the page-load seed until the first sample.
+        applyBaseDelayToWebView()
     }
 
     /**
@@ -574,7 +652,9 @@ class MainActivity : AppCompatActivity() {
             levelValue.text = "0"
             // v1.0.2: full volume at start (see startMicService).
             setOriginalVolume(1.0f)
-            hudView.visibility = View.VISIBLE
+            hudRow.visibility = View.VISIBLE
+            // v1.0.7 — push the base-delay seed into the canvas now.
+            applyBaseDelayToWebView()
         } catch (e: Exception) {
             Log.w(TAG, "startForegroundService (projection) failed, retry=$isRetry", e)
             if (!isRetry) {

@@ -18,6 +18,8 @@ object Prefs {
     const val KEY_WHOLE_SENTENCE = "whole_sentence"
     const val KEY_VOICE = "voice"
     const val KEY_MAX_DELAY_SEC = "max_delay_sec"
+    /** v1.0.7 — "Trễ hình cơ bản": seed delay when a session starts. */
+    const val KEY_BASE_DELAY_SEC = "base_delay_sec"
     const val KEY_ORIGINAL_VOLUME = "original_volume_pct"
     const val KEY_DUB_VOLUME = "dub_volume_pct"
     const val KEY_VAD_THRESHOLD = "vad_threshold"
@@ -72,6 +74,22 @@ object Prefs {
     fun maxDelayMs(context: Context): Long {
         val sec = prefs(context).getInt(KEY_MAX_DELAY_SEC, DEFAULT_MAX_DELAY_SEC)
         return (sec.coerceIn(3, 20) * 1000).toLong()
+    }
+
+    /**
+     * v1.0.7 — "Trễ hình cơ bản" (Settings slider, 3–20 s, default 5 s):
+     * the seed delay a session starts with, before the first FIFO sample
+     * arrives. The old code hard-coded 5238 ms here and 5000 ms in the
+     * WebView; both now read this one value.
+     */
+    fun baseDelayMs(context: Context): Long {
+        val sec = prefs(context).getInt(KEY_BASE_DELAY_SEC, 5)
+        return (sec.coerceIn(3, 20) * 1000).toLong()
+    }
+
+    fun setBaseDelaySec(context: Context, sec: Int) {
+        prefs(context).edit()
+            .putInt(KEY_BASE_DELAY_SEC, sec.coerceIn(3, 20)).apply()
     }
 
     fun originalVolume(context: Context): Float {

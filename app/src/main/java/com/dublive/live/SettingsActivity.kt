@@ -38,6 +38,9 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var voiceSpinner: Spinner
     private lateinit var maxDelaySeek: SeekBar
     private lateinit var maxDelayLabel: TextView
+    /** v1.0.7 — "Trễ hình cơ bản": seed delay at session start. */
+    private lateinit var baseDelaySeek: SeekBar
+    private lateinit var baseDelayLabel: TextView
     private lateinit var originalVolumeSeek: SeekBar
     private lateinit var originalVolumeLabel: TextView
     private lateinit var dubVolumeSeek: SeekBar
@@ -62,6 +65,8 @@ class SettingsActivity : AppCompatActivity() {
         voiceSpinner = findViewById(R.id.voiceSpinner)
         maxDelaySeek = findViewById(R.id.maxDelaySeek)
         maxDelayLabel = findViewById(R.id.maxDelayLabel)
+        baseDelaySeek = findViewById(R.id.baseDelaySeek)
+        baseDelayLabel = findViewById(R.id.baseDelayLabel)
         originalVolumeSeek = findViewById(R.id.originalVolumeSeek)
         originalVolumeLabel = findViewById(R.id.originalVolumeLabel)
         dubVolumeSeek = findViewById(R.id.dubVolumeSeek)
@@ -99,6 +104,22 @@ class SettingsActivity : AppCompatActivity() {
         maxDelaySeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
                 maxDelayLabel.text = "${progress + 3} giây"
+            }
+
+            override fun onStartTrackingTouch(seek: SeekBar?) {}
+            override fun onStopTrackingTouch(seek: SeekBar?) {}
+        })
+
+        // v1.0.7 — base delay seed (3–20 s, default 5 s). The tracker
+        // starts here and FIFO samples move it from there; the "Trễ
+        // −1s / +1s" buttons on the main screen nudge the same value
+        // mid-session (and update this seed when not dubbing).
+        val initialBase = (Prefs.baseDelayMs(this) / 1000).toInt()
+        baseDelaySeek.progress = (initialBase - 3).coerceIn(0, 17)
+        baseDelayLabel.text = "$initialBase giây"
+        baseDelaySeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
+                baseDelayLabel.text = "${progress + 3} giây"
             }
 
             override fun onStartTrackingTouch(seek: SeekBar?) {}
@@ -168,6 +189,7 @@ class SettingsActivity : AppCompatActivity() {
             .putBoolean(Prefs.KEY_WHOLE_SENTENCE, wholeSentenceCheck.isChecked)
             .putString(Prefs.KEY_VOICE, Prefs.VOICES[voiceLabel] ?: "Aoede")
             .putInt(Prefs.KEY_MAX_DELAY_SEC, maxDelaySeek.progress + 3)
+            .putInt(Prefs.KEY_BASE_DELAY_SEC, baseDelaySeek.progress + 3)
             .putInt(Prefs.KEY_ORIGINAL_VOLUME, originalVolumeSeek.progress.coerceIn(0, 100))
             .putInt(Prefs.KEY_DUB_VOLUME, dubVolumeSeek.progress.coerceIn(0, 100))
             .putInt(Prefs.KEY_VAD_THRESHOLD, (vadThresholdSeek.progress + 250).coerceIn(250, 1200))

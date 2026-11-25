@@ -1,3 +1,176 @@
+# DubLive v1.0.6 — TRỄ HÌNH KHỚP GIỌNG + XEM ĐƯỢC TOÀN MÀN HÌNH + ÂM LƯỢNG TO
+
+Build xong 25/11/2026 20:05 VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.6.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.6.apk`)
+- Kích thước: 9.1 MB. MD5: 2cba5872c81df0be765efdf6069ed711.
+- aapt2: package `com.dublive.live`, versionCode 7, versionName 1.0.6,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **45619702134** (completed/success, đậu ngay lần
+  đầu), commit cuối `08ead9fd95f5b9ec8ce85eebdefdbd19bc4b4421` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15023683789, bản Debug).
+- 3 commit trong bản này (cùng version 1.0.6): `f7d2a532` (trễ hình +
+  fullscreen, run 45617450254 success), `ec523bac` (sửa đen màn hình
+  fullscreen, run 45618223571 success), `c6995957` (Phóng to của app —
+  build LỖI lần đầu: `MainActivity.kt:359 Unresolved reference:
+  liveErrorsButton` do lúc thêm id errorsRow đã ăn mất thẻ `<Button`
+  mở của nút Xem lỗi Live, xem log job 139221260463; sửa ở `4bcf60ed`,
+  run 45619332843 success), `08ead9fd` (âm lượng, run 45619702134
+  success — đây là commit giao). Lỗi 404 ở bước tải artifact là do
+  gọi sai cú pháp `gh.py download-artifact` (cần 2 tham số vị trí
+  `<artifact-id> <outfile>`, không phải cờ `--artifact-id/--dest`);
+  log job Actions tải bằng cách bắt 302 Location (xem `/tmp/get_logs2.py`).
+
+## Bối cảnh
+
+User báo 19:46 "Trễ hình không khớp với video", 19:52 "Vẫn chưa xem
+full màn hình được nha", 19:56 "Làm sao xem video full màn hình điện
+thoại hình và giọng dịch khớp nhau", 20:01 "Âm lượng dịch với âm gốc
+nhỏ quá". Cả 4 đều là lỗi thật, khác nhau, sửa hết trong v1.0.6.
+
+## 1. Trễ hình là số ảo — video luôn chỉ trễ đúng 5 giây (lỗi chính)
+
+- Nguyên nhân: `DubDelayTracker` tính trễ thật (EMA 5–19 s) và broadcast
+  `TYPE_HUD`, nhưng `MainActivity` ở nhánh `TYPE_HUD` CHỈ cập nhật chữ
+  "Trễ hình: X s" mà KHÔNG BAO GIỜ gọi `window.DubLiveSetDelay(ms)`.
+  Lệnh `DubLiveSetDelay` duy nhất nằm ở `onPageFinished` và hardcode
+  5000 ms. Kết quả: canvas trong WebView luôn trễ đúng 5,0 s dù HUD
+  hiện 7 s, 12 s hay 19,4 s; giọng dịch tới sau lời thoại thật 7–15 s
+  nên giọng luôn đi SAU hình, càng xem càng lệch. (`LocalPlayerActivity`
+  đã dùng đúng `currentDelayMs` từ `TYPE_HUD` nên file trên máy không
+  bị lỗi này.)
+- Sửa: nhánh `TYPE_HUD` vừa cập nhật chữ HUD vừa gọi
+  `window.DubLiveSetDelay(ms)` mỗi lần trễ đổi quá 200 ms (khỏi spam
+  JS); `onPageFinished` giữ seed 5000 ms. Sau sửa, `MainActivity` có
+  đúng 2 chỗ gọi `DubLiveSetDelay` (seed + HUD). `DubLiveSetDelay` chỉ
+  đặt `window.DubLiveDelayMs`, vòng lặp tick đọc lại mỗi khung nên gọi
+  giữa chừng an toàn.
+- Tracker bám nhanh hơn: EMA alpha 0.3 → 0.5; bỏ qua mẫu > 15 s (lượt
+  đầu sau khi nối chứa buffer cũ, không đại diện); giữ lấy mẫu đúng
+  1 lần mỗi lượt nói (v1.0.5) và kẹp [3 s, maxDelay].
+- KHÔNG đổi: không thử trễ tiếng gốc bằng Web Audio DelayNode — video
+  cross-origin (NetShort CDN không CORS) sẽ làm MediaElementSource câm
+  hẳn, đúng lỗi cũ của ALDA. Tiếng gốc vẫn phát real-time ở mức nhỏ
+  như thiết kế; chỉ cần hình + giọng dịch khớp nhau là đúng mục tiêu.
+
+## 2. Toàn màn hình của trang web chỉ thấy MÀN ĐEN
+
+- Nguyên nhân: khi trễ hình bật, DelayJs đặt thẻ video thật
+  `opacity = 0` và chỉ hiện canvas trễ đè lên TRONG TRANG. Bấm toàn
+  màn hình của trang web (biểu tượng ⛶ trên video) thì trình duyệt đưa
+  THẺ VIDEO (đang opacity 0) lên surface toàn màn hình, canvas ở lại
+  trong trang — toàn màn hình chỉ thấy màn đen. Đó là lý do "không xem
+  full màn hình được", không phải chỉ trễ không khớp.
+- Sửa (`MainActivity.onShowCustomView`): TRƯỚC khi addView custom view
+  thì gọi `window.DubLiveSetEnabled(false)` để tắt trễ hình (video trở
+  lại opacity 1, canvas ẩn) rồi mới hiện toàn màn hình — video xem được
+  bình thường, chỉ là lúc này giọng dịch đi sau hình. `onHideCustomView`
+  gọi lại `DubLiveSetEnabled(delayOn)` để bật trễ hình trở lại nếu user
+  chưa tự tắt bằng nút "Tắt trễ hình"; `delayOn` không bị toàn màn hình
+  làm lệch, chữ nút đồng bộ lại bằng `updateDelayButtons()`. Giữ lại
+  Toast cảnh báo + thêm câu hướng dẫn dùng nút Phóng to của app (mục 3).
+- Phụ đề + HUD vẫn hiện trên toàn màn hình của trang: `bringToFront()`
+  một mình không đủ (chỉ sắp xếp trong parent của chính nó, mà custom
+  view nằm trên decorView) nên đã chuyển cả 2 overlay sang decorView
+  lúc fullscreen (`moveOverlayToDecor`/`restoreOverlay`: phụ đề ở đáy,
+  HUD ở đầu) và trả lại khi thoát.
+- Sửa kèm trong DelayJs (`DubLiveSetEnabled`): khi bật lại trễ thì xóa
+  các khung cũ trong bộ đệm (hình từ TRƯỚC lúc tắt trễ, tick sẽ ăn hết
+  một lượt và canvas hiện hình cũ sai thời điểm) và giữ video opacity 1
+  cho tới khi tick vẽ khung trễ đầu tiên (tick tự đặt opacity 0 lúc
+  đó), nên thoát toàn màn hình không bị màn đen ~5 s chờ đệm đầy lại.
+
+## 3. Toàn màn hình CỦA APP — cách duy nhất để hình khớp giọng ở màn hình lớn
+
+- Giới hạn đã ghi rõ: nút toàn màn hình CỦA TRANG WEB đưa video lên
+  một surface native riêng của WebView, canvas trễ nằm lại trong trang
+  nên KHÔNG BAO GIỜ khớp được — đó là giới hạn của Android WebView,
+  không sửa được bằng cách vẽ thêm. Cách làm được: toàn màn hình CỦA APP.
+- Nút "Phóng to" mới cạnh nút "Tắt trễ hình" (`expandButton`,
+  `R.string.expand_app`). Khi bấm: ẩn toàn bộ giao diện chrome của app
+  (ô địa chỉ + nút Mở, hàng Bắt đầu/Dừng lồng tiếng, hàng Mở file/Cài
+  đặt/Tắt trễ hình/Ẩn phụ đề, nút Lồng tiếng bằng mic, nút Xem lỗi Live,
+  dòng Trạng thái, thanh Mức tiếng) — chỉ giữ lại WebView (chiếm toàn bộ
+  màn hình), phụ đề Việt, HUD "Trễ hình", nút "Tắt trễ hình" (bản sao
+  trong thanh fullscreen) và nút "Thu nhỏ" để thoát. Chế độ immersive
+  (`IMMERSIVE_STICKY` + fullscreen + hide navigation) ẩn cả thanh trạng
+  thái/điều hướng; `supportActionBar` ẩn/hiện theo. Vì canvas trễ nằm
+  trong DOM của WebView nên trễ hình VẪN CHẠY và hình vẫn khớp giọng —
+  đây là điểm mấu chốt.
+- "Thu nhỏ" (`collapseButton` trong `fullscreenBar` ở đầu FrameLayout)
+  hoặc nút Back đều thoát và hiện lại đầy đủ giao diện, trễ hình giữ
+  nguyên (không bật/tắt lại). `onResume` áp lại cờ immersive nếu vẫn
+  đang fullscreen (hệ thống reset cờ khi app pause). Nút "Tắt trễ hình"
+  có 2 bản sao (thường + fullscreen) dùng chung `toggleDelay()` và
+  `updateDelayButtons()` để chữ luôn đồng bộ. Vào Phóng to khi đang ở
+  fullscreen của trang web thì bỏ qua (guard `customView != null`).
+- Nút toàn màn hình của trang web vẫn để nguyên (không chặn), nhưng khi
+  user bấm nó thì vẫn áp dụng xử lý mục 2 (tự tắt trễ hình để không đen
+  màn hình + Toast cảnh báo + câu hướng dẫn dùng nút Phóng to của app).
+
+## 4. Âm lượng giọng dịch + tiếng gốc đều nhỏ quá
+
+- Nguyên nhân: giọng dịch phát qua `USAGE_VOICE_COMMUNICATION` (cố ý
+  để `AudioPlaybackCapture` chỉ bắt `USAGE_MEDIA`, khỏi thu lại chính
+  giọng dịch gây vọng), mà stream này dùng ÂM LƯỢNG CUỘC GỌI
+  (`STREAM_VOICE_CALL`) riêng, khác hẳn âm lượng media — user vặn to
+  âm lượng media bao nhiêu thì giọng dịch vẫn nhỏ, vì nút âm lượng chỉ
+  chỉnh đúng stream đang phát.
+- Sửa (`VoicePlayer`):
+  - AudioTrack và TTS đặt ở mức tối đa (`setVolume(1.0f)`,
+    `KEY_PARAM_VOLUME = 1.0f`); `setDubVolume()` giờ luôn ép 1.0f.
+  - Thanh trượt "Âm lượng giọng dịch" trong Cài đặt (mặc định 90%) đổi
+    thành điều khiển TRỰC TIẾP âm lượng hệ thống của `STREAM_VOICE_CALL`
+    qua `AudioManager.setStreamVolume` (thang 0–100% map sang chỉ số
+    stream 0..max, cờ `FLAG_SHOW_UI` để hiện bảng âm lượng hệ thống).
+    `VoicePlayer.applyCallVolume(context, pct)` dùng chung cho cả
+    Settings (kéo là áp dụng ngay, lưu pref ngay, không cần bắt đầu
+    lại) và service (áp dụng giá trị đã lưu khi bắt đầu lồng tiếng).
+    Quyền `MODIFY_AUDIO_SETTINGS` đã có sẵn trong AndroidManifest (quyền
+    normal, không cần xin runtime).
+  - KHÔNG đổi `USAGE_VOICE_COMMUNICATION` sang `USAGE_MEDIA` (đổi là
+    capture sẽ thu lại giọng dịch gây vọng — đúng lý do ALDA dùng voice
+    communication).
+- Tiếng gốc: mặc định thanh trượt "Âm lượng tiếng gốc khi lồng tiếng"
+  từ 60% lên 80% (`Prefs.originalVolumePct`); khi giọng dịch im thì trả
+  về 100% như cũ (duck ticker v1.0.5). Đã kiểm tra `DubLiveSetVolume`
+  nhận đúng thang 0..1 (`Prefs.originalVolume` trả pct/100).
+- Gợi ý ngay dưới thanh Mức tiếng trên màn hình chính (nhỏ, không che
+  video): "Giọng dịch dùng âm lượng cuộc gọi: lúc giọng đang nói, bấm
+  nút tăng âm lượng trên điện thoại để tăng riêng giọng dịch"
+  (`R.string.call_volume_hint`). Trong Cài đặt, ghi chú dưới thanh
+  trượt giọng dịch: "Âm lượng này là âm lượng cuộc gọi, khác âm lượng
+  media của video" (`R.string.settings_dub_volume_note`).
+
+## Checklist thử lại cho user
+
+1. Gỡ bản cũ, cài v1.0.6 (cài đè thì key còn nguyên).
+2. Xem 2–3 phút ở chế độ thường: miệng nhân vật và giọng dịch phải
+   khớp; số "Trễ hình" thay đổi theo câu nói thì hình cũng đổi theo.
+3. Bấm nút toàn màn hình CỦA TRANG WEB: phải thấy video chạy bình
+   thường (không đen), phụ đề vẫn hiện, Toast cảnh báo giọng sẽ đi sau
+   hình + hướng dẫn dùng nút Phóng to của app; thoát ra thì trễ hình
+   bật lại và hình khớp giọng trở lại (không đen ~5 s).
+4. Bấm "Phóng to" của app, xem 2 phút: video lấp đầy màn hình (phim
+   dọc thì lấp đầy chiều rộng), phụ đề vẫn hiện ở đáy, trễ hình vẫn
+   chạy và giọng khớp hình; bấm "Thu nhỏ" hoặc Back thì giao diện trở
+   lại đầy đủ.
+5. Kéo thanh giọng dịch lên 100% thì giọng phải to rõ; bấm nút tăng âm
+   lượng lúc giọng đang nói thì giọng to lên (âm lượng cuộc gọi); tiếng
+   gốc khi giọng im phải nghe rõ (trả về 100%).
+6. Báo lại: hình + giọng có khớp không (chế độ thường và Phóng to),
+   toàn màn hình của trang có đen không, giọng dịch/tiếng gốc đủ to chưa.
+
+## Giới hạn
+
+- Toàn màn hình của trang web KHÔNG BAO GIỜ khớp hình + giọng được
+  (surface native bỏ qua canvas) — chỉ có toàn màn hình của app
+  (Phóng to) mới khớp. Đã nói rõ trong app bằng Toast + nút Phóng to.
+- Chưa kiểm chứng trên máy thật (iQOO Z9 Turbo / OriginOS 6 /
+  Android 16) — mới kiểm chứng ở mức biên dịch + đóng gói + đối chiếu
+  code đã đẩy; đang chờ user chạy checklist trên.
+
 # DubLive v1.0.5 — SỬA 4 LỖI TRẢI NGHIỆM (PHỤ ĐỀ / TIẾNG GỐC / TRỄ / TẠP ÂM)
 
 Build xong 25/11/2026 19:32 VN. APK Debug, cài được.

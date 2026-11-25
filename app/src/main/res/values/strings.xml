@@ -21,6 +21,10 @@
     <string name="settings_voice">Giọng đọc tiếng Việt</string>
     <string name="settings_voice_note">Model dịch trực tiếp giữ giọng gốc của nhân vật; chọn giọng ở đây chỉ có tác dụng ở chế độ dự phòng Groq/TTS.</string>
     <string name="settings_max_delay">Trễ hình tối đa (giây)</string>
+    <string name="settings_base_delay">Trễ hình cơ bản (giây) — trễ ban đầu khi bắt đầu lồng tiếng</string>
+    <string name="delay_minus">Trễ −1s</string>
+    <string name="delay_plus">Trễ +1s</string>
+    <string name="base_delay_set">Trễ hình cơ bản: %1$d giây</string>
     <string name="settings_test_key">Kiểm tra key Gemini</string>
     <string name="settings_save">Lưu cài đặt</string>
     <string name="settings_saved">Đã lưu cài đặt</string>

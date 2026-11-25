@@ -222,16 +222,46 @@
             android:textSize="15sp"
             android:visibility="gone" />
 
-        <TextView
-            android:id="@+id/hudView"
+        <!-- v1.0.7 — HUD + 2 nút chỉnh trễ tay "Trễ −1s / +1s" ngay
+             cạnh số trễ: bấm là hình chờ thêm/bớt 1 s ngay, không cần
+             vào Cài đặt. Nằm trong hudRow để khi vào fullscreen của
+             trang web thì cả cụm (số + 2 nút) chuyển sang decorView
+             cùng nhau như trước đây hudView đi một mình. -->
+        <LinearLayout
+            android:id="@+id/hudRow"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="top|end"
-            android:background="@color/dub_black"
-            android:padding="6dp"
-            android:textColor="@color/dub_accent"
-            android:textSize="12sp"
-            android:visibility="gone" />
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/hudView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@color/dub_black"
+                android:padding="6dp"
+                android:textColor="@color/dub_accent"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/delayMinusButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="4dp"
+                android:minHeight="36dp"
+                android:text="@string/delay_minus"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/delayPlusButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="4dp"
+                android:minHeight="36dp"
+                android:text="@string/delay_plus"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <!-- v1.0.6 — thanh công cụ khi ở chế độ toàn màn hình của app:
              chỉ hiện nút "Thu nhỏ" (thoát) và nút trễ hình, còn WebView,
@@ -258,6 +288,21 @@
                 android:layout_height="wrap_content"
                 android:layout_marginLeft="8dp"
                 android:text="@string/delay_off" />
+
+            <!-- v1.0.7 — chỉnh trễ tay cả ở chế độ Phóng to của app. -->
+            <Button
+                android:id="@+id/fsDelayMinusButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="8dp"
+                android:text="@string/delay_minus" />
+
+            <Button
+                android:id="@+id/fsDelayPlusButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="8dp"
+                android:text="@string/delay_plus" />
         </LinearLayout>
     </FrameLayout>
 </LinearLayout>

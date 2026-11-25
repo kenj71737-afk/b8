@@ -1,7 +1,5 @@
 package com.dublive.live
 
-import android.os.Handler
-import android.os.Looper
 import kotlin.math.max
 import kotlin.math.min
 
@@ -13,96 +11,95 @@ import kotlin.math.min
  * after >= 1 s of silence). Fast Cantonese dialogue has no such gaps, so
  * there was never a burst start and never a sample.
  *
- * v1.0.6 — EMA alpha 0.3 -> 0.5 so the delay tracks the real latency
- * of each sentence faster; samples over 15 s are ignored (the first
- * sample after connecting can include stale pre-connect buffer and
- * does not represent the real latency). One sample per utterance,
- * clamped to [3 s, maxDelay]. While no translation has ever arrived the
- * delay stays FROZEN at the 5.2 s seed (v1.0.4).
- * v1.0.4 sampled again every 2 s WHILE the dub was speaking, so with
- * continuous dialogue (VAD never sees a 700 ms silence, so the utterance
- * never ends) the sample grew with the utterance length and the delay
- * climbed to the 20 s cap — the user screenshot at 19:21 still showed
- * "Trễ hình: 19,4 s" even though dubbing was working. The periodic tick
- * is GONE: it only watches for a stale utterance (speech running > 30 s
- * with no dubbed voice yet) and resets its start time, so the sample
- * can never balloon. Samples are smoothed with EMA (alpha 0.3) and
- * clamped to [3 s, maxDelay]. While no translation has ever arrived the
- * delay stays FROZEN at the 5.2 s seed (v1.0.4).
+ * v1.0.7 — FIFO PAIRING (replaces the one-sample-per-utterance design).
+ * Why the old designs both failed on continuous dialogue:
+ *  - v1.0.4 sampled every 2 s WHILE the dub was speaking: with no 700 ms
+ *    silence the utterance never ended, so the sample grew with the
+ *    utterance LENGTH (not the latency) and the delay ballooned to 19,4 s.
+ *  - v1.0.5/v1.0.6 took exactly ONE sample per utterance (dubSpokeThisTurn
+ *    flag, reset only on VAD speech end): continuous Cantonese dialogue is
+ *    effectively ONE utterance lasting minutes, so there was exactly one
+ *    sample at the start of the session and the delay then stood FROZEN
+ *    forever — user report 20:12 "Độ trễ hình đứng nguyên từ lúc vào".
+ *
+ * How FIFO pairing works:
+ *  - The service pushes a burst-start timestamp into a FIFO queue on every
+ *    VAD speech start, and the segment cutter pushes one more every 4 s
+ *    while speech runs on without a 700 ms silence (so a 3-minute
+ *    monologue becomes ~45 segments, not one).
+ *  - Every time a new dubbed-voice segment starts (a dub audio chunk or
+ *    TTS start arriving >= 800 ms after the previous dub audio), the
+ *    OLDEST unpaired burst marker is popped and sample = dubStart -
+ *    burstStart — the real per-sentence latency, never the utterance
+ *    length. Samples are EMA-smoothed (alpha 0.5) and clamped to
+ *    [3 s, maxDelay]. While no translation has ever arrived the delay
+ *    stays at the seed (Settings "Trễ hình cơ bản", default 5 s).
+ *  - If a sample falls outside [500 ms, 20 s] the pairing has drifted
+ *    (a segment was filtered or lost) — the whole queue is cleared so
+ *    the NEXT pair resyncs instead of pairing wrongly forever.
+ * All methods are @Synchronized: burst markers come from the VAD/capture
+ * thread, dub chunks from the Live socket thread and the TTS listener.
  */
 class DubDelayTracker(
     private val maxDelayMs: Long,
-    private val hasDubOutput: () -> Boolean = { true },
+    initialDelayMs: Long,
     private val onDelayChanged: (Long) -> Unit
 ) {
-    private val handler = Handler(Looper.getMainLooper())
-    private var emaMs: Long = 5238L // seed: first-translation latency + 2 s margin
-    private var utteranceStartMs: Long = -1L
-    /** True once the dubbed voice has spoken for the current utterance. */
-    private var dubSpokeThisTurn = false
-    private var tickRunning = false
-
-    /**
-     * Watchdog tick only: if one utterance runs longer than 30 s with
-     * no dubbed voice yet, its start time is stale (a new sentence
-     * started long ago inside the same VAD utterance) — reset it to now
-     * so the one sample taken later cannot be a 30 s+ balloon. This
-     * tick NEVER adds a sample.
-     */
-    private val tick = object : Runnable {
-        override fun run() {
-            if (utteranceStartMs > 0 && !dubSpokeThisTurn) {
-                val age = System.currentTimeMillis() - utteranceStartMs
-                if (age > 30_000L) utteranceStartMs = System.currentTimeMillis()
-            }
-            if (tickRunning) handler.postDelayed(this, 2000L)
-        }
-    }
+    /** FIFO of speech-burst start timestamps (ms), oldest first. */
+    private val burstStarts = ArrayDeque<Long>()
+    /** Last time any dubbed audio arrived (Live chunk or TTS start). */
+    @Volatile private var lastDubAtMs = 0L
+    private var emaMs: Long = initialDelayMs.coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
 
     val currentDelayMs: Long get() = emaMs
 
-    fun startUtterance() {
-        utteranceStartMs = System.currentTimeMillis()
-        dubSpokeThisTurn = false
-        if (!tickRunning) {
-            tickRunning = true
-            handler.postDelayed(tick, 2000L)
-        }
+    /** A new speech burst started (VAD speech start, or the 4 s forced
+     * segment cut inside a long continuous utterance). */
+    @Synchronized
+    fun noteBurstStart(now: Long = System.currentTimeMillis()) {
+        burstStarts.addLast(now)
+        while (burstStarts.size > 32) burstStarts.removeFirst()
     }
 
-    /** Called when the dubbed voice actually starts speaking. Takes the
-     * ONE sample for this utterance, then never samples again until the
-     * next utterance starts. */
-    fun onDubSpeechStarted() {
-        if (dubSpokeThisTurn) return
-        dubSpokeThisTurn = true
-        if (utteranceStartMs > 0 && hasDubOutput()) {
-            addSample(System.currentTimeMillis() - utteranceStartMs)
+    /** A dubbed-audio chunk (or TTS start) arrived. A chunk that comes
+     * >= 800 ms after the previous dub audio starts a NEW dubbed segment:
+     * pair it with the oldest unpaired burst marker. Chunks inside an
+     * ongoing segment only refresh the timestamp. */
+    @Synchronized
+    fun noteDubChunk(now: Long = System.currentTimeMillis()) {
+        if (now - lastDubAtMs >= 800L) {
+            val start = burstStarts.removeFirstOrNull()
+            if (start != null) {
+                val sample = now - start
+                if (sample in 500L..20_000L) {
+                    addSample(sample)
+                } else {
+                    // Pairing drifted (a burst was filtered/lost, or a
+                    // stale pre-connect marker survived): drop the whole
+                    // queue so the next pair resyncs cleanly.
+                    burstStarts.clear()
+                }
+            }
         }
+        lastDubAtMs = now
     }
 
-    fun endUtterance() {
-        utteranceStartMs = -1L
-        if (!dubSpokeThisTurn) {
-            // No dubbed speech for this utterance: stop the watchdog
-            // tick — a new utterance will restart it.
-            tickRunning = false
-            handler.removeCallbacks(tick)
-        }
+    /** Manual nudge from the "Trễ −1s / +1s" buttons: shift the EMA by
+     * the delta and push it out at once. Later automatic samples keep
+     * EMA-ing from this manual value — they never pull it back. */
+    @Synchronized
+    fun adjustManual(deltaMs: Long) {
+        emaMs = (emaMs + deltaMs).coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
+        onDelayChanged(emaMs)
     }
 
+    @Synchronized
     fun stop() {
-        tickRunning = false
-        dubSpokeThisTurn = false
-        utteranceStartMs = -1L
-        handler.removeCallbacks(tick)
+        burstStarts.clear()
+        lastDubAtMs = 0L
     }
 
     private fun addSample(sampleMs: Long) {
-        // v1.0.6: ignore samples over 15 s — the first sample after
-        // connecting can include stale pre-connect buffer, and a 15 s+
-        // latency is not a real per-sentence delay.
-        if (sampleMs < 500L || sampleMs > 15_000L) return
         val clamped = min(max(sampleMs, Prefs.MIN_DELAY_MS), maxDelayMs)
         emaMs = (0.5 * emaMs + 0.5 * clamped).toLong()
         onDelayChanged(emaMs)

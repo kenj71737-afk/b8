@@ -69,6 +69,9 @@ class DubbingService : Service() {
         const val ACTION_START = "com.dublive.live.START"
         const val ACTION_START_MIC = "com.dublive.live.START_MIC"
         const val ACTION_STOP = "com.dublive.live.STOP"
+        /** v1.0.7 — manual delay nudge from the "Trễ −1s / +1s" buttons. */
+        const val ACTION_ADJUST_DELAY = "com.dublive.live.ADJUST_DELAY"
+        const val EXTRA_DELAY_DELTA_MS = "delay_delta_ms"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val ACTION_DUB_EVENT = "com.dublive.live.DUB_EVENT"
@@ -259,6 +262,39 @@ class DubbingService : Service() {
         }
     }
 
+    /**
+     * v1.0.7 — segment cutter (FIFO pairing, second half). Cantonese
+     * dialogue runs on for minutes without a 700 ms silence, so the VAD
+     * fires onSpeechStart once and never ends the utterance — one burst
+     * marker for a whole scene would freeze the delay after the first
+     * sample (the 20:12 report). Every 2 s this checks whether speech
+     * has been running for >= 4 s since the current segment started; if
+     * so it pushes a FRESH burst marker into the tracker queue — only a
+     * marker, never an onSpeechEnd: utteranceBytes (Groq) and the Live
+     * stream are NOT cut, the model keeps translating continuously.
+     * Runs on the main handler; VAD callbacks run on the capture
+     * thread, so the two shared fields are @Volatile.
+     */
+    @Volatile private var inSpeech = false
+    @Volatile private var currentSegmentStartMs = 0L
+    private val segmentCutter = object : Runnable {
+        override fun run() {
+            if (!capturing) return
+            try {
+                if (inSpeech) {
+                    val now = System.currentTimeMillis()
+                    if (now - currentSegmentStartMs >= 4000L) {
+                        currentSegmentStartMs = now
+                        tracker?.noteBurstStart(now)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "segmentCutter failed", e)
+            }
+            mainHandler.postDelayed(this, 2000L)
+        }
+    }
+
     private val watchdog = object : Runnable {
         override fun run() {
             if (!capturing) return
@@ -305,6 +341,20 @@ class DubbingService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             when (intent?.action) {
+                ACTION_ADJUST_DELAY -> {
+                    // v1.0.7 — manual "Trễ −1s / +1s" nudge: shift the
+                    // tracker's EMA at once (it broadcasts TYPE_HUD, so
+                    // the HUD and the WebView canvas follow immediately).
+                    // No-op when not dubbing (tracker is null then).
+                    try {
+                        tracker?.adjustManual(
+                            intent.getLongExtra(EXTRA_DELAY_DELTA_MS, 0L)
+                        )
+                    } catch (e: Exception) {
+                        Log.w(TAG, "adjustManual failed", e)
+                    }
+                    return START_NOT_STICKY
+                }
                 ACTION_STOP -> {
                     stopDub()
                     return START_NOT_STICKY
@@ -395,7 +445,12 @@ class DubbingService : Service() {
         }
         try {
             voicePlayer = VoicePlayer(this) {
-                tracker?.onDubSpeechStarted()
+                // v1.0.7 — FIFO pairing: every time the dubbed voice
+                // actually starts (first AudioTrack chunk taken, or TTS
+                // onStart) the tracker pairs it with the oldest burst
+                // marker. The >= 800 ms gap gate inside noteDubChunk
+                // makes duplicate calls for the same segment harmless.
+                tracker?.noteDubChunk()
             }.also {
                 it.start()
                 // v1.0.6 — track/TTS at max (1.0f); the Settings slider
@@ -413,10 +468,12 @@ class DubbingService : Service() {
         try {
             tracker = DubDelayTracker(
                 Prefs.maxDelayMs(this),
-                // v1.0.4: the delay tracker only samples once a translation
-                // has actually arrived; before that the delay stays frozen
-                // at the 5.2 s seed instead of ballooning to 19+ s.
-                hasDubOutput = { lastOutputAtMs > 0L }
+                // v1.0.7 — seed from Settings "Trễ hình cơ bản"
+                // (default 5 s); FIFO pairing takes over from the first
+                // dubbed segment, so the delay keeps moving as long as
+                // dialogue keeps coming instead of freezing after one
+                // sample (the v1.0.6 bug).
+                Prefs.baseDelayMs(this)
             ) { delayMs ->
                 broadcast(TYPE_HUD, delayMs = delayMs)
             }
@@ -434,6 +491,8 @@ class DubbingService : Service() {
         reconnects = 0
         modelIndex = 0
         reconnectPending = false
+        inSpeech = false
+        currentSegmentStartMs = 0L
         comboFailures.clear()
         liveErrorHistory.clear()
         broadcastLiveErrors()
@@ -510,6 +569,7 @@ class DubbingService : Service() {
         mainHandler.postDelayed(watchdog, 10_000L)
         mainHandler.postDelayed(levelTicker, 500L)
         mainHandler.postDelayed(duckTicker, 500L)
+        mainHandler.postDelayed(segmentCutter, 2000L)
     }
 
     /** Stop the old (projection) capture thread, then restart it on the mic. */
@@ -576,6 +636,14 @@ class DubbingService : Service() {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
+                        // v1.0.7 — FIFO pairing: every Live audio chunk
+                        // is a dub-chunk candidate; the tracker pairs
+                        // only chunks arriving >= 800 ms after the
+                        // previous dub audio (a new dubbed segment) with
+                        // the oldest burst marker.
+                        try { tracker?.noteDubChunk() } catch (e: Exception) {
+                            Log.w(TAG, "noteDubChunk failed", e)
+                        }
                         try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
                             Log.w(TAG, "playAudio failed", e)
                         }
@@ -976,7 +1044,12 @@ class DubbingService : Service() {
                 energyThreshold = vadThreshold,
                 listener = object : VadDetector.Listener {
                 override fun onSpeechStart(preRollAndHead: ShortArray) {
-                    try { tracker?.startUtterance() } catch (_: Exception) { }
+                    // v1.0.7 — FIFO pairing: push a burst marker for
+                    // this speech start; the segment cutter adds one
+                    // more every 4 s if speech keeps running.
+                    inSpeech = true
+                    currentSegmentStartMs = System.currentTimeMillis()
+                    try { tracker?.noteBurstStart(currentSegmentStartMs) } catch (e: Exception) { }
                     try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
                     utteranceBytes.reset()
                     val bytes = shortsToBytes(preRollAndHead)
@@ -1018,7 +1091,12 @@ class DubbingService : Service() {
                 }
 
                 override fun onSpeechEnd() {
-                    try { tracker?.endUtterance() } catch (_: Exception) { }
+                    // v1.0.7 — only the segment-cutter state ends here.
+                    // utteranceBytes (Groq) and the Live stream are NOT
+                    // cut by the 4 s forced markers, and the tracker has
+                    // no endUtterance any more: the next onSpeechStart
+                    // pushes the next burst marker.
+                    inSpeech = false
                     setStatus(if (useGroqOnly) "Đang dịch bằng Groq…" else "Đang dịch…")
                     if (liveConnected) {
                         try { liveClient?.endTurn() } catch (e: Exception) {
@@ -1179,9 +1257,11 @@ class DubbingService : Service() {
     private fun stopDub() {
         stopped = true
         capturing = false
+        inSpeech = false
         try { mainHandler.removeCallbacks(watchdog) } catch (_: Exception) { }
         try { mainHandler.removeCallbacks(levelTicker) } catch (_: Exception) { }
         try { mainHandler.removeCallbacks(duckTicker) } catch (_: Exception) { }
+        try { mainHandler.removeCallbacks(segmentCutter) } catch (_: Exception) { }
         // v1.0.5 — restore the original volume (the duck ticker is gone
         // now, so a ducked state would otherwise stick).
         if (ducked) {

@@ -54,6 +54,13 @@
             android:layout_height="wrap_content" android:text="20 giây" />
 
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_base_delay" />
+        <SeekBar android:id="@+id/baseDelaySeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="17" android:progress="2" />
+        <TextView android:id="@+id/baseDelayLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="5 giây" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="@string/settings_original_volume" />
         <SeekBar android:id="@+id/originalVolumeSeek" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:max="100" android:progress="80" />

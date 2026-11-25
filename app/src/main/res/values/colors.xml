@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="dub_black">#CC000000</color>
+    <color name="dub_black_60">#99000000</color>
+    <color name="dub_white">#FFFFFF</color>
+    <color name="dub_accent">#FFB300</color>
+</resources>

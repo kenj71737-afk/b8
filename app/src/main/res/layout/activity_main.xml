@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:id="@+id/urlRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <EditText
+            android:id="@+id/urlInput"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="@string/url_hint"
+            android:inputType="textUri"
+            android:singleLine="true" />
+
+        <Button
+            android:id="@+id/openButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/open" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/dubRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp">
+
+        <Button
+            android:id="@+id/startDubButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/start_dub" />
+
+        <Button
+            android:id="@+id/stopDubButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/stop_dub" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/fileRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp">
+
+        <Button
+            android:id="@+id/localFileButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/open_local_file" />
+
+        <Button
+            android:id="@+id/settingsButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/settings_title" />
+
+        <Button
+            android:id="@+id/delayToggleButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/delay_off" />
+
+        <Button
+            android:id="@+id/subtitleToggleButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/subtitle_hide" />
+
+        <!-- v1.0.6 — toàn màn hình CỦA APP: khác với nút fullscreen của
+             trang web (đưa video lên surface native, canvas trễ ở lại
+             trong trang nên không bao giờ khớp), nút này chỉ ẩn giao
+             diện chrome của app, WebView vẫn ở trong trang nên canvas
+             trễ vẫn chạy và hình vẫn khớp giọng. -->
+        <Button
+            android:id="@+id/expandButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/expand_app" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/micRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="4dp">
+
+        <Button
+            android:id="@+id/micDubButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/start_dub_mic" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/errorsRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="4dp">
+
+        <Button
+            android:id="@+id/liveErrorsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/view_live_errors" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/statusRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:id="@+id/statusView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_idle"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/level_label"
+                android:textSize="13sp" />
+
+            <ProgressBar
+                android:id="@+id/levelBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginLeft="6dp"
+                android:max="1000"
+                android:progress="0" />
+
+            <TextView
+                android:id="@+id/levelValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="6dp"
+                android:text="0"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- v1.0.12 — the hint is DYNAMIC (see updateVolumeHint in
+         MainActivity): the dub voice is on the MEDIA stream while
+         the tap works, and on the CALL stream after a capture/mic
+         fallback. The static text below is only the pre-start
+         default (call stream). -->
+    <TextView
+        android:id="@+id/callVolumeHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="2dp"
+        android:text="@string/call_volume_hint"
+        android:textSize="11sp" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <WebView
+            android:id="@+id/webView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- v1.0.5 — small subtitle, bottom of the video, max 3 lines.
+             v1.0.4 showed the whole ever-growing translation at 18sp and
+             it covered the entire video. Now the service only ever sends
+             the last 1–2 sentences (~120 chars), and the view itself is
+             capped at 3 lines over a 60% black rounded background, so it
+             can never cover more than ~1/3 of the screen. -->
+        <TextView
+            android:id="@+id/subtitleView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginLeft="12dp"
+            android:layout_marginRight="12dp"
+            android:layout_marginBottom="8dp"
+            android:background="@color/dub_black_60"
+            android:ellipsize="end"
+            android:gravity="center"
+            android:maxLines="3"
+            android:padding="8dp"
+            android:textColor="@color/dub_white"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <!-- v1.0.7 — HUD + 2 nút chỉnh trễ tay "Trễ −1s / +1s" ngay
+             cạnh số trễ: bấm là hình chờ thêm/bớt 1 s ngay, không cần
+             vào Cài đặt. Nằm trong hudRow để khi vào fullscreen của
+             trang web thì cả cụm (số + 2 nút) chuyển sang decorView
+             cùng nhau như trước đây hudView đi một mình.
+             v1.0.10 — hudRow thành dọc: hàng trên là số trễ + 2 nút,
+             hàng dưới là dòng chẩn đoán trễ (D, mẫu cuối, mẫu/60 s,
+             hàng đợi lát, hold, trạng thái VAD), cập nhật mỗi giây. -->
+        <LinearLayout
+            android:id="@+id/hudRow"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="end"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/hudView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@color/dub_black"
+                    android:padding="6dp"
+                    android:textColor="@color/dub_accent"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/delayMinusButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="4dp"
+                    android:minHeight="36dp"
+                    android:text="@string/delay_minus"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/delayPlusButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="4dp"
+                    android:minHeight="36dp"
+                    android:text="@string/delay_plus"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/diagView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:background="@color/dub_black"
+                android:ellipsize="end"
+                android:gravity="end"
+                android:maxLines="2"
+                android:padding="6dp"
+                android:textColor="@color/dub_white"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <!-- v1.0.6 — thanh công cụ khi ở chế độ toàn màn hình của app:
+             chỉ hiện nút "Thu nhỏ" (thoát) và nút trễ hình, còn WebView,
+             phụ đề và HUD vẫn ở nguyên vị trí trong FrameLayout nên trễ
+             hình vẫn chạy và hình vẫn khớp giọng. -->
+        <LinearLayout
+            android:id="@+id/fullscreenBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/collapseButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/collapse_app" />
+
+            <Button
+                android:id="@+id/fsDelayToggleButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="8dp"
+                android:text="@string/delay_off" />
+
+            <!-- v1.0.7 — chỉnh trễ tay cả ở chế độ Phóng to của app. -->
+            <Button
+                android:id="@+id/fsDelayMinusButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="8dp"
+                android:text="@string/delay_minus" />
+
+            <Button
+                android:id="@+id/fsDelayPlusButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="8dp"
+                android:text="@string/delay_plus" />
+        </LinearLayout>
+    </FrameLayout>
+</LinearLayout>

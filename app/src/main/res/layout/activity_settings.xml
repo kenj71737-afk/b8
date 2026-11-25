@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_gemini_key1" />
+        <EditText android:id="@+id/key1Input" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:inputType="textPassword" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_gemini_key2" />
+        <EditText android:id="@+id/key2Input" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:inputType="textPassword" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_groq_key" />
+        <EditText android:id="@+id/groqKeyInput" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:inputType="textPassword" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_elevenlabs_key" />
+        <EditText android:id="@+id/elevenLabsKeyInput" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:inputType="textPassword"
+            android:enabled="false" android:hint="Chưa dùng ở bản 1.0.0" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_source_lang" />
+        <Spinner android:id="@+id/sourceLangSpinner" android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <CheckBox android:id="@+id/wholeSentenceCheck" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="@string/settings_whole_sentence" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_voice" />
+        <Spinner android:id="@+id/voiceSpinner" android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_voice_note" android:textSize="12sp" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_max_delay" />
+        <SeekBar android:id="@+id/maxDelaySeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="17" android:progress="17" />
+        <TextView android:id="@+id/maxDelayLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="20 giây" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_base_delay" />
+        <SeekBar android:id="@+id/baseDelaySeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="17" android:progress="2" />
+        <TextView android:id="@+id/baseDelayLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="5 giây" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_original_volume" />
+        <SeekBar android:id="@+id/originalVolumeSeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="100" android:progress="80" />
+        <TextView android:id="@+id/originalVolumeLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="80%" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_dub_volume" />
+        <SeekBar android:id="@+id/dubVolumeSeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="100" android:progress="90" />
+        <TextView android:id="@+id/dubVolumeLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="90%" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_dub_volume_note" android:textSize="12sp" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_vad_threshold" />
+        <SeekBar android:id="@+id/vadThresholdSeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="650" android:progress="350" />
+        <TextView android:id="@+id/vadThresholdLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="600" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_vad_threshold_hint" android:textSize="12sp" />
+        <CheckBox android:id="@+id/spectralGateCheck" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:checked="true"
+            android:text="@string/settings_spectral_gate" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_spectral_gate_hint" android:textSize="12sp" />
+
+        <Button android:id="@+id/testKeyButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="@string/settings_test_key" />
+        <TextView android:id="@+id/testKeyResult" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <Button android:id="@+id/saveButton" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:text="@string/settings_save" />
+    </LinearLayout>
+</ScrollView>

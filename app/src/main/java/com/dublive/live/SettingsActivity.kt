@@ -206,8 +206,8 @@ class SettingsActivity : AppCompatActivity() {
                         fail("$model: $message")
                     }
 
-                    override fun onClosed() {
-                        fail("$model: kết nối Live tự đóng trước khi setup xong")
+                    override fun onClosed(code: Int, reason: String) {
+                        fail("$model: kết nối Live tự đóng trước khi setup xong (mã $code: ${reason.ifBlank { "không rõ lý do" }})")
                     }
                 }
             )

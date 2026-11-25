@@ -25,6 +25,10 @@ import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.ln
 
 /**
  * Foreground service that owns the whole dub pipeline:
@@ -84,6 +88,10 @@ class DubbingService : Service() {
         /** Live input level, 0..1000, sent every 500 ms while capturing. */
         const val TYPE_LEVEL = "level"
         const val EXTRA_LEVEL = "level"
+        /** Raw RMS of the last audio frame (Double), sent with TYPE_LEVEL. */
+        const val EXTRA_RMS = "rms"
+        /** Full Live error history (last 8), as one multi-line text. */
+        const val TYPE_LIVE_ERRORS = "live_errors"
         const val STATE_RUNNING = "running"
         const val STATE_STOPPED = "stopped"
 
@@ -95,9 +103,18 @@ class DubbingService : Service() {
         private const val SILENCE_LIMIT_MS = 60_000L
         /** No translated output at all this long after (re)connect -> retry. */
         private const val NO_OUTPUT_LIMIT_MS = 25_000L
-        private const val MAX_RECONNECTS = 5
-        /** Pre-connect audio buffer cap: ~10 s of 16 kHz 16-bit mono. */
-        private const val PRECONNECT_MAX_BYTES = 320_000
+        /**
+         * v1.0.4: total reconnect budget = 6 (model, key) combinations x 2
+         * attempts each. The decision to advance is driven by the
+         * PER-COMBINATION failure counts (comboFailures), never by this
+         * shared counter alone — v1.0.3 burned all 6 combos in seconds
+         * because one stale-socket race fed every failure into the same
+         * counter. This is only a safety cap against looping forever.
+         */
+        private const val MAX_RECONNECTS = 12
+        /** Pre-connect audio buffer cap: ~6 s of 16 kHz 16-bit mono
+         * (ALDA FIX36: the send queue holds ~6 s, no more). */
+        private const val PRECONNECT_MAX_BYTES = 192_000
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -125,10 +142,46 @@ class DubbingService : Service() {
     private var useGroqOnly = false
     private var liveConnected = false
     private var reconnectPending = false
-    private var closingForReconnect = false
     private var duckApplied = false
     private var lastStatus = ""
     private var lastHeardAtMs = 0L
+
+    /**
+     * v1.0.4 — generation guard (with GeminiLiveClient's own socket
+     * identity check). Every connectLive() bumps this counter and captures
+     * its value in the listener closures; any callback whose generation
+     * is not the current one belongs to a socket that has already been
+     * replaced and is dropped silently. This replaces the old
+     * closingForReconnect flag, which was racy by design: close() is
+     * async, so the old socket's onClosed could arrive AFTER the flag
+     * had been reset to false, and was then mistaken for a server drop —
+     * advancing the model/key and closing the brand-new socket, whose
+     * own onClosed fired the same chain again. That loop is what burned
+     * all 6 combos in seconds on v1.0.3 ("Lỗi Live [2.5-native]: Gemini
+     * Live tự ngắt kết nối").
+     */
+    private val liveGeneration = AtomicInteger(0)
+
+    /** v1.0.4 — last 8 Live errors, full message (never truncated), for
+     * the "Xem lỗi Live" dialog. The status line only ever showed the
+     * LAST error, so the first failure (translate-preview key 1) was
+     * invisible and the cause could not be diagnosed. */
+    private val liveErrorHistory = ArrayDeque<LiveErrorEntry>()
+
+    /**
+     * v1.0.4 — consecutive failures per (model, key) combination,
+     * keyed "modelIndex:keyIndex". A combination is retried once before
+     * advancing to the next one: a one-off server hiccup must not burn
+     * a model/key. Cleared for a combination when it connects.
+     */
+    private val comboFailures = HashMap<String, Int>()
+
+    private data class LiveErrorEntry(
+        val timeMs: Long,
+        val model: String,
+        val keyNo: Int,
+        val message: String
+    )
 
     private val utteranceBytes = ByteArrayOutputStream()
     private val pendingText = StringBuilder()
@@ -144,8 +197,16 @@ class DubbingService : Service() {
             if (!capturing) return
             val rms = try { vad?.lastRms ?: 0.0 } catch (_: Exception) { 0.0 }
             if (rms > 50.0) lastHeardAtMs = System.currentTimeMillis()
-            val level = ((rms / 2000.0) * 1000.0).toInt().coerceIn(0, 1000)
-            broadcast(TYPE_LEVEL, level = level)
+            // v1.0.4 — LOG scale. The old linear scale (rms/2000*1000)
+            // saturated at 1000 for any loud sound (the v1.0.3 screenshot
+            // showed a flat 1000), hiding how loud it really was, and
+            // background music kept the VAD thinking speech was constant.
+            // Log scale: rms 8000 -> 1000, rms 2000 -> ~846, rms 250
+            // (VAD threshold) -> ~512, rms 50 -> ~396. VAD threshold
+            // itself is UNCHANGED — this is display only.
+            val level = (ln(1.0 + rms) / ln(1.0 + 8000.0) * 1000.0)
+                .toInt().coerceIn(0, 1000)
+            broadcast(TYPE_LEVEL, level = level, rms = rms)
             // Silence diagnosis: capturing but nothing heard for a while.
             val now = System.currentTimeMillis()
             if (lastOutputAtMs == 0L && lastHeardAtMs > 0L &&
@@ -165,10 +226,12 @@ class DubbingService : Service() {
                 if (lastOutputAtMs > 0 && now - lastOutputAtMs > SILENCE_LIMIT_MS) {
                     if (reconnects < MAX_RECONNECTS) {
                         reconnects++
+                        recordLiveError("Im lặng 60s sau khi đã có output — nối lại Live")
                         Log.w(TAG, "Silent for 60s, reconnecting ($reconnects/$MAX_RECONNECTS)")
                         reconnectLive()
                     } else {
                         Log.w(TAG, "Live silent after $MAX_RECONNECTS reconnects, Groq fallback")
+                        recordLiveError("Im lặng 60s, đã hết $MAX_RECONNECTS lần nối lại — chuyển Groq")
                         switchToGroq("Gemini Live im lặng quá lâu, chuyển sang dự phòng Groq")
                     }
                 } else if (lastOutputAtMs == 0L && !liveConnected &&
@@ -185,6 +248,7 @@ class DubbingService : Service() {
                         reconnectLive()
                     } else {
                         Log.w(TAG, "Live never produced output, Groq fallback")
+                        recordLiveError("Không có output nào sau 25s, đã thử hết các tổ hợp — chuyển Groq")
                         switchToGroq("Gemini Live không nối được, chuyển sang dự phòng Groq")
                     }
                 } else if (now >= rotateAtMs) {
@@ -298,7 +362,13 @@ class DubbingService : Service() {
             broadcast(TYPE_ERROR, message = "Không mở được loa đọc giọng: ${e.message}")
         }
         try {
-            tracker = DubDelayTracker(Prefs.maxDelayMs(this)) { delayMs ->
+            tracker = DubDelayTracker(
+                Prefs.maxDelayMs(this),
+                // v1.0.4: the delay tracker only samples once a translation
+                // has actually arrived; before that the delay stays frozen
+                // at the 5.2 s seed instead of ballooning to 19+ s.
+                hasDubOutput = { lastOutputAtMs > 0L }
+            ) { delayMs ->
                 broadcast(TYPE_HUD, delayMs = delayMs)
             }
         } catch (e: Exception) {
@@ -315,7 +385,9 @@ class DubbingService : Service() {
         reconnects = 0
         modelIndex = 0
         reconnectPending = false
-        closingForReconnect = false
+        comboFailures.clear()
+        liveErrorHistory.clear()
+        broadcastLiveErrors()
         duckApplied = false
         rotateAtMs = System.currentTimeMillis() + KEY_ROTATE_MS
         lastOutputAtMs = 0L
@@ -418,6 +490,14 @@ class DubbingService : Service() {
         lastLiveAttemptAtMs = System.currentTimeMillis()
         setStatus("Đang nối Gemini Live… ($model)")
         Log.i(TAG, "Connecting Live: model=$model key=${keyIndex % keys.size + 1}")
+        // v1.0.4 generation: this attempt's id. Every callback below
+        // returns immediately when its generation is no longer current —
+        // a stale socket's late onClosed/onError/onMessage must never
+        // touch the live state or kill the new socket. (Together with the
+        // client's own socket-identity check this is the ALDA guard
+        // DubLive was missing; the old closingForReconnect flag is gone.)
+        val gen = liveGeneration.incrementAndGet()
+        val isCurrent: () -> Boolean = { gen == liveGeneration.get() }
         val client = try {
             GeminiLiveClient(
                 apiKey = key,
@@ -426,15 +506,19 @@ class DubbingService : Service() {
                 wholeSentence = Prefs.wholeSentence(this),
                 listener = object : GeminiLiveClient.Listener {
                     override fun onConnected() {
+                        if (!isCurrent()) return
                         liveConnected = true
                         reconnects = 0
                         reconnectPending = false
+                        // This combination works: its failure count resets.
+                        comboFailures.remove(comboKey())
                         Log.i(TAG, "Gemini Live connected (key ${keyIndex % keys.size + 1}, model=$model)")
                         setStatus("Đã nối, đang nghe…")
                         flushPendingAudio()
                     }
 
                     override fun onAudioChunk(pcm24k: ByteArray) {
+                        if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
                         applyDuckOnce()
@@ -444,12 +528,14 @@ class DubbingService : Service() {
                     }
 
                     override fun onTranslatedText(text: String, isFinal: Boolean) {
+                        if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         pendingText.append(text)
                         broadcast(TYPE_SUBTITLE, text = pendingText.toString())
                     }
 
                     override fun onTurnComplete() {
+                        if (!isCurrent()) return
                         val text = pendingText.toString().trim()
                         pendingText.clear()
                         if (!SpeechFilter.isMeaningful(text)) {
@@ -468,21 +554,29 @@ class DubbingService : Service() {
                     }
 
                     override fun onInputText(text: String) {
+                        if (!isCurrent()) return
                         Log.i(TAG, "Heard (source): $text")
                     }
 
                     override fun onError(message: String) {
+                        if (!isCurrent()) return
                         Log.w(TAG, "Live error: $message")
                         if (capturing && !useGroqOnly) handleLiveError(message)
                     }
 
-                    override fun onClosed() {
+                    override fun onClosed(code: Int, reason: String) {
+                        if (!isCurrent()) return
                         liveConnected = false
-                        // A close that WE triggered for a reconnect is
-                        // expected; a close from the server is a failure.
-                        if (closingForReconnect) return
+                        // v1.0.4: a close of the CURRENT socket is a real
+                        // failure — but carry the code + reason so the
+                        // history can tell 1000/1006/1011 apart. (A close
+                        // of an OLD socket never reaches here: the
+                        // generation guard above drops it, and the client
+                        // drops it by socket identity too.)
                         if (capturing && !useGroqOnly && !reconnectPending) {
-                            handleLiveError("Gemini Live tự ngắt kết nối")
+                            handleLiveError(
+                                "Live tự ngắt (mã $code: ${reason.ifBlank { "không rõ lý do" }})"
+                            )
                         }
                     }
                 }
@@ -502,29 +596,76 @@ class DubbingService : Service() {
     }
 
     /**
-     * v1.0.3: ANY Live error advances to the NEXT (model, key) combination
-     * in a fixed order — translate-preview key 1 -> key 2 -> native-audio
-     * key 1 -> key 2 -> native-audio-preview key 1 -> key 2 — and every
-     * failure names the model that failed in the persistent status line.
-     * A dead model and a dead key look the same from here, so the order
-     * tries the other key on the same model first (a key error is the
-     * common case for a model that is known to work). After the last
-     * combination, switch to Groq instead of looping forever.
+     * v1.0.4 — per-combination retry + error history.
+     *
+     * Retry policy: a (model, key) combination is retried ONCE on the
+     * same combination before advancing — a one-off server hiccup must
+     * not burn a model/key. Only after 2 consecutive failures on the
+     * same combination does the order advance (same model, next key
+     * first, then next model, key 1 — a key/quota error is the common
+     * case for a model known to work). The decision is driven by the
+     * per-combination counts in [comboFailures]; the shared [reconnects]
+     * counter is only a safety cap (6 combos x 2 attempts).
+     *
+     * Every failure is also recorded FULL (never truncated to 90 chars)
+     * in [liveErrorHistory] with time, model and key number, and pushed
+     * to the UI — v1.0.3 only ever showed the LAST error on the status
+     * line, so the first failure (translate-preview key 1) was invisible
+     * and the cause could not be diagnosed.
      */
     private fun handleLiveError(message: String) {
         if (!capturing || useGroqOnly || reconnectPending) return
         reconnectPending = true
         val failedModel = GeminiLiveClient.shortModelName(currentLiveModel())
+        recordLiveError(message)
+        val keyNote =
+            if (GeminiLiveClient.isKeyError(message)) " (lỗi key/hạn mức?)" else ""
         setStatus("Lỗi Live [$failedModel]: ${shortError(message)}")
-        Log.w(TAG, "Live error on $failedModel: $message")
-        if (reconnects < MAX_RECONNECTS && advanceAttempt()) {
+        Log.w(TAG, "Live error on $failedModel key ${keyIndex + 1}$keyNote: $message")
+        val combo = comboKey()
+        val fails = (comboFailures[combo] ?: 0) + 1
+        comboFailures[combo] = fails
+        if (fails < 2 && reconnects < MAX_RECONNECTS) {
+            reconnects++
+            Log.w(TAG, "Live error, retrying SAME combo ($reconnects/$MAX_RECONNECTS): $failedModel key ${keyIndex + 1} (failure $fails/2)")
+            scheduleReconnect(2000L)
+        } else if (reconnects < MAX_RECONNECTS && advanceAttempt()) {
             reconnects++
             val nextModel = GeminiLiveClient.shortModelName(currentLiveModel())
-            Log.w(TAG, "Live error, retrying ($reconnects/$MAX_RECONNECTS) with $nextModel key ${keyIndex + 1}")
-            scheduleReconnect(1000L)
+            Log.w(TAG, "Live error, advancing ($reconnects/$MAX_RECONNECTS) to $nextModel key ${keyIndex + 1}")
+            scheduleReconnect(2000L)
         } else {
             reconnectPending = false
             switchToGroq("Gemini Live lỗi ($message), chuyển sang dự phòng Groq")
+        }
+    }
+
+    /** "modelIndex:keyIndex" — key for [comboFailures]. */
+    private fun comboKey(): String = "$modelIndex:$keyIndex"
+
+    /** Record one Live failure (full message) into the 8-entry history
+     * and push the whole history to the UI for the "Xem lỗi Live" dialog. */
+    private fun recordLiveError(message: String) {
+        val entry = LiveErrorEntry(
+            System.currentTimeMillis(),
+            currentLiveModel(),
+            keyIndex + 1,
+            message
+        )
+        liveErrorHistory.addLast(entry)
+        while (liveErrorHistory.size > 8) liveErrorHistory.removeFirst()
+        broadcastLiveErrors()
+    }
+
+    private fun broadcastLiveErrors() {
+        broadcast(TYPE_LIVE_ERRORS, message = liveErrorHistoryText())
+    }
+
+    private fun liveErrorHistoryText(): String {
+        if (liveErrorHistory.isEmpty()) return ""
+        val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+        return liveErrorHistory.joinToString("\n") { e ->
+            "${fmt.format(java.util.Date(e.timeMs))} · [${GeminiLiveClient.shortModelName(e.model)}] key ${e.keyNo} · ${e.message}"
         }
     }
 
@@ -578,7 +719,8 @@ class DubbingService : Service() {
         broadcast(TYPE_DUCK, message = Prefs.originalVolume(this).toString())
     }
 
-    /** Queue audio spoken while Live is still connecting (max ~10 s). */
+    /** Queue audio spoken while Live is still connecting (max ~6 s,
+     * ALDA FIX36). Flushed paced (2 blocks/tick) on setupComplete. */
     private fun bufferAudio(bytes: ByteArray) {
         synchronized(pendingChunks) {
             pendingChunks.addLast(bytes)
@@ -589,7 +731,14 @@ class DubbingService : Service() {
         }
     }
 
-    /** Send all buffered pre-connect audio now that Live is connected. */
+    /** Queue buffered pre-connect audio now that Live is connected.
+     * v1.0.4 — ALDA FIX36: the backlog is ENQUEUED into the client's
+     * send queue and drains 2 blocks per tick (2x real-time); it is
+     * NEVER blasted onto the socket in one loop. v1.0.3 sent the whole
+     * ~10 s buffer at once on setupComplete, flooding the socket queue
+     * past the 64 KB congestion drop — a plausible trigger for the server
+     * closing the session right after connect. The remaining backlog
+     * drains through the normal sendAudio ticks as speech continues. */
     private fun flushPendingAudio() {
         val chunks: List<ByteArray>
         synchronized(pendingChunks) {
@@ -598,12 +747,13 @@ class DubbingService : Service() {
             pendingBytes = 0
         }
         if (chunks.isEmpty()) return
-        Log.i(TAG, "Flushing ${chunks.size} buffered audio chunks to Live")
-        for (bytes in chunks) {
-            try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
-                Log.w(TAG, "flush sendAudio failed", e)
-                break
-            }
+        Log.i(TAG, "Queueing ${chunks.size} buffered audio chunks to Live (paced drain)")
+        val client = liveClient ?: return
+        try {
+            for (bytes in chunks) client.queueAudio(bytes)
+            client.drainPending(2)
+        } catch (e: Exception) {
+            Log.w(TAG, "flush queueAudio failed", e)
         }
     }
 
@@ -621,9 +771,10 @@ class DubbingService : Service() {
 
     private fun reconnectLive() {
         if (!capturing || useGroqOnly) return
-        closingForReconnect = true
+        // v1.0.4: no closingForReconnect flag — close() is async and the
+        // flag was racy (see liveGeneration). The old socket's late
+        // onClosed is dropped by the generation guard in connectLive().
         try { liveClient?.close() } catch (_: Exception) { }
-        closingForReconnect = false
         try { connectLive() } catch (e: Exception) {
             Log.e(TAG, "reconnectLive failed", e)
         }
@@ -953,7 +1104,7 @@ class DubbingService : Service() {
 
     private fun broadcast(type: String, text: String? = null, delayMs: Long? = null,
                           state: String? = null, message: String? = null,
-                          level: Int? = null) {
+                          level: Int? = null, rms: Double? = null) {
         try {
             val intent = Intent(ACTION_DUB_EVENT).setPackage(packageName)
             intent.putExtra(EXTRA_TYPE, type)
@@ -962,6 +1113,7 @@ class DubbingService : Service() {
             if (state != null) intent.putExtra(EXTRA_STATE, state)
             if (message != null) intent.putExtra(EXTRA_MESSAGE, message)
             if (level != null) intent.putExtra(EXTRA_LEVEL, level)
+            if (rms != null) intent.putExtra(EXTRA_RMS, rms)
             sendBroadcast(intent)
         } catch (e: Exception) {
             Log.w(TAG, "broadcast failed", e)

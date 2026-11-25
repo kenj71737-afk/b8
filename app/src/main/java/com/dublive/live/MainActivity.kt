@@ -69,6 +69,8 @@ class MainActivity : AppCompatActivity() {
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private val uiHandler = Handler(Looper.getMainLooper())
+    /** v1.0.4 — full Live error history (last 8), shown by "Xem lỗi Live". */
+    private var liveErrorHistoryText = ""
 
     /** True when the pending permission request was started by the mic button. */
     private var pendingMicAfterPermission = false
@@ -146,8 +148,19 @@ class MainActivity : AppCompatActivity() {
                 }
                 DubbingService.TYPE_LEVEL -> {
                     val level = intent.getIntExtra(DubbingService.EXTRA_LEVEL, 0)
+                    // v1.0.4 — log scale (0..1000) + raw RMS beside it, so a
+                    // loud scene no longer reads as a flat 1000 with no
+                    // clue how loud it really was.
+                    val rms = intent.getDoubleExtra(DubbingService.EXTRA_RMS, 0.0)
                     levelBar.progress = level
-                    levelValue.text = level.toString()
+                    levelValue.text = "$level (RMS ${rms.toInt()})"
+                }
+                DubbingService.TYPE_LIVE_ERRORS -> {
+                    // v1.0.4 — keep the full error history for the dialog.
+                    // The status line only shows the LAST error; the first
+                    // failure is usually the one that matters.
+                    liveErrorHistoryText =
+                        intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
                 }
                 DubbingService.TYPE_ERROR -> {
                     val msg = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
@@ -229,6 +242,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.startDubButton).setOnClickListener { startDub() }
         findViewById<Button>(R.id.stopDubButton).setOnClickListener { stopDub() }
         findViewById<Button>(R.id.micDubButton).setOnClickListener { startMicDub() }
+        findViewById<Button>(R.id.liveErrorsButton).setOnClickListener { showLiveErrors() }
         findViewById<Button>(R.id.localFileButton).setOnClickListener {
             startActivity(Intent(this, LocalPlayerActivity::class.java))
         }
@@ -396,6 +410,34 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "stopDub failed", e)
         }
         dubbing = false
+    }
+
+    /**
+     * v1.0.4 — "Xem lỗi Live": a scrollable dialog with the full history
+     * (up to 8 errors: time, model, key number, full message). The user
+     * screenshots this instead of the one-line status, so the FIRST error
+     * (usually translate-preview key 1) is visible instead of only the
+     * last one. Works even when the service is not running — the last
+     * received history stays on screen.
+     */
+    private fun showLiveErrors() {
+        val textView = TextView(this).apply {
+            text = if (liveErrorHistoryText.isBlank()) {
+                getString(R.string.live_errors_empty)
+            } else {
+                liveErrorHistoryText
+            }
+            setPadding(32, 24, 32, 24)
+            textSize = 13f
+        }
+        val scroll = android.widget.ScrollView(this).apply {
+            addView(textView)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.live_errors_title)
+            .setView(scroll)
+            .setPositiveButton(android.R.string.ok, null)
+            .show()
     }
 
     private fun setOriginalVolume(vol: Float) {

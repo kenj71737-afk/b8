@@ -42,6 +42,9 @@
     <string name="service_failed">Không mở được dịch vụ lồng tiếng, đã chuyển sang chế độ mic.</string>
     <string name="status_idle">Trạng thái: chưa lồng tiếng</string>
     <string name="level_label">Mức tiếng:</string>
+    <string name="view_live_errors">Xem lỗi Live</string>
+    <string name="live_errors_title">Nhật ký lỗi Live (8 lỗi gần nhất)</string>
+    <string name="live_errors_empty">Chưa có lỗi Live nào. Nếu app báo lỗi, bấm lại nút này để xem toàn bộ lịch sử lỗi rồi chụp màn hình gửi lại.</string>
     <string name="key_live_ok">Live nối được (model %1$s) — key và model Live đều tốt</string>
     <string name="key_live_bad">Live không nối được: %1$s</string>
     <string name="key_testing_live">Đang kiểm tra Live (mở nối thử tới Gemini Live)…</string>

@@ -40,33 +40,43 @@ class VoicePlayer(
     private var ttsReady = false
 
     init {
-        tts = TextToSpeech(context.applicationContext) { status ->
-            ttsReady = status == TextToSpeech.SUCCESS
-            if (ttsReady) {
-                val result = tts?.setLanguage(Locale("vi", "VN"))
-                if (result == TextToSpeech.LANG_MISSING_DATA ||
-                    result == TextToSpeech.LANG_NOT_SUPPORTED
-                ) {
-                    Log.w(TAG, "Vietnamese TTS voice missing on this device")
-                }
-                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {
-                        if (!speechStartedSignalled) {
-                            speechStartedSignalled = true
-                            onSpeechStarted()
+        // TextToSpeech can fail on some OEM builds — never let it kill the service.
+        tts = try {
+            TextToSpeech(context.applicationContext) { status ->
+                try {
+                    ttsReady = status == TextToSpeech.SUCCESS
+                    if (ttsReady) {
+                        val result = tts?.setLanguage(Locale("vi", "VN"))
+                        if (result == TextToSpeech.LANG_MISSING_DATA ||
+                            result == TextToSpeech.LANG_NOT_SUPPORTED
+                        ) {
+                            Log.w(TAG, "Vietnamese TTS voice missing on this device")
                         }
-                    }
+                        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                            override fun onStart(utteranceId: String?) {
+                                if (!speechStartedSignalled) {
+                                    speechStartedSignalled = true
+                                    try { onSpeechStarted() } catch (_: Exception) { }
+                                }
+                            }
 
-                    override fun onDone(utteranceId: String?) {}
-                    override fun onError(utteranceId: String?) {}
-                })
+                            override fun onDone(utteranceId: String?) {}
+                            override fun onError(utteranceId: String?) {}
+                        })
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "TTS init callback failed", e)
+                    ttsReady = false
+                }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "TextToSpeech creation failed", e)
+            null
         }
     }
 
     fun start() {
         if (running) return
-        running = true
         val attrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -76,25 +86,42 @@ class VoicePlayer(
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
             .build()
-        val minBuf = AudioTrack.getMinBufferSize(
-            24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
-        )
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(attrs)
-            .setAudioFormat(format)
-            .setBufferSizeInBytes(minBuf * 4)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-        audioTrack?.play()
+        val track = try {
+            val minBuf = AudioTrack.getMinBufferSize(
+                24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
+            )
+            AudioTrack.Builder()
+                .setAudioAttributes(attrs)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes((if (minBuf > 0) minBuf else 4096) * 4)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioTrack creation failed", e)
+            null
+        } ?: return
+        try {
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                try { track.release() } catch (_: Exception) { }
+                return
+            }
+            track.play()
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioTrack.play failed", e)
+            try { track.release() } catch (_: Exception) { }
+            return
+        }
+        audioTrack = track
+        running = true
         playerThread = Thread({
             while (running) {
                 try {
                     val chunk = audioQueue.take()
                     if (!speechStartedSignalled) {
                         speechStartedSignalled = true
-                        onSpeechStarted()
+                        try { onSpeechStarted() } catch (_: Exception) { }
                     }
-                    audioTrack?.write(chunk, 0, chunk.size)
+                    try { audioTrack?.write(chunk, 0, chunk.size) } catch (_: Exception) { }
                 } catch (_: InterruptedException) {
                     break
                 }
@@ -111,20 +138,24 @@ class VoicePlayer(
     fun speakText(text: String, lagMs: Long) {
         val tts = tts ?: return
         if (!ttsReady) return
-        val rate = when {
-            lagMs > 4000 -> 1.35f
-            lagMs > 2000 -> 1.2f
-            else -> 1.0f
+        try {
+            val rate = when {
+                lagMs > 4000 -> 1.35f
+                lagMs > 2000 -> 1.2f
+                else -> 1.0f
+            }
+            tts.setSpeechRate(rate)
+            tts.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            speechStartedSignalled = false
+            tts.speak(text, TextToSpeech.QUEUE_ADD, null, "dublive-${System.currentTimeMillis()}")
+        } catch (e: Exception) {
+            Log.w(TAG, "TTS speak failed", e)
         }
-        tts.setSpeechRate(rate)
-        tts.setAudioAttributes(
-            AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build()
-        )
-        speechStartedSignalled = false
-        tts.speak(text, TextToSpeech.QUEUE_ADD, null, "dublive-${System.currentTimeMillis()}")
     }
 
     fun resetTurnFlag() {

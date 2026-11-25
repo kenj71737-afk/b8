@@ -1,10 +1,12 @@
 package com.dublive.live
 
+import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.media.projection.MediaProjectionManager
@@ -13,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.TextureView
 import android.view.View
 import android.widget.Button
@@ -20,7 +23,9 @@ import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 
@@ -36,6 +41,10 @@ import androidx.media3.exoplayer.ExoPlayer
  */
 class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
 
+    companion object {
+        private const val TAG = "DubLive-Local"
+    }
+
     private lateinit var textureView: TextureView
     private lateinit var delayedFrameView: ImageView
     private lateinit var subtitleView: TextView
@@ -45,6 +54,25 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private var dubbing = false
     private var delayOn = true
     private var currentDelayMs = 5000L
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private var pendingMicAfterPermission = false
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val granted = results[Manifest.permission.RECORD_AUDIO] == true || hasRecordAudio()
+        val wantMic = pendingMicAfterPermission
+        pendingMicAfterPermission = false
+        if (granted) {
+            if (wantMic) startMicService() else showShareTipThenProjection()
+        } else {
+            Toast.makeText(this, R.string.need_mic_permission, Toast.LENGTH_LONG).show()
+            if (!wantMic) {
+                Toast.makeText(this, R.string.mic_denied, Toast.LENGTH_LONG).show()
+                startMicService()
+            }
+        }
+    }
 
     private val frameQueue = ArrayDeque<Pair<Long, Bitmap>>()
     private val pumpHandler = Handler(Looper.getMainLooper())
@@ -66,10 +94,7 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
                 putExtra(DubbingService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(DubbingService.EXTRA_RESULT_DATA, result.data)
             }
-            startForegroundService(intent)
-            dubbing = true
-            player?.volume = Prefs.originalVolume(this)
-            hudView.visibility = View.VISIBLE
+            startProjectionService(intent, isRetry = false)
         } else {
             Toast.makeText(this, "Cần cho phép ghi màn hình để lấy tiếng hệ thống", Toast.LENGTH_LONG).show()
         }
@@ -136,6 +161,7 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         }
         findViewById<Button>(R.id.localStartDubButton).setOnClickListener { startDub() }
         findViewById<Button>(R.id.localStopDubButton).setOnClickListener { stopDub() }
+        findViewById<Button>(R.id.localMicDubButton).setOnClickListener { startMicDub() }
         pumpHandler.post(pump)
     }
 
@@ -152,6 +178,19 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         player?.play()
     }
 
+    private fun hasRecordAudio(): Boolean =
+        ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+    private fun requiredPermissions(): Array<String> {
+        val list = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            list.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        return list.toTypedArray()
+    }
+
     private fun startDub() {
         if (currentUri == null) {
             Toast.makeText(this, "Chọn file video trước", Toast.LENGTH_SHORT).show()
@@ -163,15 +202,109 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
             return
         }
         if (dubbing) return
-        val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projectionLauncher.launch(mgr.createScreenCaptureIntent())
+        if (!hasRecordAudio()) {
+            pendingMicAfterPermission = false
+            permissionLauncher.launch(requiredPermissions())
+            return
+        }
+        showShareTipThenProjection()
+    }
+
+    private fun startMicDub() {
+        if (currentUri == null) {
+            Toast.makeText(this, "Chọn file video trước", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (Prefs.geminiKeys(this).isEmpty()) {
+            Toast.makeText(this, R.string.need_key_first, Toast.LENGTH_LONG).show()
+            startActivity(Intent(this, SettingsActivity::class.java))
+            return
+        }
+        if (dubbing) return
+        if (!hasRecordAudio()) {
+            pendingMicAfterPermission = true
+            permissionLauncher.launch(requiredPermissions())
+            return
+        }
+        startMicService()
+        Toast.makeText(this, R.string.mic_hint, Toast.LENGTH_LONG).show()
+    }
+
+    private fun startMicService() {
+        val intent = Intent(this, DubbingService::class.java).apply {
+            action = DubbingService.ACTION_START_MIC
+        }
+        try {
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "startForegroundService (mic) failed, retrying with startService", e)
+            try {
+                startService(intent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "startService (mic) also failed", e2)
+                Toast.makeText(this, R.string.service_failed, Toast.LENGTH_LONG).show()
+                return
+            }
+        }
+        dubbing = true
+        player?.volume = Prefs.originalVolume(this)
+        hudView.visibility = View.VISIBLE
+    }
+
+    private fun showShareTipThenProjection() {
+        if (Prefs.shareTipShown(this)) {
+            launchProjection()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.share_tip_title)
+            .setMessage(R.string.share_tip_message)
+            .setPositiveButton(R.string.share_tip_ok) { _, _ ->
+                Prefs.setShareTipShown(this)
+                launchProjection()
+            }
+            .setNegativeButton(R.string.share_tip_cancel, null)
+            .setCancelable(true)
+            .show()
+    }
+
+    private fun launchProjection() {
+        try {
+            val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            projectionLauncher.launch(mgr.createScreenCaptureIntent())
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not launch screen-capture intent", e)
+            Toast.makeText(this, R.string.start_failed, Toast.LENGTH_LONG).show()
+            startMicService()
+        }
+    }
+
+    private fun startProjectionService(intent: Intent, isRetry: Boolean) {
+        try {
+            startForegroundService(intent)
+            dubbing = true
+            player?.volume = Prefs.originalVolume(this)
+            hudView.visibility = View.VISIBLE
+        } catch (e: Exception) {
+            Log.w(TAG, "startForegroundService (projection) failed, retry=$isRetry", e)
+            if (!isRetry) {
+                uiHandler.postDelayed({ startProjectionService(intent, isRetry = true) }, 600)
+            } else {
+                Toast.makeText(this, R.string.start_failed, Toast.LENGTH_LONG).show()
+                startMicService()
+            }
+        }
     }
 
     private fun stopDub() {
-        val intent = Intent(this, DubbingService::class.java).apply {
-            action = DubbingService.ACTION_STOP
+        try {
+            val intent = Intent(this, DubbingService::class.java).apply {
+                action = DubbingService.ACTION_STOP
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "stopDub failed", e)
         }
-        startService(intent)
         dubbing = false
     }
 

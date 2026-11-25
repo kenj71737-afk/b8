@@ -1,13 +1,18 @@
 package com.dublive.live
 
+import android.Manifest
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
@@ -18,7 +23,9 @@ import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 
 /**
  * Main screen: address bar + WebView for web films and YouTube, dub controls,
@@ -26,8 +33,28 @@ import androidx.appcompat.app.AppCompatActivity
  *
  * Audio is captured by DubbingService through the system (MediaProjection),
  * never through WebAudio, so cross-origin video without CORS still dubs.
+ *
+ * v1.0.1 crash fixes (target device: iQOO Z9 Turbo, OriginOS 6, Android 16):
+ *  - RECORD_AUDIO (+ POST_NOTIFICATIONS on Android 13+) is requested at
+ *    runtime BEFORE the screen-capture dialog. AudioPlaybackCapture throws
+ *    SecurityException without RECORD_AUDIO; v1.0.0 never asked for it.
+ *  - startForegroundService() is wrapped in try/catch with one delayed
+ *    retry: on Android 16 the ActivityResult callback can run while the
+ *    activity is not resumed yet, and the call throws
+ *    ForegroundServiceStartNotAllowedException. Any failure falls back to
+ *    mic mode instead of crashing the app.
+ *  - A tip dialog is shown before the system dialog: Android 16 defaults
+ *    the capture scope to "share a single app", and picking DubLive itself
+ *    yields no film audio (and killed v1.0.0 on the user's phone).
+ *  - A "mic dub" button starts the service without any MediaProjection
+ *    token (ACTION_START_MIC), so dubbing still works when screen capture
+ *    is blocked by the OS/OEM.
  */
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "DubLive-Main"
+    }
 
     private lateinit var webView: WebView
     private lateinit var urlInput: EditText
@@ -38,6 +65,31 @@ class MainActivity : AppCompatActivity() {
     private var dubbing = false
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+    private val uiHandler = Handler(Looper.getMainLooper())
+
+    /** True when the pending permission request was started by the mic button. */
+    private var pendingMicAfterPermission = false
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val granted = results[Manifest.permission.RECORD_AUDIO] == true || hasRecordAudio()
+        val wantMic = pendingMicAfterPermission
+        pendingMicAfterPermission = false
+        if (granted) {
+            if (wantMic) startMicService() else showShareTipThenProjection()
+        } else {
+            // Mic is the only capture path left, and it needs the same
+            // permission — but the app must NOT crash here. Tell the user
+            // clearly, then try mic mode: the service checks the permission
+            // itself, reports the missing permission, and stops cleanly.
+            Toast.makeText(this, R.string.need_mic_permission, Toast.LENGTH_LONG).show()
+            if (!wantMic) {
+                Toast.makeText(this, R.string.mic_denied, Toast.LENGTH_LONG).show()
+                startMicService()
+            }
+        }
+    }
 
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -48,10 +100,7 @@ class MainActivity : AppCompatActivity() {
                 putExtra(DubbingService.EXTRA_RESULT_CODE, result.resultCode)
                 putExtra(DubbingService.EXTRA_RESULT_DATA, result.data)
             }
-            startForegroundService(intent)
-            dubbing = true
-            setOriginalVolume(Prefs.originalVolume(this))
-            hudView.visibility = View.VISIBLE
+            startProjectionService(intent, isRetry = false)
         } else {
             Toast.makeText(this, "Cần cho phép ghi màn hình để lấy tiếng hệ thống", Toast.LENGTH_LONG).show()
         }
@@ -153,6 +202,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.openButton).setOnClickListener { openUrl() }
         findViewById<Button>(R.id.startDubButton).setOnClickListener { startDub() }
         findViewById<Button>(R.id.stopDubButton).setOnClickListener { stopDub() }
+        findViewById<Button>(R.id.micDubButton).setOnClickListener { startMicDub() }
         findViewById<Button>(R.id.localFileButton).setOnClickListener {
             startActivity(Intent(this, LocalPlayerActivity::class.java))
         }
@@ -175,6 +225,20 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl(url)
     }
 
+    private fun hasRecordAudio(): Boolean =
+        ContextCompat.checkSelfPermission(
+            this, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+    /** RECORD_AUDIO is mandatory; POST_NOTIFICATIONS (Android 13+) is best-effort. */
+    private fun requiredPermissions(): Array<String> {
+        val list = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            list.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        return list.toTypedArray()
+    }
+
     private fun startDub() {
         if (Prefs.geminiKeys(this).isEmpty()) {
             Toast.makeText(this, R.string.need_key_first, Toast.LENGTH_LONG).show()
@@ -182,20 +246,126 @@ class MainActivity : AppCompatActivity() {
             return
         }
         if (dubbing) return
-        val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projectionLauncher.launch(mgr.createScreenCaptureIntent())
+        if (!hasRecordAudio()) {
+            pendingMicAfterPermission = false
+            permissionLauncher.launch(requiredPermissions())
+            return
+        }
+        showShareTipThenProjection()
+    }
+
+    /** Mic mode: no screen-capture dialog, no MediaProjection token. */
+    private fun startMicDub() {
+        if (Prefs.geminiKeys(this).isEmpty()) {
+            Toast.makeText(this, R.string.need_key_first, Toast.LENGTH_LONG).show()
+            startActivity(Intent(this, SettingsActivity::class.java))
+            return
+        }
+        if (dubbing) return
+        if (!hasRecordAudio()) {
+            pendingMicAfterPermission = true
+            permissionLauncher.launch(requiredPermissions())
+            return
+        }
+        startMicService()
+        Toast.makeText(this, R.string.mic_hint, Toast.LENGTH_LONG).show()
+    }
+
+    private fun startMicService() {
+        val intent = Intent(this, DubbingService::class.java).apply {
+            action = DubbingService.ACTION_START_MIC
+        }
+        try {
+            startForegroundService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "startForegroundService (mic) failed, retrying with startService", e)
+            try {
+                startService(intent)
+            } catch (e2: Exception) {
+                Log.e(TAG, "startService (mic) also failed", e2)
+                Toast.makeText(this, R.string.service_failed, Toast.LENGTH_LONG).show()
+                return
+            }
+        }
+        dubbing = true
+        setOriginalVolume(Prefs.originalVolume(this))
+        hudView.visibility = View.VISIBLE
+    }
+
+    /**
+     * Android 16 (and OriginOS) defaults the capture scope to "share a single
+     * app". There is no API to force whole-screen sharing, so tell the user
+     * in words first — once only, remembered in Prefs.
+     */
+    private fun showShareTipThenProjection() {
+        if (Prefs.shareTipShown(this)) {
+            launchProjection()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.share_tip_title)
+            .setMessage(R.string.share_tip_message)
+            .setPositiveButton(R.string.share_tip_ok) { _, _ ->
+                Prefs.setShareTipShown(this)
+                launchProjection()
+            }
+            .setNegativeButton(R.string.share_tip_cancel, null)
+            .setCancelable(true)
+            .show()
+    }
+
+    private fun launchProjection() {
+        try {
+            val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            projectionLauncher.launch(mgr.createScreenCaptureIntent())
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not launch screen-capture intent", e)
+            Toast.makeText(this, R.string.start_failed, Toast.LENGTH_LONG).show()
+            startMicService()
+        }
+    }
+
+    /**
+     * On Android 16 the projection result can arrive while this activity is
+     * not resumed yet, so startForegroundService() may throw
+     * ForegroundServiceStartNotAllowedException even though the user just
+     * granted capture. Retry once after a short delay; if that also fails,
+     * fall back to mic mode instead of crashing.
+     */
+    private fun startProjectionService(intent: Intent, isRetry: Boolean) {
+        try {
+            startForegroundService(intent)
+            dubbing = true
+            setOriginalVolume(Prefs.originalVolume(this))
+            hudView.visibility = View.VISIBLE
+        } catch (e: Exception) {
+            Log.w(TAG, "startForegroundService (projection) failed, retry=$isRetry", e)
+            if (!isRetry) {
+                uiHandler.postDelayed({ startProjectionService(intent, isRetry = true) }, 600)
+            } else {
+                Toast.makeText(this, R.string.start_failed, Toast.LENGTH_LONG).show()
+                startMicService()
+            }
+        }
     }
 
     private fun stopDub() {
-        val intent = Intent(this, DubbingService::class.java).apply {
-            action = DubbingService.ACTION_STOP
+        try {
+            val intent = Intent(this, DubbingService::class.java).apply {
+                action = DubbingService.ACTION_STOP
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "stopDub failed", e)
         }
-        startService(intent)
         dubbing = false
     }
 
     private fun setOriginalVolume(vol: Float) {
-        webView.evaluateJavascript("window.DubLiveSetVolume($vol)", null)
+        try {
+            webView.evaluateJavascript("window.DubLiveSetVolume($vol)", null)
+        } catch (_: Exception) {
+        }
     }
 
     override fun onResume() {
@@ -226,6 +396,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        try { uiHandler.removeCallbacksAndMessages(null) } catch (_: Exception) { }
         try { webView.destroy() } catch (_: Exception) { }
         super.onDestroy()
     }

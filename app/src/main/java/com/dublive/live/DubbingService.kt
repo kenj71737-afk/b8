@@ -1,11 +1,12 @@
 package com.dublive.live
 
-import android.app.Notification
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -20,6 +21,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -43,11 +45,25 @@ import java.nio.ByteOrder
  *    Web Audio output silence. System-audio capture does not depend on CORS.
  *  - The dub voice is played with USAGE_VOICE_COMMUNICATION so the
  *    USAGE_MEDIA capture never re-captures it (no echo loop).
+ *
+ * v1.0.1 crash fixes (target device: iQOO Z9 Turbo, OriginOS 6, Android 16):
+ *  Android 16 enforces foreground-service / MediaProjection rules harder
+ *  than Android 15, and OriginOS defaults the capture scope to "share a
+ *  single app". v1.0.0 died right after the user granted screen capture
+ *  (it had never requested RECORD_AUDIO, and startForegroundService() from
+ *  the projection callback was unguarded). Every step below is now guarded:
+ *  startForeground, getMediaProjection, AudioPlaybackCapture config,
+ *  AudioRecord build/start — each in its own try/catch, and any failure
+ *  falls back to MIC capture (or stops the service cleanly) instead of
+ *  killing the app. The service also checks RECORD_AUDIO itself before
+ *  capturing, and ACTION_START_MIC runs the whole pipeline on the mic
+ *  with no MediaProjection token at all.
  */
 class DubbingService : Service() {
 
     companion object {
         const val ACTION_START = "com.dublive.live.START"
+        const val ACTION_START_MIC = "com.dublive.live.START_MIC"
         const val ACTION_STOP = "com.dublive.live.STOP"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
@@ -77,8 +93,11 @@ class DubbingService : Service() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var mediaProjection: MediaProjection? = null
+    private var projectionCallback: MediaProjection.Callback? = null
     private var audioRecord: AudioRecord? = null
     @Volatile private var capturing = false
+    @Volatile private var stopped = false
+    private var micOnly = false
     private var captureThread: Thread? = null
 
     private var liveClient: GeminiLiveClient? = null
@@ -123,133 +142,279 @@ class DubbingService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopDub()
-                return START_NOT_STICKY
+        try {
+            when (intent?.action) {
+                ACTION_STOP -> {
+                    stopDub()
+                    return START_NOT_STICKY
+                }
+                ACTION_START_MIC -> {
+                    startDub(0, null, micOnly = true)
+                    return START_NOT_STICKY
+                }
+                ACTION_START -> {
+                    val code = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
+                    val data: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+                    }
+                    startDub(code, data, micOnly = false)
+                    return START_STICKY
+                }
             }
-            ACTION_START -> {
-                val code = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-                val data = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
-                startDub(code, data)
-                return START_STICKY
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "onStartCommand failed", e)
+            try { broadcast(TYPE_ERROR, message = "Không mở được lồng tiếng: ${e.message}") } catch (_: Exception) { }
+            try { stopSelf() } catch (_: Exception) { }
         }
         return START_NOT_STICKY
     }
 
-    private fun startDub(resultCode: Int, resultData: Intent?) {
+    private fun startDub(resultCode: Int, resultData: Intent?, micOnly: Boolean) {
         if (capturing) return
-        createChannel()
-        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("DubLive")
-            .setContentText(getString(R.string.dub_running))
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIF_ID, notif,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIF_ID, notif)
+        this.micOnly = micOnly
+        stopped = false
+        try { createChannel() } catch (e: Exception) { Log.w(TAG, "createChannel failed", e) }
+        val notif = try {
+            NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("DubLive")
+                .setContentText(getString(R.string.dub_running))
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setOngoing(true)
+                .build()
+        } catch (e: Exception) {
+            Log.e(TAG, "Notification build failed", e)
+            stopSelf()
+            return
+        }
+        // Android 16 rule: startForeground (with the mediaProjection type)
+        // MUST happen before getMediaProjection() is called. If this throws
+        // (e.g. started from background), there is no capture path at all —
+        // report it and stop cleanly instead of crashing.
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIF_ID, notif,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground failed", e)
+            broadcast(TYPE_ERROR, message = "Không mở được dịch vụ nền: ${e.message}")
+            broadcast(TYPE_STATE, state = STATE_STOPPED)
+            try { stopSelf() } catch (_: Exception) { }
+            return
         }
 
         val keys = Prefs.geminiKeys(this)
         if (keys.isEmpty()) {
             broadcast(TYPE_ERROR, message = getString(R.string.need_key_first))
-            stopSelf()
+            broadcast(TYPE_STATE, state = STATE_STOPPED)
+            stopForegroundSafely()
+            try { stopSelf() } catch (_: Exception) { }
             return
         }
-        voicePlayer = VoicePlayer(this) {
-            tracker?.onDubSpeechStarted()
-        }.also { it.start() }
-        tracker = DubDelayTracker(Prefs.maxDelayMs(this)) { delayMs ->
-            broadcast(TYPE_HUD, delayMs = delayMs)
+        // Both capture paths need RECORD_AUDIO on Android 16 (system audio
+        // via AudioPlaybackCapture AND the mic). The activity asks first,
+        // but re-check here: a denied permission must stop the service
+        // cleanly, never crash it.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            broadcast(TYPE_ERROR, message = getString(R.string.mic_no_permission))
+            broadcast(TYPE_STATE, state = STATE_STOPPED)
+            stopForegroundSafely()
+            try { stopSelf() } catch (_: Exception) { }
+            return
         }
-        groq = GroqFallback(Prefs.groqKey(this), keys[0], Prefs.sourceLang(this))
+        try {
+            voicePlayer = VoicePlayer(this) {
+                tracker?.onDubSpeechStarted()
+            }.also { it.start() }
+        } catch (e: Exception) {
+            Log.e(TAG, "VoicePlayer failed", e)
+            voicePlayer = null
+            broadcast(TYPE_ERROR, message = "Không mở được loa đọc giọng: ${e.message}")
+        }
+        try {
+            tracker = DubDelayTracker(Prefs.maxDelayMs(this)) { delayMs ->
+                broadcast(TYPE_HUD, delayMs = delayMs)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "DubDelayTracker failed", e)
+            tracker = null
+        }
+        try {
+            groq = GroqFallback(Prefs.groqKey(this), keys[0], Prefs.sourceLang(this))
+        } catch (e: Exception) {
+            Log.e(TAG, "GroqFallback failed", e)
+            groq = null
+        }
         useGroqOnly = false
         reconnects = 0
         rotateAtMs = System.currentTimeMillis() + KEY_ROTATE_MS
         lastOutputAtMs = 0L
 
-        if (resultData != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = mgr.getMediaProjection(resultCode, resultData)
+        if (!micOnly && resultData != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjection = mgr.getMediaProjection(resultCode, resultData)
+                if (mediaProjection == null) {
+                    broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
+                } else {
+                    val cb = object : MediaProjection.Callback() {
+                        override fun onStop() {
+                            // User (or OriginOS) stopped sharing mid-session.
+                            // Switch to the mic instead of dying with the token.
+                            Log.w(TAG, "MediaProjection stopped by system/user, switching to mic")
+                            mainHandler.post {
+                                if (capturing && !stopped) {
+                                    broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
+                                    switchCaptureToMic()
+                                }
+                            }
+                        }
+                    }
+                    projectionCallback = cb
+                    try {
+                        mediaProjection?.registerCallback(cb, mainHandler)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "registerCallback failed", e)
+                    }
+                }
+            } catch (e: Exception) {
+                // Single-app token (user picked DubLive itself), OriginOS
+                // blocking the capture, or an expired token: fall back to mic.
+                Log.w(TAG, "getMediaProjection failed, falling back to mic", e)
+                mediaProjection = null
+                broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
+            }
         }
         capturing = true
-        startCapture()
-        connectLive()
+        try {
+            startCapture()
+        } catch (e: Exception) {
+            Log.e(TAG, "startCapture failed", e)
+            broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+        }
+        try {
+            connectLive()
+        } catch (e: Exception) {
+            Log.e(TAG, "connectLive failed", e)
+            switchToGroq("Gemini Live lỗi kết nối (${e.message}), chuyển sang dự phòng Groq")
+        }
         broadcast(TYPE_STATE, state = STATE_RUNNING)
         broadcast(TYPE_DUCK, message = Prefs.originalVolume(this).toString())
         mainHandler.postDelayed(watchdog, 10_000L)
+    }
+
+    /** Stop the old (projection) capture thread, then restart it on the mic. */
+    private fun switchCaptureToMic() {
+        if (stopped) return
+        try { mediaProjection?.stop() } catch (_: Exception) { }
+        mediaProjection = null
+        val oldThread = captureThread
+        capturing = false
+        Thread({
+            try { oldThread?.join(1500) } catch (_: Exception) { }
+            if (stopped) return@Thread
+            capturing = true
+            mainHandler.post {
+                if (!stopped) {
+                    try { startCapture() } catch (e: Exception) {
+                        Log.e(TAG, "mic restart failed", e)
+                        broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+                    }
+                }
+            }
+        }, "DubLive-SwitchMic").start()
     }
 
     private fun connectLive() {
         val keys = Prefs.geminiKeys(this)
         if (keys.isEmpty()) return
         val key = keys[keyIndex % keys.size]
-        liveClient?.close()
+        try { liveClient?.close() } catch (_: Exception) { }
         liveConnected = false
-        val client = GeminiLiveClient(
-            apiKey = key,
-            voiceName = Prefs.voiceName(this),
-            sourceLang = Prefs.sourceLang(this),
-            wholeSentence = Prefs.wholeSentence(this),
-            listener = object : GeminiLiveClient.Listener {
-                override fun onConnected() {
-                    liveConnected = true
-                    reconnects = 0
-                    Log.i(TAG, "Gemini Live connected (key ${keyIndex % keys.size + 1})")
-                }
-
-                override fun onAudioChunk(pcm24k: ByteArray) {
-                    lastOutputAtMs = System.currentTimeMillis()
-                    audioPlayedThisTurn = true
-                    voicePlayer?.playAudio(pcm24k)
-                }
-
-                override fun onTranslatedText(text: String, isFinal: Boolean) {
-                    lastOutputAtMs = System.currentTimeMillis()
-                    pendingText.append(text)
-                    broadcast(TYPE_SUBTITLE, text = pendingText.toString())
-                }
-
-                override fun onTurnComplete() {
-                    val text = pendingText.toString().trim()
-                    pendingText.clear()
-                    if (!SpeechFilter.isMeaningful(text)) {
-                        broadcast(TYPE_SUBTITLE, text = "")
-                    } else if (!audioPlayedThisTurn) {
-                        // Model returned text but no audio: read it with TTS.
-                        voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
+        val client = try {
+            GeminiLiveClient(
+                apiKey = key,
+                voiceName = Prefs.voiceName(this),
+                sourceLang = Prefs.sourceLang(this),
+                wholeSentence = Prefs.wholeSentence(this),
+                listener = object : GeminiLiveClient.Listener {
+                    override fun onConnected() {
+                        liveConnected = true
+                        reconnects = 0
+                        Log.i(TAG, "Gemini Live connected (key ${keyIndex % keys.size + 1})")
                     }
-                    audioPlayedThisTurn = false
-                    voicePlayer?.resetTurnFlag()
-                }
 
-                override fun onError(message: String) {
-                    Log.w(TAG, "Live error: $message")
-                    if (message.contains("401", ignoreCase = true) ||
-                        message.contains("403", ignoreCase = true) ||
-                        message.contains("quota", ignoreCase = true) ||
-                        message.contains("API key", ignoreCase = true)
-                    ) {
-                        switchToGroq("Key Gemini lỗi ($message), chuyển sang dự phòng Groq")
-                    } else if (capturing && !useGroqOnly) {
-                        broadcast(TYPE_ERROR, message = "Gemini Live lỗi: $message")
+                    override fun onAudioChunk(pcm24k: ByteArray) {
+                        lastOutputAtMs = System.currentTimeMillis()
+                        audioPlayedThisTurn = true
+                        try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
+                            Log.w(TAG, "playAudio failed", e)
+                        }
+                    }
+
+                    override fun onTranslatedText(text: String, isFinal: Boolean) {
+                        lastOutputAtMs = System.currentTimeMillis()
+                        pendingText.append(text)
+                        broadcast(TYPE_SUBTITLE, text = pendingText.toString())
+                    }
+
+                    override fun onTurnComplete() {
+                        val text = pendingText.toString().trim()
+                        pendingText.clear()
+                        if (!SpeechFilter.isMeaningful(text)) {
+                            broadcast(TYPE_SUBTITLE, text = "")
+                        } else if (!audioPlayedThisTurn) {
+                            // Model returned text but no audio: read it with TTS.
+                            try {
+                                voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "speakText failed", e)
+                            }
+                        }
+                        audioPlayedThisTurn = false
+                        try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
+                    }
+
+                    override fun onError(message: String) {
+                        Log.w(TAG, "Live error: $message")
+                        if (message.contains("401", ignoreCase = true) ||
+                            message.contains("403", ignoreCase = true) ||
+                            message.contains("quota", ignoreCase = true) ||
+                            message.contains("API key", ignoreCase = true)
+                        ) {
+                            switchToGroq("Key Gemini lỗi ($message), chuyển sang dự phòng Groq")
+                        } else if (capturing && !useGroqOnly) {
+                            broadcast(TYPE_ERROR, message = "Gemini Live lỗi: $message")
+                        }
+                    }
+
+                    override fun onClosed() {
+                        liveConnected = false
                     }
                 }
-
-                override fun onClosed() {
-                    liveConnected = false
-                }
-            }
-        )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "GeminiLiveClient creation failed", e)
+            switchToGroq("Gemini Live lỗi (${e.message}), chuyển sang dự phòng Groq")
+            return
+        }
         liveClient = client
-        client.connect()
+        try {
+            client.connect()
+        } catch (e: Exception) {
+            Log.e(TAG, "GeminiLiveClient.connect failed", e)
+            switchToGroq("Gemini Live lỗi kết nối (${e.message}), chuyển sang dự phòng Groq")
+        }
     }
 
     private fun rotateKey() {
@@ -266,108 +431,231 @@ class DubbingService : Service() {
 
     private fun reconnectLive() {
         if (!capturing || useGroqOnly) return
-        liveClient?.close()
-        connectLive()
+        try { liveClient?.close() } catch (_: Exception) { }
+        try { connectLive() } catch (e: Exception) {
+            Log.e(TAG, "reconnectLive failed", e)
+        }
     }
 
     private fun switchToGroq(reason: String) {
         if (useGroqOnly) return
         useGroqOnly = true
-        liveClient?.close()
+        try { liveClient?.close() } catch (_: Exception) { }
         broadcast(TYPE_FALLBACK, message = reason)
         if (Prefs.groqKey(this).isEmpty()) {
             broadcast(TYPE_ERROR, message = "Không có key Groq dự phòng — kiểm tra key Gemini trong Cài đặt")
         }
     }
 
-    private fun startCapture() {
-        vad = VadDetector(listener = object : VadDetector.Listener {
-            override fun onSpeechStart(preRollAndHead: ShortArray) {
-                tracker?.startUtterance()
-                voicePlayer?.resetTurnFlag()
-                utteranceBytes.reset()
-                val bytes = shortsToBytes(preRollAndHead)
-                utteranceBytes.write(bytes)
-                if (liveConnected) liveClient?.sendAudio(bytes)
-            }
-
-            override fun onSpeechChunk(samples: ShortArray) {
-                val bytes = shortsToBytes(samples)
-                utteranceBytes.write(bytes)
-                if (liveConnected) liveClient?.sendAudio(bytes)
-            }
-
-            override fun onSpeechEnd() {
-                tracker?.endUtterance()
-                liveClient?.endTurn()
-                if (useGroqOnly) {
-                    val pcm = utteranceBytes.toByteArray()
-                    if (pcm.size > 3200) { // ignore blips shorter than ~100 ms
-                        groq?.transcribeAndTranslate(pcm, object : GroqFallback.Listener {
-                            override fun onTranslated(text: String) {
-                                lastOutputAtMs = System.currentTimeMillis()
-                                broadcast(TYPE_SUBTITLE, text = text)
-                                voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
-                            }
-
-                            override fun onError(message: String) {
-                                broadcast(TYPE_ERROR, message = message)
-                            }
-                        })
-                    }
-                }
-            }
-        })
-        captureThread = Thread({
-            val minBuf = AudioRecord.getMinBufferSize(
+    private fun minBufferSize(): Int {
+        val minBuf = try {
+            AudioRecord.getMinBufferSize(
                 SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
             )
+        } catch (e: Exception) {
+            Log.w(TAG, "getMinBufferSize failed", e)
+            AudioRecord.ERROR_BAD_VALUE
+        }
+        return if (minBuf <= 0) 6400 else minBuf
+    }
+
+    /** Null when the projection token is unusable (single-app token, OEM block). */
+    private fun buildPlaybackRecord(minBuf: Int): AudioRecord? {
+        val proj = mediaProjection ?: return null
+        return try {
+            val config = AudioPlaybackCaptureConfiguration.Builder(proj)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .build()
+            val record = AudioRecord.Builder()
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(SAMPLE_RATE)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBuf * 2)
+                .setAudioPlaybackCaptureConfig(config)
+                .build()
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                try { record.release() } catch (_: Exception) { }
+                null
+            } else {
+                record
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "AudioPlaybackCapture unavailable", e)
+            null
+        }
+    }
+
+    /** Null when RECORD_AUDIO is missing or the mic is busy. */
+    private fun buildMicRecord(minBuf: Int): AudioRecord? {
+        return try {
+            val record = AudioRecord.Builder()
+                .setAudioSource(MediaRecorder.AudioSource.MIC)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(SAMPLE_RATE)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBuf * 2)
+                .build()
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                try { record.release() } catch (_: Exception) { }
+                null
+            } else {
+                record
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Mic AudioRecord unavailable", e)
+            null
+        }
+    }
+
+    private fun startCapture() {
+        try {
+            vad = VadDetector(listener = object : VadDetector.Listener {
+                override fun onSpeechStart(preRollAndHead: ShortArray) {
+                    try { tracker?.startUtterance() } catch (_: Exception) { }
+                    try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
+                    utteranceBytes.reset()
+                    val bytes = shortsToBytes(preRollAndHead)
+                    utteranceBytes.write(bytes)
+                    if (liveConnected) {
+                        try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
+                            Log.w(TAG, "sendAudio failed", e)
+                        }
+                    }
+                }
+
+                override fun onSpeechChunk(samples: ShortArray) {
+                    val bytes = shortsToBytes(samples)
+                    utteranceBytes.write(bytes)
+                    if (liveConnected) {
+                        try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
+                            Log.w(TAG, "sendAudio failed", e)
+                        }
+                    }
+                }
+
+                override fun onSpeechEnd() {
+                    try { tracker?.endUtterance() } catch (_: Exception) { }
+                    try { liveClient?.endTurn() } catch (e: Exception) {
+                        Log.w(TAG, "endTurn failed", e)
+                    }
+                    if (useGroqOnly) {
+                        val pcm = utteranceBytes.toByteArray()
+                        if (pcm.size > 3200) { // ignore blips shorter than ~100 ms
+                            try {
+                                groq?.transcribeAndTranslate(pcm, object : GroqFallback.Listener {
+                                    override fun onTranslated(text: String) {
+                                        lastOutputAtMs = System.currentTimeMillis()
+                                        broadcast(TYPE_SUBTITLE, text = text)
+                                        try {
+                                            voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "speakText failed", e)
+                                        }
+                                    }
+
+                                    override fun onError(message: String) {
+                                        broadcast(TYPE_ERROR, message = message)
+                                    }
+                                })
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Groq fallback call failed", e)
+                            }
+                        }
+                    }
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "VadDetector failed", e)
+            broadcast(TYPE_ERROR, message = "Không khởi động được bộ lọc giọng: ${e.message}")
+            mainHandler.post { if (capturing) stopDub() }
+            return
+        }
+        captureThread = Thread({
+            val minBuf = minBufferSize()
             var record: AudioRecord? = null
             try {
-                record = if (mediaProjection != null &&
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                ) {
-                    val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
-                        .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                        .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                        .build()
-                    AudioRecord.Builder()
-                        .setAudioFormat(
-                            AudioFormat.Builder()
-                                .setSampleRate(SAMPLE_RATE)
-                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                                .build()
-                        )
-                        .setBufferSizeInBytes(minBuf * 2)
-                        .setAudioPlaybackCaptureConfig(config)
-                        .build()
-                } else {
-                    AudioRecord.Builder()
-                        .setAudioSource(MediaRecorder.AudioSource.MIC)
-                        .setAudioFormat(
-                            AudioFormat.Builder()
-                                .setSampleRate(SAMPLE_RATE)
-                                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                                .build()
-                        )
-                        .setBufferSizeInBytes(minBuf * 2)
-                        .build()
+                // Step 1: system audio via the projection token, if we have one.
+                record = if (mediaProjection != null) buildPlaybackRecord(minBuf) else null
+                if (record == null && mediaProjection != null) {
+                    // Android 16 single-app token (user picked DubLive itself)
+                    // or OriginOS blocked the capture — fall back to the mic.
+                    broadcast(TYPE_FALLBACK, message = getString(R.string.projection_failed))
+                    try { mediaProjection?.stop() } catch (_: Exception) { }
+                    mediaProjection = null
+                }
+                // Step 2: mic (also the whole capture path in mic-only mode).
+                if (record == null) record = buildMicRecord(minBuf)
+                if (record == null) {
+                    broadcast(
+                        TYPE_ERROR,
+                        message = "Không thu được tiếng: kiểm tra quyền micro trong Cài đặt ứng dụng"
+                    )
+                    mainHandler.post { if (capturing) stopDub() }
+                    return@Thread
                 }
                 audioRecord = record
-                if (mediaProjection == null) {
-                    broadcast(TYPE_ERROR, message = getString(R.string.capture_failed))
+                // Step 3: startRecording — its own try/catch, one mic retry.
+                var started = false
+                try {
+                    record.startRecording()
+                    started = true
+                } catch (e: Exception) {
+                    Log.w(TAG, "startRecording failed", e)
                 }
-                record.startRecording()
+                if (!started) {
+                    try { record.release() } catch (_: Exception) { }
+                    audioRecord = null
+                    if (mediaProjection != null) {
+                        mediaProjection = null
+                        record = buildMicRecord(minBuf)
+                    } else {
+                        record = null
+                    }
+                    if (record == null) {
+                        broadcast(TYPE_ERROR, message = "Không thu được tiếng: micro đang bận hoặc chưa cấp quyền")
+                        mainHandler.post { if (capturing) stopDub() }
+                        return@Thread
+                    }
+                    audioRecord = record
+                    try {
+                        record.startRecording()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "mic startRecording failed", e)
+                        broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+                        mainHandler.post { if (capturing) stopDub() }
+                        return@Thread
+                    }
+                }
                 val buf = ShortArray(1600) // 100 ms at 16 kHz
                 while (capturing) {
-                    val n = record.read(buf, 0, buf.size)
-                    if (n > 0) vad?.feed(buf, n)
+                    val n = try {
+                        record.read(buf, 0, buf.size)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "AudioRecord.read failed", e)
+                        break
+                    }
+                    if (n > 0) {
+                        try { vad?.feed(buf, n) } catch (e: Exception) {
+                            Log.w(TAG, "VAD feed failed", e)
+                        }
+                    } else if (n < 0) {
+                        Log.w(TAG, "AudioRecord.read error $n")
+                        break
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Capture failed: ${e.message}")
                 broadcast(TYPE_ERROR, message = "Không thu được tiếng: ${e.message}")
+                mainHandler.post { if (capturing) stopDub() }
             } finally {
                 try { record?.stop() } catch (_: Exception) { }
                 try { record?.release() } catch (_: Exception) { }
@@ -376,35 +664,48 @@ class DubbingService : Service() {
         }, "DubLive-Capture").apply { start() }
     }
 
+    private fun stopForegroundSafely() {
+        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
+    }
+
     private fun stopDub() {
+        stopped = true
         capturing = false
-        mainHandler.removeCallbacks(watchdog)
-        captureThread?.join(1000)
+        try { mainHandler.removeCallbacks(watchdog) } catch (_: Exception) { }
+        try { captureThread?.join(1000) } catch (_: Exception) { }
         captureThread = null
-        liveClient?.close()
+        try { liveClient?.close() } catch (_: Exception) { }
         liveClient = null
-        tracker?.stop()
+        try { tracker?.stop() } catch (_: Exception) { }
         tracker = null
-        vad?.reset()
+        try { vad?.reset() } catch (_: Exception) { }
         vad = null
-        voicePlayer?.release()
+        try { voicePlayer?.release() } catch (_: Exception) { }
         voicePlayer = null
+        try {
+            projectionCallback?.let { mediaProjection?.unregisterCallback(it) }
+        } catch (_: Exception) { }
+        projectionCallback = null
         try { mediaProjection?.stop() } catch (_: Exception) { }
         mediaProjection = null
-        broadcast(TYPE_STATE, state = STATE_STOPPED)
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        try { broadcast(TYPE_STATE, state = STATE_STOPPED) } catch (_: Exception) { }
+        stopForegroundSafely()
+        try { stopSelf() } catch (_: Exception) { }
     }
 
     private fun broadcast(type: String, text: String? = null, delayMs: Long? = null,
                           state: String? = null, message: String? = null) {
-        val intent = Intent(ACTION_DUB_EVENT).setPackage(packageName)
-        intent.putExtra(EXTRA_TYPE, type)
-        if (text != null) intent.putExtra(EXTRA_TEXT, text)
-        if (delayMs != null) intent.putExtra(EXTRA_DELAY_MS, delayMs)
-        if (state != null) intent.putExtra(EXTRA_STATE, state)
-        if (message != null) intent.putExtra(EXTRA_MESSAGE, message)
-        sendBroadcast(intent)
+        try {
+            val intent = Intent(ACTION_DUB_EVENT).setPackage(packageName)
+            intent.putExtra(EXTRA_TYPE, type)
+            if (text != null) intent.putExtra(EXTRA_TEXT, text)
+            if (delayMs != null) intent.putExtra(EXTRA_DELAY_MS, delayMs)
+            if (state != null) intent.putExtra(EXTRA_STATE, state)
+            if (message != null) intent.putExtra(EXTRA_MESSAGE, message)
+            sendBroadcast(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "broadcast failed", e)
+        }
     }
 
     private fun createChannel() {
@@ -425,7 +726,9 @@ class DubbingService : Service() {
     }
 
     override fun onDestroy() {
-        if (capturing) stopDub()
+        try {
+            if (capturing) stopDub()
+        } catch (_: Exception) { }
         super.onDestroy()
     }
 }

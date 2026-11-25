@@ -27,4 +27,16 @@
     <string name="capture_failed">Không lấy được tiếng hệ thống, đang dùng mic thay thế</string>
     <string name="dub_running">DubLive đang lồng tiếng…</string>
     <string name="notif_channel">Lồng tiếng live</string>
+    <string name="start_dub_mic">Lồng tiếng bằng mic (không cần ghi màn hình)</string>
+    <string name="need_mic_permission">Cần quyền micro để lồng tiếng. Nếu không cấp, app không nghe được tiếng phim.</string>
+    <string name="mic_denied">Chưa cấp quyền micro. Đã thử chế độ mic — nếu vẫn không có tiếng, vào Cài đặt ứng dụng để cấp quyền Micro rồi thử lại.</string>
+    <string name="mic_hint">Chế độ mic: app nghe tiếng loa ngoài qua micro — để loa đủ to, tránh chỗ ồn.</string>
+    <string name="mic_no_permission">Chưa cấp quyền micro nên không thu được tiếng. Vào Cài đặt ứng dụng để cấp quyền Micro rồi thử lại.</string>
+    <string name="share_tip_title">Chọn “Chia sẻ toàn bộ màn hình” nhé</string>
+    <string name="share_tip_message">Ở màn hình tiếp theo, bấm Tiếp tục rồi chọn “Chia sẻ toàn bộ màn hình”.\n\nĐừng chọn “Chia sẻ một ứng dụng” — nếu chọn đúng app DubLive thì app sẽ không lấy được tiếng phim và có thể tự thoát.</string>
+    <string name="share_tip_ok">Đã hiểu, tiếp tục</string>
+    <string name="share_tip_cancel">Hủy</string>
+    <string name="start_failed">Không mở được ghi màn hình, đã chuyển sang chế độ mic.</string>
+    <string name="projection_failed">Không ghi được màn hình, đã chuyển sang chế độ mic.</string>
+    <string name="service_failed">Không mở được dịch vụ lồng tiếng, đã chuyển sang chế độ mic.</string>
 </resources>

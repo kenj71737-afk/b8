@@ -19,6 +19,7 @@ object Prefs {
     const val KEY_VOICE = "voice"
     const val KEY_MAX_DELAY_SEC = "max_delay_sec"
     const val KEY_ORIGINAL_VOLUME = "original_volume_pct"
+    const val KEY_SHARE_TIP_SHOWN = "share_tip_shown"
 
     /** Display name to Gemini Live voice name. */
     val VOICES = linkedMapOf(
@@ -74,5 +75,13 @@ object Prefs {
     fun originalVolume(context: Context): Float {
         val pct = prefs(context).getInt(KEY_ORIGINAL_VOLUME, 15)
         return (pct.coerceIn(0, 100) / 100f)
+    }
+
+    /** True once the "pick whole screen, not a single app" tip was shown. */
+    fun shareTipShown(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SHARE_TIP_SHOWN, false)
+
+    fun setShareTipShown(context: Context) {
+        prefs(context).edit().putBoolean(KEY_SHARE_TIP_SHOWN, true).apply()
     }
 }

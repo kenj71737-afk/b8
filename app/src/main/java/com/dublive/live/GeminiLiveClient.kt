@@ -92,12 +92,20 @@ class GeminiLiveClient(
             })
         }
         val request = Request.Builder().url("$ENDPOINT?key=$apiKey").build()
-        socket = http.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                connected = true
-                webSocket.send(setup.toString())
-                Log.i(TAG, "Live session opened")
-            }
+        try {
+            socket = http.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    connected = true
+                    try {
+                        webSocket.send(setup.toString())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "setup send failed", e)
+                        connected = false
+                        listener.onError(e.message ?: "WebSocket setup failed")
+                        return
+                    }
+                    Log.i(TAG, "Live session opened")
+                }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 handleServerMessage(text)
@@ -106,42 +114,55 @@ class GeminiLiveClient(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 connected = false
                 Log.w(TAG, "Live socket failed: ${t.message}")
-                listener.onError(t.message ?: "WebSocket failure")
+                try { listener.onError(t.message ?: "WebSocket failure") } catch (_: Exception) { }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 connected = false
-                listener.onClosed()
+                try { listener.onClosed() } catch (_: Exception) { }
             }
         })
+        } catch (e: Exception) {
+            Log.w(TAG, "WebSocket connect failed", e)
+            connected = false
+            listener.onError(e.message ?: "WebSocket connect failed")
+        }
     }
 
     /** Stream 16 kHz mono PCM to the model. */
     fun sendAudio(pcm16: ByteArray) {
         val socket = socket ?: return
         if (!connected) return
-        val payload = JSONObject().apply {
-            put("realtime_input", JSONObject().apply {
-                put("media_chunks", org.json.JSONArray().put(
-                    JSONObject().apply {
-                        put("mime_type", "audio/pcm;rate=16000")
-                        put("data", Base64.encodeToString(pcm16, Base64.NO_WRAP))
-                    }
-                ))
-            })
+        try {
+            val payload = JSONObject().apply {
+                put("realtime_input", JSONObject().apply {
+                    put("media_chunks", org.json.JSONArray().put(
+                        JSONObject().apply {
+                            put("mime_type", "audio/pcm;rate=16000")
+                            put("data", Base64.encodeToString(pcm16, Base64.NO_WRAP))
+                        }
+                    ))
+                })
+            }
+            socket.send(payload.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "sendAudio failed", e)
         }
-        socket.send(payload.toString())
     }
 
     /** Signal end of the current utterance so the model can flush a translation. */
     fun endTurn() {
         val socket = socket ?: return
         if (!connected) return
-        socket.send(JSONObject().apply {
-            put("realtime_input", JSONObject().apply {
-                put("audio_stream_end", true)
-            })
-        }.toString())
+        try {
+            socket.send(JSONObject().apply {
+                put("realtime_input", JSONObject().apply {
+                    put("audio_stream_end", true)
+                })
+            }.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "endTurn failed", e)
+        }
     }
 
     fun close() {

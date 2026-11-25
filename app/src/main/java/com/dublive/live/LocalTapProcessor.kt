@@ -1,7 +1,6 @@
 package com.dublive.live
 
 import androidx.media3.common.C
-import androidx.media3.common.audio.AudioFormat
 import androidx.media3.common.audio.AudioProcessor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -47,8 +46,8 @@ class LocalTapProcessor : AudioProcessor {
     /** Normalised 48 kHz stereo PCM16 -> the service's tap queue. */
     var onPcm: ((ByteArray) -> Unit)? = null
 
-    private var inputFormat: AudioFormat? = null
-    private var outputFormat: AudioFormat? = null
+    private var inputFormat: AudioProcessor.AudioFormat? = null
+    private var outputFormat: AudioProcessor.AudioFormat? = null
     /** True while the input is PCM16 (false = pass-through, no tap). */
     private var pcm16 = false
     private val outputQueue = ArrayDeque<ByteBuffer>()
@@ -57,15 +56,17 @@ class LocalTapProcessor : AudioProcessor {
     private val emptyBuffer: ByteBuffer =
         ByteBuffer.allocate(0).order(ByteOrder.nativeOrder())
 
-    override fun configure(inputAudioFormat: AudioFormat): AudioFormat {
+    override fun configure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         inputFormat = inputAudioFormat
         pcm16 = inputAudioFormat.encoding == C.ENCODING_PCM_16BIT
         outputFormat = if (pcm16) {
-            AudioFormat.Builder()
-                .setSampleRate(48000)
-                .setChannelCount(2)
-                .setEncoding(C.ENCODING_PCM_16BIT)
-                .build()
+            // media3 1.3.1: the nested AudioFormat has no Builder —
+            // plain (sampleRate, channelCount, encoding) constructor.
+            AudioProcessor.AudioFormat(
+                48000,
+                2,
+                C.ENCODING_PCM_16BIT
+            )
         } else {
             // Not PCM16: pass through untouched, no tap.
             inputAudioFormat

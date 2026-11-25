@@ -1626,7 +1626,8 @@ class DubbingService : Service() {
                         }
                     }
                 }
-            })            vad = detector
+            })
+            vad = detector
             detector
         } catch (e: Exception) {
             Log.e(TAG, "VadDetector failed", e)

@@ -33,6 +33,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 
 /**
  * Local-file player (ExoPlayer) with the same dub pipeline as the WebView.
@@ -275,10 +277,7 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         // local tap delivers nothing.
         tapProcessor.onPcm = { bytes -> TapAudioQueue.offerStereo48k(bytes) }
         player = ExoPlayer.Builder(this)
-            .setRenderersFactory(
-                DefaultRenderersFactory(this)
-                    .setAudioProcessors(arrayOf<AudioProcessor>(tapProcessor))
-            )
+            .setRenderersFactory(TapRenderersFactory(this, tapProcessor))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_GAME)
@@ -555,5 +554,29 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         player?.release()
         player = null
         super.onDestroy()
+    }
+}
+
+/**
+ * v1.0.11 — media3 1.3.1 has no DefaultRenderersFactory.setAudioProcessors
+ * (that arrived in a later media3): the tap processor is injected by
+ * overriding buildAudioSink() and building the DefaultAudioSink with
+ * setAudioProcessors() (which 1.3.1 does have). Everything else is the
+ * stock factory behaviour.
+ */
+private class TapRenderersFactory(
+    context: Context,
+    private val tapProcessor: LocalTapProcessor
+) : DefaultRenderersFactory(context) {
+    override fun buildAudioSink(
+        context: Context,
+        enableFloatOutput: Boolean,
+        enableAudioTrackPlaybackParams: Boolean
+    ): AudioSink? {
+        return DefaultAudioSink.Builder(context)
+            .setAudioProcessors(arrayOf<AudioProcessor>(tapProcessor))
+            .setEnableFloatOutput(enableFloatOutput)
+            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+            .build()
     }
 }

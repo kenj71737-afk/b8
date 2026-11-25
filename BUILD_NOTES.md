@@ -131,6 +131,20 @@ D hiện tại vừa chỉnh DelayNode (tap) vừa chỉnh DelayedBackgroundPlay
 
 ## Kiểm tra logic trước khi build (đã rà tay, chưa có máy thật)
 
+- Build lần 1 (run 45645599090, commit 94fd3102) LỖI BIÊN DỊCH — 3 lỗi,
+  đã sửa và đẩy lại:
+  * `createVad()` trích từ `startCapture()` bị mất dấu xuống dòng
+    giữa `})` và `vad = detector` (script nối chuỗi không chèn `\n`),
+    làm 4 lỗi ở DubbingService.
+  * media3 1.3.1 KHÔNG có `DefaultRenderersFactory.setAudioProcessors`
+    (có từ media3 mới hơn) và KHÔNG có top-level
+    `androidx.media3.common.audio.AudioFormat` (có từ 1.4.0) — đã xác
+    minh bằng sources jar trên maven.google.com. Sửa: `LocalTapProcessor`
+    dùng `AudioProcessor.AudioFormat` lồng trong (constructor
+    `(48000, 2, ENCODING_PCM_16BIT)`, không Builder); processor được
+    gắn qua `TapRenderersFactory` override `buildAudioSink()` +
+    `DefaultAudioSink.Builder.setAudioProcessors()` (1.3.1 có).
+
 - Tap sống → không có tiến trình capture nào chạy (không vọng), giọng
   media to rõ, bấm nút âm lượng hiện đúng "Phương tiện"; D đẩy sang
   DelayNode theo GIÂY (đã sửa lỗi nhầm ms→20 s); `onPcm` của local đã

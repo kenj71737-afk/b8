@@ -10,6 +10,8 @@
     <string name="local_player_title">Xem file trên máy</string>
     <string name="delay_off">Tắt trễ hình</string>
     <string name="delay_on">Bật trễ hình</string>
+    <string name="expand_app">Phóng to</string>
+    <string name="collapse_app">Thu nhỏ</string>
     <string name="settings_gemini_key1">Key Gemini 1</string>
     <string name="settings_gemini_key2">Key Gemini 2 (xoay khi key 1 chết im lặng)</string>
     <string name="settings_groq_key">Key Groq (dự phòng Whisper, không bắt buộc)</string>

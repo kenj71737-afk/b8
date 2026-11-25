@@ -5,6 +5,7 @@
     android:orientation="vertical">
 
     <LinearLayout
+        android:id="@+id/urlRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
@@ -27,6 +28,7 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/dubRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
@@ -49,6 +51,7 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/fileRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
@@ -82,9 +85,22 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="@string/subtitle_hide" />
+
+        <!-- v1.0.6 — toàn màn hình CỦA APP: khác với nút fullscreen của
+             trang web (đưa video lên surface native, canvas trễ ở lại
+             trong trang nên không bao giờ khớp), nút này chỉ ẩn giao
+             diện chrome của app, WebView vẫn ở trong trang nên canvas
+             trễ vẫn chạy và hình vẫn khớp giọng. -->
+        <Button
+            android:id="@+id/expandButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/expand_app" />
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/micRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
@@ -100,21 +116,20 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/errorsRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:paddingLeft="8dp"
         android:paddingRight="8dp"
         android:paddingBottom="4dp">
-
-        <Button
-            android:id="@+id/liveErrorsButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/view_live_errors" />
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/statusRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
@@ -203,5 +218,32 @@
             android:textColor="@color/dub_accent"
             android:textSize="12sp"
             android:visibility="gone" />
+
+        <!-- v1.0.6 — thanh công cụ khi ở chế độ toàn màn hình của app:
+             chỉ hiện nút "Thu nhỏ" (thoát) và nút trễ hình, còn WebView,
+             phụ đề và HUD vẫn ở nguyên vị trí trong FrameLayout nên trễ
+             hình vẫn chạy và hình vẫn khớp giọng. -->
+        <LinearLayout
+            android:id="@+id/fullscreenBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/collapseButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/collapse_app" />
+
+            <Button
+                android:id="@+id/fsDelayToggleButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="8dp"
+                android:text="@string/delay_off" />
+        </LinearLayout>
     </FrameLayout>
 </LinearLayout>

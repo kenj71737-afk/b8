@@ -65,6 +65,21 @@ class MainActivity : AppCompatActivity() {
     private lateinit var levelValue: TextView
     private lateinit var delayToggleButton: Button
     private lateinit var subtitleToggleButton: Button
+    private lateinit var expandButton: Button
+    private lateinit var collapseButton: Button
+    private lateinit var fsDelayToggleButton: Button
+    private lateinit var fullscreenBar: View
+    private lateinit var urlRow: View
+    private lateinit var dubRow: View
+    private lateinit var fileRow: View
+    private lateinit var micRow: View
+    private lateinit var errorsRow: View
+    private lateinit var statusRow: View
+    /** v1.0.6 — true while the app's own fullscreen ("Phóng to") is on:
+     * only the WebView + subtitle + HUD + fullscreen bar stay visible,
+     * the delay canvas keeps running inside the WebView, so picture and
+     * dub voice stay in sync (unlike the web page's own fullscreen). */
+    private var appFullscreen = false
     private var delayOn = true
     /** v1.0.6 — delay (ms) last pushed to the WebView canvas via
      * DubLiveSetDelay. Starts at the 5000 ms seed set in onPageFinished;
@@ -226,6 +241,16 @@ class MainActivity : AppCompatActivity() {
         levelValue = findViewById(R.id.levelValue)
         delayToggleButton = findViewById(R.id.delayToggleButton)
         subtitleToggleButton = findViewById(R.id.subtitleToggleButton)
+        expandButton = findViewById(R.id.expandButton)
+        collapseButton = findViewById(R.id.collapseButton)
+        fsDelayToggleButton = findViewById(R.id.fsDelayToggleButton)
+        fullscreenBar = findViewById(R.id.fullscreenBar)
+        urlRow = findViewById(R.id.urlRow)
+        dubRow = findViewById(R.id.dubRow)
+        fileRow = findViewById(R.id.fileRow)
+        micRow = findViewById(R.id.micRow)
+        errorsRow = findViewById(R.id.errorsRow)
+        statusRow = findViewById(R.id.statusRow)
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
@@ -297,7 +322,7 @@ class MainActivity : AppCompatActivity() {
                 hudView.bringToFront()
                 Toast.makeText(
                     this@MainActivity,
-                    "Xem toàn màn hình thì trễ hình không chạy, giọng dịch sẽ đi sau hình — xem ở chế độ thường để hình khớp giọng",
+                    "Xem toàn màn hình thì trễ hình không chạy, giọng dịch sẽ đi sau hình — xem ở chế độ thường để hình khớp giọng. Muốn hình khớp giọng ở màn hình lớn, bấm nút Phóng to của app thay vì nút toàn màn hình của trang web",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -323,9 +348,7 @@ class MainActivity : AppCompatActivity() {
                     )
                 } catch (_: Exception) {
                 }
-                delayToggleButton.setText(
-                    if (delayOn) R.string.delay_off else R.string.delay_on
-                )
+                updateDelayButtons()
             }
         }
 
@@ -340,13 +363,10 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.settingsButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
-        delayToggleButton.setOnClickListener {
-            delayOn = !delayOn
-            webView.evaluateJavascript("window.DubLiveSetEnabled($delayOn)", null)
-            delayToggleButton.setText(
-                if (delayOn) R.string.delay_off else R.string.delay_on
-            )
-        }
+        delayToggleButton.setOnClickListener { toggleDelay() }
+        fsDelayToggleButton.setOnClickListener { toggleDelay() }
+        expandButton.setOnClickListener { enterAppFullscreen() }
+        collapseButton.setOnClickListener { exitAppFullscreen() }
         // v1.0.5 — hide/show subtitles; the service keeps sending them,
         // the view just stays hidden while the flag is off.
         subtitleToggleButton.setOnClickListener {
@@ -356,6 +376,72 @@ class MainActivity : AppCompatActivity() {
                 if (subtitlesVisible) R.string.subtitle_hide else R.string.subtitle_show
             )
         }
+    }
+
+    /** v1.0.6 — one delay toggle shared by the normal "Tắt trễ hình"
+     * button and the fullscreen bar's copy; both labels stay in sync. */
+    private fun toggleDelay() {
+        delayOn = !delayOn
+        webView.evaluateJavascript("window.DubLiveSetEnabled($delayOn)", null)
+        updateDelayButtons()
+    }
+
+    private fun updateDelayButtons() {
+        val res = if (delayOn) R.string.delay_off else R.string.delay_on
+        delayToggleButton.setText(res)
+        fsDelayToggleButton.setText(res)
+    }
+
+    /**
+     * v1.0.6 — toàn màn hình CỦA APP ("Phóng to"). The web page's own
+     * fullscreen button moves the <video> onto a native surface and
+     * leaves the delay canvas behind in the page, so picture and dub
+     * can NEVER match there — an Android WebView limit, not fixable by
+     * drawing more. This mode instead hides only the app's chrome
+     * (address bar, buttons, status, level meter); the WebView stays
+     * in the page, so its delay canvas keeps running and the picture
+     * stays in sync with the dub voice. Immersive sticky hides the
+     * system status/navigation bars too.
+     */
+    private fun enterAppFullscreen() {
+        if (appFullscreen || customView != null) return
+        appFullscreen = true
+        urlRow.visibility = View.GONE
+        dubRow.visibility = View.GONE
+        fileRow.visibility = View.GONE
+        micRow.visibility = View.GONE
+        errorsRow.visibility = View.GONE
+        statusRow.visibility = View.GONE
+        fullscreenBar.visibility = View.VISIBLE
+        try { supportActionBar?.hide() } catch (_: Exception) { }
+        applyImmersiveFlags()
+    }
+
+    /** v1.0.6 — leave the app's fullscreen: chrome comes back, the
+     * video delay is untouched (it kept running the whole time). */
+    private fun exitAppFullscreen() {
+        if (!appFullscreen) return
+        appFullscreen = false
+        urlRow.visibility = View.VISIBLE
+        dubRow.visibility = View.VISIBLE
+        fileRow.visibility = View.VISIBLE
+        micRow.visibility = View.VISIBLE
+        errorsRow.visibility = View.VISIBLE
+        statusRow.visibility = View.VISIBLE
+        fullscreenBar.visibility = View.GONE
+        try { supportActionBar?.show() } catch (_: Exception) { }
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+    }
+
+    private fun applyImmersiveFlags() {
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                or View.SYSTEM_UI_FLAG_FULLSCREEN
+                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+            )
     }
 
     private fun openUrl() {
@@ -586,6 +672,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // v1.0.6 — system UI flags are reset when the activity pauses
+        // (Home, notification shade); re-apply them if still fullscreen.
+        if (appFullscreen) applyImmersiveFlags()
         val filter = IntentFilter(DubbingService.ACTION_DUB_EVENT)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(dubReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -602,6 +691,11 @@ class MainActivity : AppCompatActivity() {
     override fun onBackPressed() {
         if (customView != null) {
             customViewCallback?.onCustomViewHidden()
+            return
+        }
+        // v1.0.6 — Back leaves the app's fullscreen first.
+        if (appFullscreen) {
+            exitAppFullscreen()
             return
         }
         if (webView.canGoBack()) {

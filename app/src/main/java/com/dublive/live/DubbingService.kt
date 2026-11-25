@@ -1,6 +1,7 @@
 package com.dublive.live
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -633,6 +634,78 @@ class DubbingService : Service() {
         return START_NOT_STICKY
     }
 
+    /**
+     * v1.0.12 — pick the foreground-service type for the CURRENT
+     * audioMode. From Android 14 (targetSDK 34) an FGS started with
+     * the mediaProjection type is rejected unless the app currently
+     * holds a MediaProjection token (android:project_media), which
+     * only exists after the user grants the screen-capture dialog.
+     * v1.0.11 passed MEDIA_PROJECTION unconditionally for every mode,
+     * so tap (no dialog by design) and mic (no dialog by design)
+     * crashed at once with "Starting FGS with type mediaProjection
+     * ... requires permissions: ... [FOREGROUND_SERVICE_MEDIA_PROJECTION]
+     * ... [CAPTURE_VIDEO_OUTPUT, android:project_media]".
+     * Only CAPTURE — started from the dialog result, token in hand —
+     * may use MEDIA_PROJECTION|MICROPHONE, and it must still
+     * startForeground BEFORE getMediaProjection(), as before.
+     * Tap/mic modes run MICROPHONE-only (RECORD_AUDIO is requested
+     * by the activity first; the manifest declares the microphone
+     * FGS type). Never pass MEDIA_PROJECTION without a token.
+     * `hasProjectionToken` is false when the CAPTURE start carries no
+     * dialog result (defensive): the service then starts
+     * MICROPHONE-only and the capture start fails cleanly with an
+     * error broadcast instead of a SecurityException.
+     */
+    private fun foregroundTypeForMode(hasProjectionToken: Boolean): Int {
+        return if (audioMode == AudioMode.CAPTURE && hasProjectionToken) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        } else {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+    }
+
+    private fun enterForeground(notif: Notification, hasProjectionToken: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, notif, foregroundTypeForMode(hasProjectionToken))
+        } else {
+            startForeground(NOTIF_ID, notif)
+        }
+    }
+
+    /**
+     * v1.0.12 — tap -> capture fallback: the service is already
+     * foreground with MICROPHONE only. Re-calling startForeground
+     * upgrades its type, which MUST happen BEFORE getMediaProjection()
+     * is called with the fresh token. Returns false when the upgrade
+     * itself is rejected — the caller then falls back to the mic
+     * instead of dying.
+     */
+    private fun upgradeForegroundToProjection(): Boolean {
+        return try {
+            createChannel()
+            val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("DubLive")
+                .setContentText(getString(R.string.dub_running))
+                .setSmallIcon(android.R.drawable.ic_media_play)
+                .setOngoing(true)
+                .build()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIF_ID, notif,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                )
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "upgradeForegroundToProjection failed", e)
+            false
+        }
+    }
+
     private fun startDub(
         resultCode: Int,
         resultData: Intent?,
@@ -668,20 +741,18 @@ class DubbingService : Service() {
             stopSelf()
             return
         }
-        // Android 16 rule: startForeground (with the mediaProjection type)
-        // MUST happen before getMediaProjection() is called. If this throws
-        // (e.g. started from background), there is no capture path at all —
-        // report it and stop cleanly instead of crashing.
+        // v1.0.12 — Android 14 rule: startForeground (with the
+        // mediaProjection type) MUST happen before getMediaProjection()
+        // is called — but ONLY when we actually hold a token. Tap and
+        // mic modes never open the capture dialog, so they start
+        // MICROPHONE-only (see foregroundTypeForMode); passing
+        // MEDIA_PROJECTION without a token throws SecurityException
+        // and kills the service at once (the v1.0.11 crash).
+        // If this throws (e.g. started from background), there is no
+        // capture path at all — report it and stop cleanly instead
+        // of crashing.
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIF_ID, notif,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-                )
-            } else {
-                startForeground(NOTIF_ID, notif)
-            }
+            enterForeground(notif, hasProjectionToken = resultData != null)
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed", e)
             broadcast(TYPE_ERROR, message = "Không mở được dịch vụ nền: ${e.message}")
@@ -2093,6 +2164,16 @@ class DubbingService : Service() {
         capturing = false
         try { oldThread?.join(1500) } catch (_: Exception) { }
         captureThread = null
+        // v1.0.12 — the service is foreground with MICROPHONE only
+        // (tap mode). Upgrade to MEDIA_PROJECTION|MICROPHONE BEFORE
+        // getMediaProjection(): from Android 14 the FGS type must
+        // already include mediaProjection when the fresh token is
+        // used. If the upgrade is rejected, fall back to the mic
+        // instead of dying.
+        if (!upgradeForegroundToProjection()) {
+            fallbackToMic()
+            return
+        }
         if (!setupMediaProjection(resultCode, resultData)) {
             // Token unusable after all: mic mode instead of dying.
             mediaProjection = null

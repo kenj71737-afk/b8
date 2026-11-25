@@ -74,6 +74,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fsDelayMinusButton: Button
     private lateinit var fsDelayPlusButton: Button
     private lateinit var statusView: TextView
+    private lateinit var volumeHintView: TextView
     private lateinit var levelBar: android.widget.ProgressBar
     private lateinit var levelValue: TextView
     private lateinit var delayToggleButton: Button
@@ -393,6 +394,7 @@ class MainActivity : AppCompatActivity() {
                         tapActive = false
                         currentAudioMode = ""
                         lastAudioRouteLabel = ""
+                        updateVolumeHint()
                         subtitleView.visibility = View.GONE
                         hudRow.visibility = View.GONE
                         diagView.text = ""
@@ -450,6 +452,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * v1.0.12 — the volume hint under the buttons must name the stream
+     * the dub voice is REALLY on: MEDIA while the tap works (the
+     * phone's volume buttons then move dub + original together, and
+     * the Settings slider sets their ratio), CALL/MIC after a
+     * capture/mic fallback (the buttons move the dub voice alone).
+     * The v1.0.11 build left the static call-stream hint on screen
+     * even in tap mode, telling the user to raise the call volume
+     * for a voice that was on media.
+     */
+    private fun updateVolumeHint() {
+        try {
+            volumeHintView.setText(
+                if (currentAudioMode == DubbingService.AUDIO_MODE_MEDIA) {
+                    R.string.media_volume_hint
+                } else {
+                    R.string.call_volume_hint
+                }
+            )
+        } catch (_: Exception) { }
+    }
+
+    /**
      * v1.0.11 — the status line carries the audio route next to the
      * status text, e.g. "Trạng thái: … | Âm thanh: phương tiện", so the
      * user can see at a glance whether the dub is on the loud media
@@ -460,6 +484,7 @@ class MainActivity : AppCompatActivity() {
         val cur = statusView.text.toString()
         val base = cur.substringBefore(" | Âm thanh:").ifBlank { cur }
         statusView.text = "$base | $lastAudioRouteLabel"
+        updateVolumeHint()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -479,6 +504,7 @@ class MainActivity : AppCompatActivity() {
         // hard-coded 5000 ms any more.
         lastAppliedDelayMs = try { Prefs.baseDelayMs(this) } catch (_: Exception) { 5000L }
         statusView = findViewById(R.id.statusView)
+        volumeHintView = findViewById(R.id.callVolumeHint)
         levelBar = findViewById(R.id.levelBar)
         levelValue = findViewById(R.id.levelValue)
         delayToggleButton = findViewById(R.id.delayToggleButton)
@@ -900,7 +926,8 @@ class MainActivity : AppCompatActivity() {
         tapActive = false
         pendingTapStart = true
         lastAudioRouteLabel = ""
-        currentAudioMode = ""
+        currentAudioMode = DubbingService.AUDIO_MODE_MEDIA
+        updateVolumeHint()
         statusView.text = "Trạng thái: Đang thử lấy tiếng trong trang…"
         levelBar.progress = 0
         levelValue.text = "0"
@@ -948,6 +975,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         dubbing = true
+        currentAudioMode = DubbingService.AUDIO_MODE_CALL
+        updateVolumeHint()
         statusView.text = "Trạng thái: Đang nối Gemini Live…"
         levelBar.progress = 0
         levelValue.text = "0"
@@ -1007,6 +1036,8 @@ class MainActivity : AppCompatActivity() {
         try {
             startForegroundService(intent)
             dubbing = true
+            currentAudioMode = DubbingService.AUDIO_MODE_CALL
+            updateVolumeHint()
             statusView.text = "Trạng thái: Đang nối Gemini Live…"
             levelBar.progress = 0
             levelValue.text = "0"
@@ -1051,6 +1082,7 @@ class MainActivity : AppCompatActivity() {
         }
         currentAudioMode = ""
         lastAudioRouteLabel = ""
+        updateVolumeHint()
     }
 
     /**

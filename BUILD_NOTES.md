@@ -1,19 +1,109 @@
 # DubLive v1.0.11 — GIỌNG DỊCH + TIẾNG GỐC QUA ÂM THANH PHƯƠNG TIỆN (TAP TRONG TRANG)
 
-Build xong 25/11/2026. APK Debug, cài được.
+Build xong 25/11/2026 (rebuild cùng version sau hotfix đo lát cắt).
+APK Debug, cài được.
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.11.apk`
   (symlink `~/workspace/your_files/DubLive-v1.0.11.apk`)
-- Kích thước: 9.517.346 bytes (9,1 MB). MD5: a77771424f74e67d1bfb5b91c575f78f.
+- Kích thước: 9.517.706 bytes (9,1 MB). MD5: a0586b00d6ba39a9c9bd84f044190ccb.
 - aapt2: package `com.dublive.live`, versionCode 12, versionName 1.0.11,
   minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
   Các class mới có trong dex: TapJs, TapAudioQueue, LocalTapProcessor,
   TapRenderersFactory; chuỗi `settings_dub_volume_note` mới đã vào APK;
   1 tham chiếu `USAGE_ALARM` còn lại trong dex thuộc thư viện media3,
   không phải code DubLive (bản v1.0.11 không dùng báo thức).
-- Actions run thành công: **45646438468** (completed/success), commit
-  `53568b3003762e1e2700d871768ecd763debb4e0` trên nhánh `dublive-v1`
+  Hotfix đã vào dex: field `deferredTooSmall` có mặt, field cũ
+  `droppedTooSmall` đã mất, chuỗi chẩn đoán mới
+  "bỏ %d lát/%d mẫu (nhỏ %d hoãn/lớn %d)" có trong classes3.dex,
+  chuỗi cũ đã mất.
+- Actions run thành công: **45650625648** (completed/success), commit
+  `d37b8187b703220e13f0379d610f00dcd6b33de9` trên nhánh `dublive-v1`
   (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
-  `alad-apks` (id 15038351106, bản Debug).
+  `alad-apks` (id 15039618742, bản Debug). Build đầu cùng version
+  (run 45646438468, commit 53568b30, MD5 a77771424f74e67d1bfb5b91c575f78f)
+  đã bị thay bằng bản rebuild này — cùng versionCode 12 /
+  versionName 1.0.11, KHÔNG tách bản riêng.
+
+## Hotfix trong cùng bản 1.0.11 — sửa đo lát cắt (ảnh 22:35)
+
+User xem NetShort "hồng diện sát" tập 4 trên v1.0.10, Live nối tốt,
+phụ đề Việt vẫn hiện, giọng dịch vẫn chạy, nhưng dòng chẩn đoán:
+"D 4,3 s · mẫu cuối 1,8 s (67 s trước) · 0 mẫu/60 s · chờ 0 lát ·
+hold 2,0 s · VAD: đang nói · bỏ 0 lát/133 mẫu". App CÓ đo (133 mẫu
+trong ~67 s, đúng nhịp ~2/s) nhưng TẤT CẢ bị loại, D kẹt ở 4,3 s.
+
+Đã kiểm tra bằng cách đọc code, KHÔNG đoán mò — 2 nghi vấn chính đều
+BỊ LOẠI: (a) khác đồng hồ/đơn vị: KHÔNG — hai bên đều dùng
+System.currentTimeMillis() (ms), thoại ms = samples/16 (16 kHz mono),
+giọng ms = bytes/48 (24 kHz mono); (b) ghép sai đầu (LIFO): KHÔNG —
+ghép lấy lát CŨ NHẤT (FIFO).
+
+Lỗi thật: hàng đợi lát là một bộ tích phân mong manh, độ sâu =
+(thoại đếm được − giọng đếm được)/500 + backlog trễ ban đầu, mà hai
+bên KHÔNG BAO GIỜ đếm cùng một lượng tiếng — nên nó trôi về 0 hoặc
+về trần, theo cả hai hướng:
+- TRÔI XUỐNG (cạn → đúng ảnh 22:35): đầu câu 160 ms gửi cho Live
+  không được đếm; giọng cứ lấy lát qua khoảng lặng nguồn trong khi
+  thoại ngừng đẩy; bản dịch dài hơn câu gốc thì giọng lấy NHIỀU hơn
+  thoại đẩy. Về 0 rồi, code cũ vẫn lấy lát vừa đẩy, được mẫu <500 ms,
+  loại nó VÀ nuốt luôn lát đó — độ sâu không bao giờ hồi được: xoắn
+  chết, D đóng băng. Xoay key mỗi 5 phút xóa hàng đợi nên cũng rơi
+  vào trạng thái này.
+- TRÔI LÊN (phình → D chạy mất): v1.0.10 đếm MỌI frame trong lúc nói,
+  kể cả đuôi im lặng 700 ms của VAD sau mỗi câu — frame dưới ngưỡng
+  END, KHÔNG BAO GIỜ gửi cho Live, KHÔNG có giọng dịch. Đếm thừa
+  ~700 ms/câu nên với bản dịch dài bằng câu gốc, hàng đợi phình,
+  mẫu phình, D chạy mất (mô phỏng: D 5,0 → 11,2 s).
+
+Đã sửa (3 chỗ, cùng bản 1.0.11):
+1. `DubDelayTracker.kt` — NHÌN TRƯỚC KHI LẤY (peek-before-pop):
+   lát cũ nhất còn quá mới (<500 ms) thì ĐỂ LẠI trong hàng đợi, giữ
+   nguyên credit giọng, không lấy — nó già đi rồi ghép sau, hàng đợi
+   hồi lại; chỉ lát quá cũ (>20 s) mới lấy-bỏ. Lần ghép quá mới là
+   HOÃN (deferral), không phải hủy: đếm riêng bằng `deferredTooSmall`,
+   KHÔNG tính vào `droppedSamples` (đếm hoãn thành "bỏ" làm bản đang
+   hồi phục báo "bỏ 900 mẫu" trong khi mẫu hợp lệ vẫn chảy).
+2. `DubbingService.kt` `onSpeechStart` — đếm đầu câu 160 ms vào
+   tracker (8 frame kích hoạt VAD, đã gửi cho Live, có giọng dịch;
+   pre-roll im lặng trước đó không đếm vì không có giọng).
+3. `DubbingService.kt` `onSpeechChunk` — CỔNG ĐUÔI (tail gate): chỉ
+   đếm frame nào có rms >= vadEndThreshold — ĐÚNG cái gửi cho Live
+   (cùng một cổng, tính rms một lần dùng chung cho cả hai). Âm tiết
+   nhỏ giữa ngưỡng END và START vẫn gửi và vẫn đếm (v1.0.8); đuôi im
+   lặng 700 ms không gửi, không đếm. Cùng với (2), thoại đếm được =
+   đầu câu + frame to = đúng thứ Live nghe mà ra giọng dịch.
+4. Dòng chẩn đoán thêm lý do loại mẫu: "bỏ %d lát/%d mẫu
+   (nhỏ %d hoãn/lớn %d)" — "nhỏ … hoãn" = lần ghép hoãn vì lát quá
+   mới (lát còn sống, ghép sau — KHÔNG nằm trong số "bỏ … mẫu");
+   "lớn" = mẫu HỦY vì lát quá cũ (>20 s, ĐÚNG bằng số "bỏ … mẫu").
+   Ảnh sau: 0 mẫu hợp lệ + "nhỏ" tăng = ghép đói (lỗi 22:35);
+   "lớn" tăng = hàng đợi cũ / giọng ngắn hơn câu gốc.
+
+Kiểm chứng bằng mô phỏng (`/tmp/dublive_1011_slice_sim.py` v2 — port
+trung thực DubDelayTracker + LatencyEma + AudioBurstDetector, mô hình
+VAD đúng: gộp khoảng đang-nói, 1 đầu câu/utterance, frame to/im,
+cổng đuôi; câu 4 s, nghỉ 1 s, trễ thật L = 2,0 s, D hạt giống 5,0 s):
+- A. Code CŨ, giọng dài gấp 1,3 lần gốc: TÁI HIỆN ĐÚNG ảnh user —
+  0 mẫu/60 s, chờ 0 lát, VAD đang nói, bỏ 0 lát/196 mẫu (user: 133),
+  mẫu cuối 0,5 s cách đây 67 s, D kẹt 3,0 s.
+- B. Code MỚI, cùng trường hợp: 96 mẫu/60 s, mẫu cuối 0 s trước,
+  D sống, bỏ 0 lát/0 mẫu (nhỏ 708 hoãn — hoãn, không phải hủy).
+- C. Code MỚI, thoại liên tục không nghỉ, giọng = gốc (đúng tiêu chí
+  nghiệm thu của task): D 3,9 s (≈ L+2 s), mẫu 1,9 s (≈ L), 120 mẫu/
+  60 s (tối đa 2/s), hàng đợi ổn định 4 lát, bỏ 0, hoãn 0.
+- D. Code MỚI, giọng = gốc, có nghỉ (trường hợp trôi lên): D 3,5 s
+  (code CŨ là 11,3 s), mẫu 1,9 s, bỏ 0 — cổng đuôi sửa được hướng
+  phình.
+- E. Code MỚI + xoay key (xóa hàng đợi) ở 60 s: hồi phục, mẫu vẫn
+  chảy, D nhích 3,0 → 3,2 s.
+- F. Code CŨ, giọng = gốc (đối chứng): D chạy 3,0 → 11,3 s, mẫu
+  phình tới 15,6 s, hàng đợi 27 lát.
+
+Giới hạn còn biết: hướng cạn (bản dịch dài hơn gốc), mẫu lát kẹt ở
+mức sàn 500 ms và D ngồi ở mức tối thiểu 3,0 s — vẫn ≥ L nên hình +
+giọng vẫn khớp (cả hai đều theo D), và mẫu burst-start neo D nếu L
+tăng. Bản dịch ngắn hơn gốc hẳn một cách ổn định vẫn làm hàng đợi
+phình chậm — đã chặn bởi MAX_SLICES (40) + bộ đếm "lớn" sẽ hiện rõ
+trên ảnh chẩn đoán nếu xảy ra.
 
 ## Bối cảnh
 

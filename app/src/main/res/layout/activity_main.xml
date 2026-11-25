@@ -178,11 +178,13 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- v1.0.6 — the dub voice plays on the CALL stream
-         (STREAM_VOICE_CALL), separate from media volume: turning up
-         the media volume does nothing for it. While the dub voice is
-         speaking, the phone's volume buttons adjust the dub voice. -->
+    <!-- v1.0.12 — the hint is DYNAMIC (see updateVolumeHint in
+         MainActivity): the dub voice is on the MEDIA stream while
+         the tap works, and on the CALL stream after a capture/mic
+         fallback. The static text below is only the pre-start
+         default (call stream). -->
     <TextView
+        android:id="@+id/callVolumeHint"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:paddingTop="2dp"

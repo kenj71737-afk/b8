@@ -8,12 +8,31 @@ D Y HỆT 3,4 s và mẫu cuối Y HỆT 0,6 s so với ảnh v1.0.12 lúc 04:17
 APK Debug, cài được.
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.14.apk`
   (symlink `~/workspace/your_files/DubLive-v1.0.14.apk`)
-- Kích thước: (điền sau khi build xong). MD5: (điền sau khi build xong).
-- aapt2: package `com.dublive.live`, versionCode 15, versionName 1.0.14.
-- Actions run: (điền sau khi build xong), commit
-  `8e5b8a528c1ae059f4a480198acf17cea89dbc36` trên nhánh `dublive-v1`
+- Kích thước: 9.526.918 bytes (9,1 MB). MD5: 4794193374ac0b62bc2ea0b613b5aeaf.
+- aapt2: package `com.dublive.live`, versionCode 15, versionName 1.0.14,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+  Code mới có trong dex: `onDubTurnComplete` (x2), `onSpeechTurnStart`,
+  `onSpeechTurnEnd`, `targetDelay` (x2), chuỗi chẩn đoán "cặp mốc";
+  hotfix v1.0.11–13 còn nguyên (`deferredTooSmall`, `__dubLiveTapBest`
+  x9, `DubLiveTapDuckVol`, `SpectralGate` x8).
+- Actions run **45717945322** (build job "Build APK" completed/success),
+  commit `a93d10eeb87332f3834eeea693c5dbf1ee99c253` trên nhánh `dublive-v1`
   (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
-  `alad-apks` (bản Debug).
+  `alad-apks` (bản Debug). Commit code v1.0.14 gốc là `8e5b8a52`
+  (DubDelayTracker/LatencyEma/DubbingService + versionCode 15); commit
+  `a93d10ee` chỉ thêm mục BUILD_NOTES này, cùng nội dung code.
+- LƯU Ý BUILD: workflow `pull_request` KHÔNG trigger cho 2 lần push
+  `8e5b8a52` và `a93d10ee` — vì sau khi ALDA FIX44 push lên `main`
+  (21:31), PR #1 thành `mergeable_state: dirty`, GitHub không tạo được
+  merge commit mới (merge ref vẫn kẹt ở bản merge cũ 21:29 của
+  `d7b5012c` vào `54544ae6`) nên không có run nào. Đã vòng qua bằng
+  cách push tag `v1.0.14-dublive` trỏ tới `a93d10ee` (workflow có
+  trigger `push: tags: v*`) — run 45717945322 chạy ngay. Job "Create
+  GitHub Release" của run này FAIL (không cần tới — chỉ lấy artifact).
+  Tag `v1.0.14-dublive` VẪN CÒN trên repo (gh.py không có lệnh delete
+  nên chưa xóa được — chỉ là 1 ref trỏ tới commit dublive-v1, không
+  ảnh hưởng main/PR, không có release nào đi kèm; xóa sau bằng tay nếu
+  cần). Lần sau nếu PR vẫn dirty, dùng lại cách tag này.
 
 ## Chẩn đoán (từ ảnh 05:08, kiểm chứng bằng code + mô phỏng)
 

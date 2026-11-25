@@ -294,6 +294,11 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         findViewById<Button>(R.id.localStopDubButton).setOnClickListener { stopDub() }
         findViewById<Button>(R.id.localMicDubButton).setOnClickListener { startMicDub() }
         pumpHandler.post(pump)
+        // v1.0.15 — opened from another app's share sheet with a video
+        // file (ACTION_SEND video/*): the Uri arrives as intent data.
+        intent?.data?.let { uri ->
+            if (uri.scheme == "content" || uri.scheme == "file") openVideo(uri)
+        }
     }
 
     private fun openVideo(uri: Uri) {

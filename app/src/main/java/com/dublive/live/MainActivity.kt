@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -566,7 +567,19 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                if (url != null) view?.loadUrl(url)
+                if (url == null) return true
+                // v1.0.15 — only web links play inside DubLive. App links
+                // (intent://, hongguo://, snssdk://, market://…) would
+                // otherwise fail silently into a white screen: report
+                // plainly and stay on the page instead.
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    view?.loadUrl(url)
+                } else {
+                    Toast.makeText(
+                        this@MainActivity, R.string.share_deep_link, Toast.LENGTH_LONG
+                    ).show()
+                    statusView.text = "Trạng thái: " + getString(R.string.share_deep_link)
+                }
                 return true
             }
         }
@@ -711,6 +724,106 @@ class MainActivity : AppCompatActivity() {
                 if (subtitlesVisible) R.string.subtitle_hide else R.string.subtitle_show
             )
         }
+        // v1.0.15 — opened from another app's share sheet / "Open with"
+        // (see handleSharedIntent): load the shared link or file now.
+        handleSharedIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // v1.0.15 — singleTop: a share while DubLive is already open
+        // lands here instead of a second MainActivity.
+        handleSharedIntent(intent)
+    }
+
+    /**
+     * v1.0.15 — "Mở bằng DubLive": the user shares a link or a video
+     * file from another app (film app, YouTube, Chrome…) and picks
+     * DubLive in the share sheet, or opens a link with DubLive.
+     * The video then plays INSIDE DubLive (WebView / ExoPlayer),
+     * where the delay canvas + tap + tracker can keep picture and
+     * dub in sync. Watching in the other app and screen-recording
+     * it for DubLive can never delay the picture — Android gives no
+     * API to embed another app's screen inside ours, so this share
+     * target is the way in.
+     * Hong Guo (红果短剧): its share link is a hongguo.com/share/…
+     * web link that redirects to the hongguoduanju.com web player,
+     * which serves a plain same-origin mp4 with no login wall — the
+     * tap should work there. A hongguo:// deep link cannot be played
+     * in a WebView; that case is reported plainly instead of a white
+     * screen (see share_deep_link + shouldOverrideUrlLoading).
+     */
+    private fun handleSharedIntent(intent: Intent) {
+        when (intent.action) {
+            Intent.ACTION_SEND -> handleSharedSend(intent)
+            Intent.ACTION_VIEW -> {
+                val uri = intent.data
+                if (uri != null) openSharedWebLink(uri.toString())
+            }
+        }
+    }
+
+    private fun handleSharedSend(intent: Intent) {
+        // A shared video file wins over shared text: some apps send both.
+        val stream: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_STREAM)
+        }
+        if (stream != null) {
+            openSharedVideoFile(stream)
+            return
+        }
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+        if (text.isBlank()) {
+            reportUnopenableShare()
+            return
+        }
+        val url = extractFirstWebUrl(text)
+        if (url != null) {
+            openSharedWebLink(url)
+        } else {
+            reportUnopenableShare()
+        }
+    }
+
+    /** First http(s) URL in shared text; share sheets bury the link in a description. */
+    private fun extractFirstWebUrl(text: String): String? {
+        val m = Regex("https?://[^\\s\"'<>]+").find(text) ?: return null
+        // Trim trailing punctuation the sender's sentence added.
+        return m.value.trimEnd(')', ']', '.', ',', ';', '!', '?')
+    }
+
+    private fun openSharedWebLink(url: String) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            reportDeepLinkShare()
+            return
+        }
+        urlInput.setText(url)
+        webView.loadUrl(url)
+        statusView.text = "Trạng thái: " + getString(R.string.share_opened)
+        Toast.makeText(this, R.string.share_opened, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun openSharedVideoFile(uri: Uri) {
+        val i = Intent(this, LocalPlayerActivity::class.java).apply {
+            data = uri
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(i)
+        Toast.makeText(this, R.string.share_opened, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun reportUnopenableShare() {
+        statusView.text = "Trạng thái: " + getString(R.string.share_no_url)
+        Toast.makeText(this, R.string.share_no_url, Toast.LENGTH_LONG).show()
+    }
+
+    private fun reportDeepLinkShare() {
+        statusView.text = "Trạng thái: " + getString(R.string.share_deep_link)
+        Toast.makeText(this, R.string.share_deep_link, Toast.LENGTH_LONG).show()
     }
 
     /** v1.0.6 — one delay toggle shared by the normal "Tắt trễ hình"

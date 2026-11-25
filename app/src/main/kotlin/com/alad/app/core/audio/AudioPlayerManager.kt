@@ -23,6 +23,16 @@ class AudioPlayerManager(private val context: Context) {
     private var audioTrack: AudioTrack? = null
     private var audioManager: AudioManager? = null
     private var focusRequest: AudioFocusRequest? = null
+    // FIX44: when earphones are connected, the alarm-stream dub must play
+    // through them, not the phone speaker. Re-applied on every track
+    // rebuild and whenever the output devices change.
+    private var deviceCallback: android.media.AudioDeviceCallback? = null
+
+    /** FIX44: pin the current track to connected earphones, if any. */
+    private fun applyHeadphoneRouting() {
+        val manager = audioManager ?: return
+        HeadphoneRouter.routeTrack(audioTrack, manager)
+    }
 
     private val playerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     // Short bounded queue: discard stale translated audio instead of accumulating delay.
@@ -171,6 +181,13 @@ class AudioPlayerManager(private val context: Context) {
 
         audioTrack?.play()
         setPlaybackSpeed(currentPlaybackSpeed)
+        // FIX44: route the dub to earphones when they are connected
+        // (USAGE_ALARM otherwise goes to the phone speaker), and keep
+        // routing it when earphones are plugged/unplugged mid-session.
+        applyHeadphoneRouting()
+        deviceCallback = audioManager?.let { manager ->
+            HeadphoneRouter.registerCallback(manager) { applyHeadphoneRouting() }
+        }
 
         launchPlaybackLoop()
     }
@@ -327,6 +344,10 @@ class AudioPlayerManager(private val context: Context) {
             .build()
         audioTrack?.play()
         setPlaybackSpeed(currentPlaybackSpeed)
+        // FIX44: the rebuilt alarm track needs routing again (a new
+        // track has no preferred device); the device callback registered
+        // in start() keeps handling plug/unplug after this.
+        applyHeadphoneRouting()
         launchPlaybackLoop()
     }
 
@@ -399,6 +420,10 @@ class AudioPlayerManager(private val context: Context) {
             }
         }
         alarmMode = false
+
+        // FIX44: stop watching output-device changes.
+        HeadphoneRouter.unregisterCallback(audioManager, deviceCallback)
+        deviceCallback = null
 
         playbackJob?.cancel()
         playbackJob = null

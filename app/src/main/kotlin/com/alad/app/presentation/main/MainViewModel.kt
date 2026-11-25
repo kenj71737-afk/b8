@@ -59,6 +59,10 @@ class MainViewModel(private val repository: UserPreferencesRepository) : ViewMod
     val wholeSentence: StateFlow<Boolean> = repository.wholeSentenceFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    // FIX44: spectral music filter (port from DubLive v1.0.8).
+    val spectralMusicFilter: StateFlow<Boolean> = repository.spectralMusicFilterFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     val voicePersona: StateFlow<String> = repository.voicePersonaFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "Puck")
 
@@ -201,6 +205,16 @@ class MainViewModel(private val repository: UserPreferencesRepository) : ViewMod
                 repository.updateWholeSentence(enabled)
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Failed to update whole sentence", e)
+            }
+        }
+    }
+
+    fun updateSpectralMusicFilter(enabled: Boolean) {
+        viewModelScope.launch(exceptionHandler) {
+            try {
+                repository.updateSpectralMusicFilter(enabled)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Failed to update spectral music filter", e)
             }
         }
     }

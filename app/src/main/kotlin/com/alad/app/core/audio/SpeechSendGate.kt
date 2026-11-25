@@ -51,6 +51,36 @@ class SpeechSendGate(
     private var preRollBytes: Int = 0
     private var sending: Boolean = false
 
+    // FIX44: spectral music filter (ported from DubLive v1.0.8). When
+    // enabled, a loud block may only open / advance an utterance while
+    // it has not started sending yet if its spectrum looks like speech
+    // (voice-band energy + peaky spectrum). Loud background music fails
+    // the gate and is dropped here, so it never opens an utterance or
+    // reaches Gemini. Once the utterance is sending, the gate is not
+    // checked — music under dialogue must never cut a sentence.
+    private val spectralGate = SpectralGate()
+    @Volatile var spectralGateEnabled: Boolean = true
+        private set
+
+    fun setSpectralGateEnabled(enabled: Boolean) {
+        spectralGateEnabled = enabled
+    }
+
+    /** First 20 ms (320 samples) of a PCM block, as shorts, for the
+     * spectral gate. Shorter blocks are used whole (the gate zero-pads). */
+    private fun firstFrameSamples(pcm: ByteArray): ShortArray {
+        val samples = minOf(pcm.size / 2, 320)
+        val out = ShortArray(samples)
+        var i = 0
+        while (i < samples) {
+            val low = pcm[i * 2].toInt() and 0xFF
+            val high = pcm[i * 2 + 1].toInt()
+            out[i] = ((high shl 8) or low).toShort()
+            i++
+        }
+        return out
+    }
+
     /**
      * Feed one PCM block (16-bit mono at [sampleRateHz]). Returns the
      * blocks to send to Gemini now (pre-roll flushed + this block), or
@@ -59,6 +89,19 @@ class SpeechSendGate(
     @Synchronized
     fun feed(pcm: ByteArray, nowMs: Long): List<ByteArray> {
         val rms = rmsOf(pcm)
+        // FIX44: spectral gate — a loud block that does not look like
+        // speech (music / noise) is dropped while the utterance has not
+        // started sending yet. It does not open or advance an utterance
+        // and does not enter the pre-roll, so no music is ever sent. The
+        // utterance stays open on its earlier passing blocks; if no more
+        // speech comes, the 450 ms silence timeout closes it and drops
+        // the pre-roll. A single speech frame that fails the gate only
+        // delays the utterance start by one block.
+        if (rms >= speechRms && spectralGateEnabled && !sending) {
+            if (!spectralGate.isSpeechLike(firstFrameSamples(pcm))) {
+                return emptyList()
+            }
+        }
         if (rms >= speechRms) {
             if (utteranceStartMs < 0) {
                 utteranceStartMs = nowMs

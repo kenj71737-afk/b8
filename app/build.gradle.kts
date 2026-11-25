@@ -11,8 +11,8 @@ android {
         applicationId = "com.alad.app"
         minSdk = 29
         targetSdk = 34
-        versionCode = 27
-        versionName = "1.2.22"
+        versionCode = 28
+        versionName = "1.2.23"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

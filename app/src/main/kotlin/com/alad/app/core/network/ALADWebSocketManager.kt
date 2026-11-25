@@ -50,6 +50,8 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
     private var currentDubbingMode = "HYBRID"
     private var currentTargetDialect = ""
     private var currentWholeSentence = false // FIX35: chờ hết câu rồi dịch cả câu
+    // FIX44: lọc nhạc nền bằng phổ tần số (port từ DubLive v1.0.8).
+    private var currentSpectralMusicFilter = true
     // FIX30: VAD send gate — music, sound effects and room noise never
     // reach Gemini, so the model cannot invent translations for them.
     private val sendGate = SpeechSendGate()
@@ -70,16 +72,21 @@ class ALADWebSocketManager(private val client: OkHttpClient) {
         voicePersona: String = "Puck",
         dubbingMode: String = "HYBRID",
         targetDialect: String = "",
-        wholeSentence: Boolean = false
+        wholeSentence: Boolean = false,
+        spectralMusicFilter: Boolean = true
     ) {
         currentVoicePersona = voicePersona
         currentDubbingMode = dubbingMode
         currentTargetDialect = targetDialect
         currentWholeSentence = wholeSentence
+        currentSpectralMusicFilter = spectralMusicFilter
         val finalUrl = "$GEMINI_WS_URL?key=$apiKey"
         val request = Request.Builder().url(finalUrl).build()
         isSetupComplete = false
         sendGate.reset() // FIX30: fresh VAD state for every session
+        // FIX44: spectral music filter for this session (session-start
+        // setting, like wholeSentence).
+        sendGate.setSpectralGateEnabled(spectralMusicFilter)
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {

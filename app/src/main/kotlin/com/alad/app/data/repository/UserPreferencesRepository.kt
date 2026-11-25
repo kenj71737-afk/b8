@@ -38,6 +38,10 @@ class UserPreferencesRepository(private val context: Context) {
         // vật nói hết câu rồi dịch cả câu, tắt thì dịch ngay từng cụm ngắn
         // như cũ. Mặc định tắt.
         val WHOLE_SENTENCE = booleanPreferencesKey("whole_sentence")
+        // FIX44: lọc nhạc nền bằng phổ tần số (port từ DubLive v1.0.8) —
+        // chỉ khung tiếng giống giọng nói mới mở được câu dịch; nhạc dạo
+        // hay khoảng nghỉ giữa thoại không bị dịch thành lời. Mặc định bật.
+        val SPECTRAL_MUSIC_FILTER = booleanPreferencesKey("spectral_music_filter")
         // FIX27: second Gemini API key (another Google account) + which key
         // is currently active. Key 1 stays in API_KEY ("api_key") so existing
         // installs keep their key; key 2 is optional.
@@ -72,6 +76,7 @@ class UserPreferencesRepository(private val context: Context) {
     val externalAppModeFlow: Flow<Boolean> = context.dataStore.data.map { it[EXTERNAL_APP_MODE] ?: false }.distinctUntilChanged()
     val filterOriginalVoiceFlow: Flow<Boolean> = context.dataStore.data.map { it[FILTER_ORIGINAL_VOICE] ?: false }.distinctUntilChanged()
     val wholeSentenceFlow: Flow<Boolean> = context.dataStore.data.map { it[WHOLE_SENTENCE] ?: false }.distinctUntilChanged()
+    val spectralMusicFilterFlow: Flow<Boolean> = context.dataStore.data.map { it[SPECTRAL_MUSIC_FILTER] ?: true }.distinctUntilChanged()
     val geminiApiKey2Flow: Flow<String> = context.dataStore.data.map { it[GEMINI_API_KEY_2] ?: "" }.distinctUntilChanged()
     val geminiActiveKeyFlow: Flow<Int> = context.dataStore.data.map { it[GEMINI_ACTIVE_KEY] ?: 0 }.distinctUntilChanged()
 
@@ -90,6 +95,7 @@ class UserPreferencesRepository(private val context: Context) {
     suspend fun updateExternalAppMode(enabled: Boolean) { context.dataStore.edit { it[EXTERNAL_APP_MODE] = enabled } }
     suspend fun updateFilterOriginalVoice(enabled: Boolean) { context.dataStore.edit { it[FILTER_ORIGINAL_VOICE] = enabled } }
     suspend fun updateWholeSentence(enabled: Boolean) { context.dataStore.edit { it[WHOLE_SENTENCE] = enabled } }
+    suspend fun updateSpectralMusicFilter(enabled: Boolean) { context.dataStore.edit { it[SPECTRAL_MUSIC_FILTER] = enabled } }
     suspend fun updateGeminiApiKey2(key: String) { context.dataStore.edit { it[GEMINI_API_KEY_2] = key } }
     suspend fun updateGeminiActiveKey(index: Int) { context.dataStore.edit { it[GEMINI_ACTIVE_KEY] = index.coerceIn(0, 1) } }
 }

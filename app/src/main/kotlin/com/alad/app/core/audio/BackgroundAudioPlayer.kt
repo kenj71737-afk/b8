@@ -2,7 +2,9 @@ package com.alad.app.core.audio
 
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.SystemClock
 import android.util.Log
@@ -59,6 +61,10 @@ class BackgroundAudioPlayer(private val context: Context) {
     }
 
     private var audioTrack: AudioTrack? = null
+    private var audioManager: AudioManager? = null
+    // FIX44: route the alarm-stream background to earphones when they
+    // are connected (USAGE_ALARM otherwise goes to the phone speaker).
+    private var deviceCallback: AudioDeviceCallback? = null
     private val vocalRemover = VocalRemover()
 
     @Volatile private var volumeRatio: Float = 1.0f
@@ -96,7 +102,14 @@ class BackgroundAudioPlayer(private val context: Context) {
      * through unfiltered. */
     val isPassthrough: Boolean get() = vocalRemover.isPassthrough
 
+    /** FIX44: pin the current track to connected earphones, if any. */
+    private fun applyHeadphoneRouting() {
+        val manager = audioManager ?: return
+        HeadphoneRouter.routeTrack(audioTrack, manager)
+    }
+
     fun start() {
+        audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val audioAttributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_ALARM)
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -121,6 +134,12 @@ class BackgroundAudioPlayer(private val context: Context) {
 
         audioTrack?.play()
         applyTrackVolume()
+        // FIX44: route the background to earphones when they are
+        // connected, and keep routing it on plug/unplug mid-session.
+        applyHeadphoneRouting()
+        deviceCallback = audioManager?.let { manager ->
+            HeadphoneRouter.registerCallback(manager) { applyHeadphoneRouting() }
+        }
         Log.i(TAG, "Background player started (alarm stream, ${SAMPLE_RATE}Hz stereo)")
 
         // FIX37: delayed playback loop. Each queued block is written once
@@ -222,6 +241,9 @@ class BackgroundAudioPlayer(private val context: Context) {
     }
 
     fun stop() {
+        // FIX44: stop watching output-device changes.
+        HeadphoneRouter.unregisterCallback(audioManager, deviceCallback)
+        deviceCallback = null
         // FIX37: stop the playback loop first so it never writes to a
         // released track, then drop any queued (undelayed) audio.
         playbackScope?.cancel()

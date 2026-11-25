@@ -235,6 +235,9 @@ class AudioDubbingForegroundService : Service() {
                 // đầu phiên — đổi công tắc giữa chừng có hiệu lực từ lần
                 // bật lồng tiếng sau (lời dặn gửi cho model lúc mở phiên).
                 val wholeSentence = repository.wholeSentenceFlow.first()
+                // FIX44: lọc nhạc nền bằng phổ tần số (port từ DubLive
+                // v1.0.8). Đọc một lần lúc bắt đầu phiên, như wholeSentence.
+                val spectralMusicFilter = repository.spectralMusicFilterFlow.first()
                 // FIX19: live mirror of the external-app mode switch, so the
                 // voice hold can be dropped even if the user flips the switch
                 // mid-session (before the first translated audio arrives).
@@ -313,6 +316,7 @@ class AudioDubbingForegroundService : Service() {
                             val voice = repository.voicePersonaFlow.first()
                             val mode = repository.dubbingModeFlow.first()
                             val whole = repository.wholeSentenceFlow.first()
+                            val spectral = repository.spectralMusicFilterFlow.first()
                             // FIX36: keep the VAD gate state across the
                             // reconnect (same dubbing session) so the
                             // sentence start in its pre-roll is not lost.
@@ -327,7 +331,8 @@ class AudioDubbingForegroundService : Service() {
                                 voicePersona = voice,
                                 dubbingMode = mode,
                                 targetDialect = dialect,
-                                wholeSentence = whole
+                                wholeSentence = whole,
+                                spectralMusicFilter = spectral
                             )
                         } catch (e: Exception) {
                             Log.e(TAG, "Reconnect failed", e)
@@ -689,7 +694,8 @@ class AudioDubbingForegroundService : Service() {
                     voicePersona = voicePersona,
                     dubbingMode = dubbingMode,
                     targetDialect = targetDialect,
-                    wholeSentence = wholeSentence
+                    wholeSentence = wholeSentence,
+                    spectralMusicFilter = spectralMusicFilter
                 )
 
                 // FIX19: in external-app mode the phone shows another app, so
@@ -789,6 +795,7 @@ class AudioDubbingForegroundService : Service() {
                                 val currentVoice = repository.voicePersonaFlow.first()
                                 val currentMode = repository.dubbingModeFlow.first()
                                 val currentWhole = repository.wholeSentenceFlow.first()
+                                val currentSpectral = repository.spectralMusicFilterFlow.first()
                                 // FIX36: keep the VAD gate state across the
                                 // reconnect (same dubbing session).
                                 webSocketManager?.disconnect(resetGate = false)
@@ -799,7 +806,8 @@ class AudioDubbingForegroundService : Service() {
                                     voicePersona = currentVoice,
                                     dubbingMode = currentMode,
                                     targetDialect = newDialect,
-                                    wholeSentence = currentWhole
+                                    wholeSentence = currentWhole,
+                                    spectralMusicFilter = currentSpectral
                                 )
                             }
                         }

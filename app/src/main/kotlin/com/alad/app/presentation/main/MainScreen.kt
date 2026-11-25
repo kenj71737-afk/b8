@@ -74,6 +74,7 @@ fun MainScreen(
     val externalAppMode by viewModel.externalAppMode.collectAsState()
     val filterOriginalVoice by viewModel.filterOriginalVoice.collectAsState()
     val wholeSentence by viewModel.wholeSentence.collectAsState()
+    val spectralMusicFilter by viewModel.spectralMusicFilter.collectAsState()
     val catchUpSpeed by viewModel.catchUpSpeed.collectAsState()
 
     val dubbingVol by viewModel.dubbingVolume.collectAsState()
@@ -449,6 +450,65 @@ fun MainScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
                                 "Có hiệu lực khi bật lồng tiếng lần sau (tắt/bật lại lồng tiếng để áp dụng). Giọng chậm hơn chừng 1–3 giây mỗi câu nhưng dịch đúng nghĩa hơn, trễ tự động chạy theo nên vẫn khớp hình.",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp
+                            )
+                        }
+                    }
+                }
+
+                // FIX44: lọc nhạc nền bằng phổ tần số (port từ DubLive
+                // v1.0.8) — chỉ khung tiếng giống giọng nói mới mở được
+                // câu dịch; nhạc dạo hay khoảng nghỉ giữa thoại không bị
+                // dịch thành lời. Có hiệu lực từ lần bật lồng tiếng sau.
+                GlassCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    onClick = { viewModel.updateSpectralMusicFilter(!spectralMusicFilter) }
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MusicNote,
+                                    contentDescription = null,
+                                    tint = NeonCyan,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Lọc nhạc nền bằng phổ tần số", color = Color.White, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        if (spectralMusicFilter) "Đang bật: nhạc nền không mở được câu dịch"
+                                        else "Nhạc nền không mở được câu dịch",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = spectralMusicFilter,
+                                onCheckedChange = null,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = NeonCyan,
+                                    uncheckedThumbColor = Color.Gray,
+                                    uncheckedTrackColor = Color.White.copy(alpha = 0.1f)
+                                )
+                            )
+                        }
+                        if (spectralMusicFilter) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Có hiệu lực khi bật lồng tiếng lần sau. Chỉ tiếng giống giọng nói mới mở câu dịch; nhạc dạo đầu hay khoảng nghỉ giữa thoại sẽ không bị dịch thành lời nữa.",
                                 color = TextSecondary,
                                 fontSize = 12.sp,
                                 lineHeight = 17.sp

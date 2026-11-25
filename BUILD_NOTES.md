@@ -1,3 +1,94 @@
+# DubLive v1.0.14 — ĐO TRỄ THEO RANH GIỚI LƯỢT NÓI (chữa D đứng im)
+
+User thử v1.0.13 lúc 05:08 ngày 26/11/2026 trên cswold video 8053 ep-2:
+"Độ trễ tự động 1 lần lúc đầu sau đứng im luôn". Ảnh dòng chẩn đoán:
+"D 3,4 s · mẫu cuối 0,6 s (0 s trước) · 111 mẫu/60 s · chờ 1 lát ·
+hold 2,0 s · VAD: đang nói · bỏ 0 lát/0 mẫu (nhỏ 1421 hoãn/lớn 0)".
+D Y HỆT 3,4 s và mẫu cuối Y HỆT 0,6 s so với ảnh v1.0.12 lúc 04:17.
+APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.14.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.14.apk`)
+- Kích thước: (điền sau khi build xong). MD5: (điền sau khi build xong).
+- aapt2: package `com.dublive.live`, versionCode 15, versionName 1.0.14.
+- Actions run: (điền sau khi build xong), commit
+  `8e5b8a528c1ae059f4a480198acf17cea89dbc36` trên nhánh `dublive-v1`
+  (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
+  `alad-apks` (bản Debug).
+
+## Chẩn đoán (từ ảnh 05:08, kiểm chứng bằng code + mô phỏng)
+
+ĐO LƯỜNG KHÔNG HỀ DỪNG — 111 mẫu/60 s vẫn chảy, mẫu mới nhất 0 s
+trước. Vấn đề là MỌI MẪU ĐỀU KẸT Ở MỨC SÀN ~0,6 s: giọng dịch tiếng
+Việt dài hơn câu gốc tiếng Trung (~1,3 lần), nên bên tiêu thụ lát
+(giọng dịch) chạy NHANH HƠN bên đẩy lát thoại tính theo tổng thời
+lượng — hàng đợi bị rút cạn dần về ~1 lát ("chờ 1 lát"), mỗi lần ghép
+chỉ còn lát vừa đẩy cách đây ~0,5–0,6 s. Bằng chứng rút cạn: "nhỏ 1421
+hoãn" — 1421 lần ghép phải hoãn vì lát cũ nhất còn quá mới, trong khi
+chỉ có 111 mẫu hợp lệ/60 s và 0 mẫu bị bỏ. Ghép theo vị trí (FIFO, lát
+thứ K của giọng ↔ lát thứ K của thoại) CHỈ đúng khi tổng thời lượng
+giọng = tổng thời lượng thoại. Rồi LatencyEma biến mẫu sàn thành bẫy
+đóng băng D: đích = 0,6 + 2,0 = 2,6 s → kẹp sàn 3,0 s → deadband
+500 ms chặn mọi cập nhật vì |3,4 − 3,0| = 0,4 < 0,5 — D không bao giờ
+nhúc nhích được nữa. Mô phỏng v1.0.11 KHÔNG tái hiện được hiện tượng
+này vì nó mô hình giọng đến theo từng đợt burst có khoảng nghỉ (hàng
+đợi được xây lại sau mỗi lần nghỉ); thực tế Live stream giọng liên tục,
+đuôi vẫn tiêu thụ xuyên qua lúc thoại nghỉ.
+
+## Cách sửa (thiết kế v6, chứng minh bằng mô phỏng trước khi build)
+
+1. Bỏ ghép theo vị trí thuần túy. Ghép theo RANH GIỚI LƯỢT NÓI:
+   turnComplete của server ↔ mốc bắt đầu lượt nói của thoại (VAD
+   onSpeechStart); đợt giọng dịch (burst sau khoảng lặng ≥500 ms) ↔
+   mốc lượt nói. Mỗi cặp mốc cho 1 mẫu trễ thật + 1 neo CHÍNH XÁC
+   (vị trí dịch tại tường turnComplete CHÍNH LÀ audio cuối lượt đó),
+   không bị trôi theo tỉ lệ dài. Lát vẫn ghép liên tục nhưng đích
+   = neo + (dịch đã ghép × tỉ lệ), tỉ lệ đo theo từng lượt từ các
+   turnComplete liên tiếp (tổng dịch chính xác, không lệch tồn đọng).
+2. Sửa bẫy đóng băng trong LatencyEma: creep 250 ms/cửa sổ 4 s — D bò
+   dần về đích EMA khi deadband kẹp ở sàn, vẫn giữ EMA 0,3 + kẹp
+   3–20 s, không nhảy loạn.
+3. Dòng chẩn đoán thêm số đếm "cặp mốc N/60 s" (số cặp ranh giới lượt
+   nói đã ghép trong 60 s qua). Giữ nguyên các số hiện có.
+4. GIỮ NGUYÊN toàn bộ v1.0.11–v1.0.13 (tap chỉ video chính, canvas trễ
+   hình theo thời gian, FGS chọn kiểu theo mode, hotfix lát cắt,
+   không đường báo thức, SpectralGate mặc định bật).
+
+## Bảng mô phỏng trước/sau (sim1014_v6.py, cùng 1 luồng sự kiện 420 s:
+thoại nhanh, dịch dài 1,3 lần, 1 đoạn liền 30 s, xoay key lúc 300 s)
+
+| | OLD (v1.0.13) | NEW (v1.0.14 v6) |
+|---|---|---|
+| D đổi | 4 lần / 7 phút (đóng băng ~3,1 s) | 99 lần, cử động 80/83 bước 5 s |
+| Mẫu cuối | 0,5 s | 19,2 s (trễ thật cuối phiên ~17 s) |
+| Mẫu/60 s | 92 | 121 |
+| Hoãn (nhỏ) | 1458 (≈1421 trên máy thật) | 2 |
+| Bỏ mẫu | 0/0 | 0/0 |
+| Cặp mốc | 5 (chỉ đếm, không dùng) | 26 tổng / 5 trong 60 s cuối |
+| Lệch mẫu lát so với trễ thật (trung vị) | −4.942 ms | −71 ms (p10 −1058, p90 +105) |
+| Lệch mẫu mốc so với trễ thật (trung vị) | −10.893 ms | −152 ms (p10 −197, p90 +38) |
+| D − lý tưởng (trễ thật + 2 s, trung vị) | −7.040 ms | −742 ms (p10 −1852, p90 −267) |
+| Theo chế độ (lệch mẫu lát) | — | trước đoạn liền −54 ms; trong/sau đoạn liền −93 ms; sau xoay key −52 ms |
+
+Thiết kế v6 thắng sau 3 vòng loại: v2 (cắt cưỡng bức + cổng hợp lý)
+sai do mốc cắt mới hơn nội dung đang dịch; v3 (mốc cũ nhất + đuôi
+0,3×lượt) sai do tỉ lệ tích lũy lệch cao (0,88–1,0 so với thật 0,769)
+và mốc cũ nhất đã lỗi nhiều lượt; v4/v5 (neo đuôi + burst neo lại)
+sai do công thức đuôi TÍCH LŨY sai số tỉ lệ (E_n = e + E_{n−1}) tới
+khi đuôi kẹp về 0, neo cao hơn thật ~1,5 s, và burst neo lại làm hỏng
+mọi mẫu lát sau đó. V6 neo CHÍNH XÁC từ turnComplete/burst + đo tỉ lệ
+theo từng lượt + fallback đuôi CHỈ dùng lúc khởi động (chưa từng có
+neo chính xác) + 2 cổng kiểm tra (dư mốc ≤2,5 s, mẫu lệch trung vị
+lát ≤2 s) + cổng neo không lùi (chỉ loại khi <, cho phép = vì fallback
+có thể đã đặt đúng ranh giới đó).
+
+Lưu ý: trễ thật trong mô hình tăng dần tới ~17–19 s cuối phiên 7 phút
+(vì dịch dài 1,3× nên model tụt dần ~0,1 s/lượt + đoạn liền 30 s cộng
+~8 s) — D bám theo đúng (trung vị −742 ms) và vẫn trong kẹp 3–20 s.
+Đây là tính chất của thế giới mô hình, không phải lỗi tracker; trên
+máy thật D sẽ bám theo trễ thật của phim đang xem.
+
+---
+
 # DubLive v1.0.13 — TAP CHỈ 1 VIDEO CHÍNH + CANVAS TRỄ HÌNH VIẾT LẠI (cswold ep-2)
 
 Build xong 26/11/2026 (04:18 user thử v1.0.12 trên cswold video 8053 ep-2: tap sống, đo trễ sống — 97 mẫu/60 s, D 3,4 s, Mức tiếng 884 — nhưng tiếng gốc live chồng lên tiếng trễ, hình không trễ và đứng hình).

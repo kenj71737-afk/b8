@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -42,23 +43,61 @@ class VoicePlayer(
          * already in the manifest — no runtime request). USAGE stays
          * VOICE_COMMUNICATION on purpose: switching to USAGE_MEDIA would
          * let AudioPlaybackCapture re-capture the dub voice (echo loop).
+         *
+         * v1.0.7 — the slider now drives whichever stream the dub voice
+         * actually uses (Settings "Giọng dịch phát qua"): the call
+         * stream by default, or STREAM_ALARM in alarm mode. The stream
+         * is picked from the saved setting at call time, so dragging
+         * the slider in Settings applies to the right stream at once.
          */
         fun applyCallVolume(context: Context, pct: Int) {
             try {
                 val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-                val max = am.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL).coerceAtLeast(1)
+                val stream = if (Prefs.dubOutputAlarm(context)) {
+                    AudioManager.STREAM_ALARM
+                } else {
+                    AudioManager.STREAM_VOICE_CALL
+                }
+                val max = am.getStreamMaxVolume(stream).coerceAtLeast(1)
                 val index = ((pct.coerceIn(0, 100) / 100f) * max).roundToInt().coerceIn(0, max)
-                am.setStreamVolume(
-                    AudioManager.STREAM_VOICE_CALL, index, AudioManager.FLAG_SHOW_UI
-                )
+                am.setStreamVolume(stream, index, AudioManager.FLAG_SHOW_UI)
             } catch (e: Exception) {
-                Log.w(TAG, "setStreamVolume (voice call) failed", e)
+                Log.w(TAG, "setStreamVolume (dub voice) failed", e)
             }
         }
+
+        /**
+         * v1.0.7 — which AudioAttributes usage the dub voice uses.
+         * Call (default): USAGE_VOICE_COMMUNICATION. Alarm:
+         * USAGE_ALARM — the alarm stream is much louder than the call
+         * stream on this user's phone, and it is still NOT captured:
+         * DubbingService.buildPlaybackRecord only matches USAGE_MEDIA
+         * + USAGE_GAME, so an alarm-stream dub voice cannot be
+         * re-captured (no echo loop). USAGE_MEDIA is deliberately
+         * never used here.
+         */
+        fun dubUsage(context: Context): Int =
+            if (Prefs.dubOutputAlarm(context)) {
+                AudioAttributes.USAGE_ALARM
+            } else {
+                AudioAttributes.USAGE_VOICE_COMMUNICATION
+            }
     }
+
+    private val appContext = context.applicationContext
 
     private val audioQueue = LinkedBlockingQueue<ByteArray>()
     private var audioTrack: AudioTrack? = null
+    /**
+     * v1.0.7 — LoudnessEnhancer on the dub AudioTrack: the call stream
+     * is quiet even at max index on this user's phone, and track gain
+     * is already at its 1.0f ceiling. The enhancer boosts beyond that
+     * (+8 dB target) while staying on the same stream. Released in
+     * stop(); never allowed to crash start() (gain fallbacks 800→500→0).
+     * TTS has no public audio-session id, so it gets no enhancer — it
+     * is only the fallback path anyway.
+     */
+    private var loudnessEnhancer: LoudnessEnhancer? = null
     private var playerThread: Thread? = null
     @Volatile private var running = false
     @Volatile private var speechStartedSignalled = false
@@ -115,7 +154,9 @@ class VoicePlayer(
     fun start() {
         if (running) return
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            // v1.0.7 — usage follows Settings "Giọng dịch phát qua":
+            // call (default) or alarm (louder). Never USAGE_MEDIA.
+            .setUsage(dubUsage(appContext))
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         val format = AudioFormat.Builder()
@@ -151,6 +192,35 @@ class VoicePlayer(
         audioTrack = track
         running = true
         try { track.setVolume(1.0f) } catch (_: Exception) { }
+        // v1.0.7 — LoudnessEnhancer: boost the dub voice beyond the
+        // 1.0f gain ceiling (+8 dB target). Try 800 mB, then 500, then
+        // 0 (enabled but no gain); any failure just means no boost —
+        // start() must never die here.
+        try {
+            val enhancer = try { LoudnessEnhancer(track.audioSessionId) } catch (e: Exception) { null }
+            if (enhancer != null) {
+                var applied = false
+                for (gain in intArrayOf(800, 500, 0)) {
+                    try {
+                        enhancer.setTargetGain(gain)
+                        enhancer.enabled = true
+                        applied = true
+                        Log.i(TAG, "LoudnessEnhancer on, targetGain=$gain mB")
+                        break
+                    } catch (e: Exception) {
+                        Log.w(TAG, "LoudnessEnhancer gain $gain failed", e)
+                    }
+                }
+                if (applied) {
+                    loudnessEnhancer = enhancer
+                } else {
+                    try { enhancer.release() } catch (_: Exception) { }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "LoudnessEnhancer setup failed", e)
+            loudnessEnhancer = null
+        }
         playerThread = Thread({
             while (running) {
                 try {
@@ -206,7 +276,8 @@ class VoicePlayer(
             tts.setSpeechRate(rate)
             tts.setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    // v1.0.7 — same output choice as the Live track.
+                    .setUsage(dubUsage(appContext))
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
@@ -232,6 +303,8 @@ class VoicePlayer(
         playerThread?.interrupt()
         playerThread = null
         audioQueue.clear()
+        try { loudnessEnhancer?.release() } catch (_: Exception) { }
+        loudnessEnhancer = null
         try { audioTrack?.stop() } catch (_: Exception) { }
         try { audioTrack?.release() } catch (_: Exception) { }
         audioTrack = null

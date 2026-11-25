@@ -1,3 +1,308 @@
+# DubLive v1.0.9 — ĐỒNG BỘ HÌNH + TIẾNG GỐC + GIỌNG DỊCH ĐÚNG NHƯ ALDA
+
+Build xong 25/11/2026 21:XX VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.9.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.9.apk`)
+- Kích thước: X bytes (X MB). MD5: XXX.
+- aapt2: package `com.dublive.live`, versionCode 10, versionName 1.0.9,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **XXX** (completed/success), commit `XXX` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id XXX, bản Debug).
+
+## Bối cảnh
+
+User báo 21:08 sau khi thử v1.0.8: "Video gốc và âm thanh gốc không khớp
+với giọng dịch. Độ trễ hình làm giống alad là được". Đúng: DubLive tới
+v1.0.8 chỉ có 1/3 mảnh của cơ chế ALDA — trễ HÌNH. Giọng dịch phát ngay
+khi tới (chênh lệch 2–8 s, thay đổi từng câu), tiếng gốc phát trực tiếp
+(không trễ). Ba thứ chạy ở ba thời điểm khác nhau nên không bao giờ khớp.
+
+## Cơ chế ALDA (đã đọc lại trong source FIX43 trước khi code)
+
+- `LatencyEma`: độ trễ D = EMA 0.3 của mẫu (giọng tới − bắt đầu câu gốc)
+  + 2000 ms biên an toàn, kẹp 3–20 s, deadband 500 ms.
+- `DelayedAudioQueue`: hàng đợi theo mốc thời gian — block chỉ phát khi
+  (now − arrival) >= delay hiện tại (đọc live mỗi lần poll); block quá
+  hạn > 500 ms thì bỏ; giới hạn 2600 block.
+- Giọng dịch GIỮ LẠI: hold = selectedDelay − latency của lượt đó; giọng
+  chỉ bắt đầu phát khi (bắt đầu câu gốc + D) tới. Chế độ xem app khác
+  thì hold = 0.
+- Tiếng gốc TRỄ THEO HÌNH (FIX37/FIX41): khi WebAudio không trễ được
+  tiếng gốc, ALDA TẮT tiếng trực tiếp rồi phát lại tiếng hệ thống đã thu
+  (capture → delay D → USAGE_ALARM). Capture chỉ bắt USAGE_MEDIA/GAME
+  nên tiếng phát qua ALARM không bị thu lại gây vọng.
+- Đo trễ (FIX32/FIX33/FIX39/FIX43): mẫu lấy lúc BẮT ĐẦU lượt giọng dịch
+  mới (chunk giọng tới sau >= 500 ms im — AudioBurstDetector 500 ms),
+  mẫu = now − bắt đầu câu gốc; bỏ mẫu khi bắt đầu câu cũ hơn 20 s.
+
+## 1. Port LatencyEma + AudioBurstDetector + DelayedAudioQueue
+
+- 3 file mới `LatencyEma.kt`, `AudioBurstDetector.kt`,
+  `DelayedAudioQueue.kt` (package com.dublive.live, viết lại sạch, giữ
+  nguyên hằng số: EMA 0.3, margin 2000 ms, kẹp 3000–20000 ms, deadband
+  500 ms, stale 500 ms, gap burst 500 ms).
+- `DelayedAudioQueue` thêm một chế độ ngoài bản ALDA: block có thể mang
+  due time cố định (`add(arrival, data, holdMs)`) — dùng cho giọng dịch
+  (mục 2). Chế độ trễ live của ALDA giữ nguyên cho tiếng gốc (mục 3).
+- `DubDelayTracker` VIẾT LẠI, thay thế slice FIFO + trung vị theo câu
+  của v1.0.8: `onAudioChunkArrival(now, utteranceStart, firstSentAt)`
+  — seed ALDA ở audio đầu tiên (D = latency đầu + 2000 ms), mẫu ở mỗi
+  burst start (bỏ khi utterance start cũ hơn 20 s), trả về hold của
+  burst đó = max(0, D − latency). Mẫu PHẢI lấy lúc giọng TỚI (burst
+  start arrival), không phải lúc phát — khi có hold thì đo bằng lúc
+  phát sẽ tự khẳng định (giọng phát lúc câu + D theo đúng thiết kế).
+  Giữ: nút "Trễ −1s"/"+1s" (`adjustManual`, EMA tiếp tục từ giá trị
+  tay), thanh trượt "Trễ hình cơ bản" làm seed ban đầu, `resetForReconnect`
+  (burst detector reset, EMA và D giữ nguyên).
+
+## 2. Giọng dịch GIỮ LẠI theo từng burst
+
+- `VoicePlayer`: chunk Live không còn đi qua `LinkedBlockingQueue`
+  mà qua `DelayedAudioQueue` với due time cố định = arrival + hold
+  hiện tại (`setVoiceHoldMs`, service tính lại mỗi burst start).
+  Vòng lặp phát poll mỗi 5 ms, chỉ ghi chunk khi đã tới hạn. Hết hold
+  thì phát liên tục như bình thường; burst sau tính hold mới. Chunk đã
+  vào hàng đợi giữ nguyên hold cũ dù burst sau đổi hold.
+- `onSpeechStarted` (phụ đề/lịch duck) vẫn bắn khi chunk ĐẦU TIÊN ĐƯỢC
+  LẤY RA khỏi hàng đợi — tức lúc giọng bắt đầu phát thật, không phải
+  lúc chunk tới.
+- Đường TTS (Groq + text-only của Live): giữ cả câu rồi phát khi
+  (bắt đầu câu gốc + D) tới (quá rồi thì phát ngay, lagMs cho tốc độ
+  đọc đuổi kịp 1.2x/1.35x). Phụ đề đi cùng thời điểm với giọng đọc.
+- Phụ đề Live: `showSubtitle` trễ hiển thị bằng hold hiện tại của
+  burst (mỗi fragment post runnable riêng, không hủy lẫn nhau — nếu
+  hủy thì thoại liên tục sẽ không bao giờ hiện phụ đề). Phụ đề hiện
+  cùng lúc giọng BẮT ĐẦU PHÁT, không phải lúc giọng tới.
+
+## 3. Tiếng gốc TRỄ THEO HÌNH (DelayedBackgroundPlayer)
+
+- File mới `DelayedBackgroundPlayer.kt` — port `BackgroundAudioPlayer`
+  của ALDA, KHÔNG có VocalRemover (tiếng gốc giữ nguyên cả thoại lẫn
+  nhạc, filterEnabled=false vĩnh viễn): AudioTrack USAGE_ALARM,
+  stereo 48 kHz, `feedPcm` nhận tiếng thô (trước VAD), hàng đợi
+  `DelayedAudioQueue` chế độ trễ live (`setDelayMs` theo D hiện tại,
+  đọc live mỗi lần poll). Vòng lặp phát bằng Thread thường (không thêm
+  dependency kotlinx-coroutines).
+- Capture NÂNG LÊN stereo 48 kHz (`buildPlaybackRecordStereo`, thử
+  trước; thất bại thì rơi về mono 16 kHz cũ — khi đó KHÔNG có tiếng
+  gốc trễ, giữ hành vi cũ): mỗi lần đọc 100 ms stereo → đưa thẳng
+  vào player, đồng thời downmix (trung bình L+R, lấy 1 khung trong 3)
+  thành mono 16 kHz cho VAD/Live như cũ. Tiếng gốc trễ không bị rè/
+  mỏng hơn tiếng phim gốc.
+- Duck: `applyDuck` trong service — chế độ trễ thì duck áp lên
+  `DelayedBackgroundPlayer.setVolume` (hậu trễ, đúng nhịp giọng nói),
+  chế độ mic/mono thì vẫn broadcast TYPE_DUCK như cũ.
+
+## 4. TẮT TIẾNG TRỰC TIẾP — LỆCH KHỎI BRIEF, THEO ĐÚNG ALDA
+
+- Brief gốc dặn "WebView — JS mute mọi thẻ video/audio +
+  MutationObserver". ĐÃ KHÔNG LÀM theo cách đó, vì đọc code ALDA và
+  code DubLive cho thấy JS mute sẽ GIẾT LUÔN tiếng đưa vào player
+  trễ: `v.volume = 0` áp ở mức AudioTrack của WebView, capture
+  (AudioPlaybackCapture) đọc sau mức đó nên chỉ thu được im lặng —
+  player trễ không có gì để phát, Live cũng không nghe được gì
+  (đúng bài học v1.0.2: duck qua JS làm VAD đói).
+- Cách làm (đúng ALDA FIX29/FIX37): mute ở mức HỆ THỐNG —
+  `AudioManager.setStreamVolume(STREAM_MUSIC, 0, 0)`. Capture đọc
+  track TRƯỚC khi áp stream volume hệ thống, nên tiếng vẫn vào
+  capture đầy đủ trong khi loa không phát tiếng trực tiếp. Lưu âm
+  lượng STREAM_MUSIC + STREAM_ALARM lúc bật, khôi phục lúc dừng
+  (`stopDelayedBackground`, cả khi chuyển sang mic giữa phiên và khi
+  `stopDub`). STREAM_ALARM đặt bằng max(thanh trượt giọng dịch, thanh
+  trượt tiếng gốc) để cả giọng dịch lẫn tiếng gốc trễ đều nghe được.
+- File local ExoPlayer: cùng một lần mute hệ thống là đủ (ExoPlayer
+  cũng phát qua USAGE_MEDIA) — không cần `player.volume = 0` (cách
+  đó cũng giết capture như JS mute). `player.volume` giữ 1.0 trong
+  chế độ trễ.
+- `DelayJs`: `DubLiveOriginalVolume` mặc định đổi 0.15 → 1.0 (phần tử
+  video mới xuất hiện sau khi bắt đầu lồng tiếng trước đây bị đặt
+  0.15, làm capture nhỏ tiếng). Duck qua JS chỉ còn dùng ở chế độ mic.
+- Tắt/bật trễ hình: thêm `ACTION_SET_DELAY_ENABLED` — nút "Tắt trễ
+  hình", vào toàn màn hình của trang web (video live) thì service đặt
+  player delay = 0 và hold giọng = 0; thoát toàn màn hình / bật lại
+  thì khôi phục theo lựa chọn của user. "Phóng to" của app không đổi
+  (canvas vẫn chạy).
+
+## 5. D thay đổi thì cả 3 cùng đổi
+
+- EMA hoặc nút ±1s đổi D → `DubDelayTracker.onDelayChanged`:
+  canvas JS (qua TYPE_HUD → MainActivity → `DubLiveSetDelay`),
+  `DelayedBackgroundPlayer.setDelayMs` (hàng đợi đọc live nên khối
+  đã thu cũng theo ngay), hold của burst giọng kế tiếp (tính lại ở
+  burst start).
+
+## 6. Giữ nguyên từ v1.0.7/v1.0.8
+
+- VAD hysteresis 2 ngưỡng, cổng phổ tần số, LoudnessEnhancer, lựa chọn
+  phát giọng qua cuộc gọi/báo thức, thanh trượt âm lượng, watchdog +
+  xoay key, Groq fallback.
+
+## Kiểm tra bằng logic (chưa có máy thật)
+
+- Câu gốc bắt đầu lúc U, giọng tới lúc U+L (L = latency). D = EMA(L)
+  + 2000 ms. Hold = D − L → giọng phát lúc U+L+(D−L) = U+D, đúng lúc
+  canvas hiện hình của câu đó (hình lúc U cũng hiện lúc U+D). Tiếng
+  gốc thu lúc U phát lại lúc U+D. Cả ba gặp nhau ở U+D.
+- D đổi giữa chừng: khối tiếng gốc đã thu theo D mới ngay (trễ live);
+  chunk giọng đã vào hàng đợi giữ hold cũ (đúng: nó thuộc burst cũ);
+  burst sau tính hold theo D mới.
+- Tắt lồng tiếng: STREAM_MUSIC + STREAM_ALARM khôi phục đúng mức cũ;
+  không còn tiếng vang 2 lớp.
+- Chế độ mic: không có player trễ, không mute hệ thống — tiếng trực
+  tiếp vẫn nghe như cũ, giọng vẫn hold theo D để khớp hình trễ.
+- Mono fallback (máy không cho capture stereo): như chế độ mic.
+
+## Checklist thử lại trên máy user (gửi kèm khi giao)
+
+- Xem 2–3 phút: môi + giọng dịch khớp nhau; tiếng gốc (nhạc + thoại
+  gốc) khớp hình, không còn tiếng vang 2 lớp (trước đây nghe cả tiếng
+  trực tiếp lẫn giọng dịch lệch nhau).
+- Số trễ thay đổi theo từng câu (EMA + deadband 500 ms).
+- Bấm "Trễ −1s"/"+1s": tác dụng ngay (cả hình, tiếng gốc, giọng).
+- Tắt lồng tiếng thì tiếng video trực tiếp trở lại bình thường (âm
+  lượng hệ thống được khôi phục).
+- Bật "Tắt trễ hình" rồi bật lại: tiếng + giọng theo kịp hình live
+  rồi trễ lại bình thường.
+
+---
+
+
+
+Build xong 25/11/2026 20:52 VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.8.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.8.apk`)
+- Kích thước: 9.489.130 bytes (9,1 MB). MD5: 058e0ccccafe7defd0c2c06340cd9d44.
+- aapt2: package `com.dublive.live`, versionCode 9, versionName 1.0.8,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **45627266073** (completed/success, đậu ngay lần
+  đầu), commit `4ac674a85c4d1cd5003772bb01b97deea3a99a1c` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15030195101, bản Debug).
+- Build lần đầu đậu ngay, không dùng tới giới hạn 3 lần thử lại. Lưu ý:
+  run này chạy ~11 phút mới xong (in_progress từ ~20:40 tới ~20:51),
+  chậm hơn hẳn các run v1.0.7 (~3–5 phút) — runner GitHub chậm, không phải
+  lỗi code.
+
+## Bối cảnh
+
+User thử v1.0.7 báo 20:37 "Chỉnh độ nhạy nghe tiếng thì giọng dịch lạ bị
+nghẹn, nói k liền câu. Độ trễ không cập nhật tự động theo đoạn câu" và
+20:40 "Kéo xuống thấp thì không loại bỏ hết tạp âm khi dịch" + "Đo bằng
+câu của âm gốc". Cả 3 đều là lỗi thật, cùng một gốc: ngưỡng năng lượng
+đơn + ghép cặp chờ khoảng im. Sửa hết trong v1.0.8.
+
+## 1. Giọng dịch nghẹn khi kéo ngưỡng lên cao — VAD 1 ngưỡng
+
+- Nguyên nhân: `VadDetector` dùng MỘT ngưỡng duy nhất cho cả bắt đầu lẫn
+  kết thúc lượt nói. Kéo ngưỡng lên 800–1000 thì các âm tiết nhỏ trong câu
+  rơi dưới ngưỡng → VAD tưởng hết nói, hết 700 ms là cắt lượt; lúc chưa
+  vào lượt nói thì audio chỉ vào pre-roll 500 ms và KHÔNG được gửi lên
+  Live. Kết quả: audio gửi lên Live bị thủng lỗ chỗ, model dịch ngắt
+  quãng, giọng dịch nghẹn.
+- Sửa — HYSTERESIS 2 ngưỡng (`VadDetector.kt` viết lại):
+  - Ngưỡng BẮT ĐẦU = cài đặt của user (mặc định 600); ngưỡng KẾT THÚC =
+    40% ngưỡng bắt đầu (600 → 240). Đang nói thì chỉ khung nào dưới ngưỡng
+    THẤP mới tính là im; khung dưới ngưỡng bắt đầu nhưng trên ngưỡng kết
+    thúc vẫn là đang nói và vẫn gửi lên Live (cả qua VAD lẫn qua cổng gửi
+    `onSpeechChunk` trong service — cổng này đổi sang dùng ngưỡng THẤP
+    `vadEndThreshold`).
+  - `energyThreshold` thành `var startThreshold` + `updateThreshold()`;
+    watchdog của service đọc lại `Prefs.vadThreshold` mỗi 10 s, đổi thì
+    gọi `updateThreshold()` — kéo thanh trượt trong Cài đặt có tác dụng
+    ngay giữa phiên, không cần Dừng/Bắt đầu lại.
+  - Thanh trượt "Độ nhạy nghe tiếng" thu hẹp 250–900 (bỏ 1000–1200 vì mức
+    đó chắc chắn nghẹn), mặc định 600, ghi chú: "Kéo cao quá giọng dịch sẽ
+    bị nghẹn, nói ngắt quãng — nếu bị nghẹn thì kéo xuống 400–600".
+  - KHÔNG gửi toàn bộ audio lên Live (vẫn qua VAD) — gửi hết sẽ dịch cả nhạc.
+
+## 2. Kéo ngưỡng xuống thấp thì nhạc lọt qua — cổng phổ tần số
+
+- Nguyên nhân: ngưỡng năng lượng KHÔNG phân biệt được nhạc to với tiếng
+  nói to — chỉ chỉnh ngưỡng thì không bao giờ xử lý được cả hai đầu.
+- Sửa — SPECTRAL GATE lúc BẮT ĐẦU lượt nói (lớp mới `SpectralGate.kt`):
+  - Mỗi khung 20 ms (320 mẫu, 16 kHz) chạy FFT 512 điểm, tính (a) tỉ lệ
+    năng lượng trong dải tiếng nói 300–3400 Hz so với tổng năng lượng,
+    (b) spectral flatness (trung bình nhân / trung bình cộng của phổ).
+    Điều kiện bắt đầu lượt nói: vượt ngưỡng năng lượng BẮT ĐẦU VÀ tỉ lệ
+    dải tiếng nói ≥ 0.55 VÀ flatness < 0.5. Chỉ chạy FFT trên khung đã
+    vượt ngưỡng năng lượng nên chi phí không đáng kể.
+  - Một khi đã vào lượt nói thì KHÔNG kiểm tra phổ nữa (chỉ dùng ngưỡng
+    kết thúc hysteresis thấp) để câu nói không bị cắt giữa chừng khi có
+    nhạc nền đệm dưới lời thoại.
+  - Công tắc trong Cài đặt: "Lọc nhạc nền bằng phổ tần số (thử nghiệm)" —
+    mặc định BẬT; tắt thì VAD về đúng như v1.0.8 không có cổng phổ (để user
+    tự so sánh nếu cổng phổ làm nghẹn giọng). Ghi chú: "Nếu giọng bị nghẹn
+    thì tắt thử, hoặc kéo ngưỡng bắt đầu xuống 400–600".
+  - Hạn chế đã biết: nhạc cụ đơn âm nằm gọn trong dải 300–3400 Hz vẫn có
+    thể qua cổng; đường Live (lời dặn im lặng với nhạc) + SpeechFilter
+    là tuyến phòng thủ cuối.
+  - Đường Groq (dự phòng): bỏ kết quả Whisper chứa "[Music]", "[Nhạc]",
+    "[Âm nhạc]", hoặc toàn bộ là 1–2 từ lặp lại ("la la la") trước khi
+    đưa sang bước dịch — Whisper hay "nghe" nhạc thành lời.
+
+## 3. Trễ không cập nhật theo đoạn câu — ghép lát cắt + trung vị theo câu
+
+- Nguyên nhân: ghép cặp FIFO ở v1.0.7 chờ "đoạn giọng dịch mới bắt đầu"
+  (chunk giọng tới sau ≥800 ms im) mới ghép một mẫu. Thoại liên tục thì
+  giọng dịch cũng nói liên tục, không có khoảng im 800 ms nào → không bao
+  giờ có sự kiện ghép → trễ vẫn đứng yên. Lỗi cấu trúc giống hệt bản cũ,
+  chỉ chuyển từ phía thoại sang phía giọng.
+- Sửa — GHÉP LÁT CẮT 500 ms + TRUNG VỊ THEO CÂU (`DubDelayTracker` viết lại):
+  - Phía thoại: service đẩy mốc `pushSpeechSlice(now)` mỗi 500 ms audio
+    đang trong lượt nói (tích lũy từ `onSpeechChunk`, khung 20 ms = 320
+    mẫu, 8000 mẫu = 500 ms) + 1 mốc lúc `onSpeechStart`. Hàng đợi tối đa
+    40 mốc (20 s), cũ nhất bị đẩy ra khi đầy.
+  - Phía giọng: trong `onAudioChunk` (Live), tích lũy thời lượng giọng đã
+    phát (audio Live là PCM 24 kHz 16-bit mono — 48.000 byte/s nên
+    ms = bytes/48, KHÔNG phải bytes/32 như brief ban đầu ghi nhầm cho
+    16 kHz) và mỗi 500 ms gọi `onDubSlice(now)` — lấy mốc CŨ NHẤT, mẫu =
+    now − mốc; mẫu trong [500 ms, 20000 ms] thì THU LẠI chờ ranh giới câu,
+    mẫu ngoài khoảng hoặc hàng đợi rỗng thì bỏ qua, mẫu ngoài khoảng thì
+    XÓA SẠCH cả 2 hàng đợi để resync.
+  - Cập nhật theo CÂU GỐC (ý user 20:40 "đo bằng câu của âm gốc"): mẫu
+    không áp dụng ngay mà thu vào `pendingSamples` tới ranh giới câu —
+    VAD `onSpeechStart` (câu mới bắt đầu), VAD `onSpeechEnd`, hoặc ép cắt
+    4 s của `segmentCutter` (giữ lại từ v1.0.7, đổi từ đẩy mốc sang gọi
+    `noteSentenceBoundary()`) — rồi lấy TRUNG VỊ của các mẫu trong câu vừa
+    kết thúc, EMA alpha 0.5 cập nhật trễ và broadcast TYPE_HUD MỘT LẦN.
+    Câu nào không có mẫu thì giữ nguyên trễ cũ. Kết quả: số "Trễ hình"
+    đổi đúng 1 lần mỗi câu gốc — ổn định theo câu, không đứng yên như
+    v1.0.6, không nhảy loạn mỗi nửa giây.
+  - Đường TTS (Groq) giữ một mẫu mỗi lượt đọc: `VoicePlayer` tách 2
+    callback — `onSpeechStarted` (chunk Live đầu tiên của lượt) gọi
+    `noteDubSegmentStart()` (ghép như lát giọng), `onTtsStarted` (TTS
+    onStart) gọi `noteTtsSegmentStart()` (ghép mốc cũ nhất rồi xóa nốt
+    các lát còn lại của câu đó để lượt đọc sau ghép với lát mới).
+  - Giữ: kẹp [3 s, maxDelay], seed từ "Trễ hình cơ bản", nút "Trễ −1s"/"+1s"
+    và `adjustManual` (tác dụng ngay như cũ), mọi hàm tracker @Synchronized.
+    `clearSlices()` khi `onConnected` để lát cũ trước lúc nối không làm
+    bẩn mẫu đầu tiên.
+
+## Kiểm tra bằng logic (chưa có máy thật)
+
+- Ngưỡng 800, phim thoại bình thường: khung âm tiết nhỏ (RMS 240–800)
+  vẫn tính là đang nói → giọng dịch liền câu, không nghẹn; nhạc to không
+  lời (phổ lan rộng, flatness cao) không mở lượt nói mới.
+- Thoại + giọng đều liên tục: mỗi 500 ms giọng sinh 1 mẫu, số "Trễ hình"
+  đổi 1 lần mỗi câu (tối đa mỗi 4 s nhờ ép cắt) — không đứng yên, không
+  nhảy mỗi nửa giây. Giọng im → không sinh mẫu. Thoại im mà giọng vẫn đọc
+  (dịch câu dài) → hàng đợi thoại cạn, không sinh mẫu sai.
+- Nút "Trễ −1s"/"+1s" vẫn tác dụng ngay; trung vị câu sau EMA từ giá trị
+  đã chỉnh tay, không kéo ngược lại.
+
+## Checklist thử lại trên máy user (gửi kèm khi giao)
+
+- Ngưỡng 800, xem phim thoại: giọng dịch liền câu, không nghẹn.
+- Xem 2–3 phút: số "Trễ hình" đổi đúng 1 lần mỗi câu thoại (không đứng yên
+  như v1.0.6, không nhảy loạn mỗi nửa giây), hình khớp giọng dần sau vài câu.
+- Bấm "Trễ −1s"/"+1s": tác dụng ngay.
+- Đoạn nhạc dạo đầu / khoảng nghỉ giữa thoại: không còn câu dịch nào đọc nhạc.
+- Thoại bình thường: giọng vẫn liền câu, không nghẹn.
+- Nếu giọng nghẹn: tắt công tắc lọc phổ thử, hoặc kéo ngưỡng xuống 400–600.
+
+---
+
 # DubLive v1.0.7 — TRỄ HÌNH TỰ ĐỔI THEO TỪNG CÂU + GIỌNG DỊCH TO HƠN
 
 Build xong 25/11/2026 20:27 VN. APK Debug, cài được.

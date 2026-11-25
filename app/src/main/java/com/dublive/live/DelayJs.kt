@@ -14,9 +14,17 @@ package com.dublive.live
  * is hidden while delay is on. Works for ordinary web films and for the
  * YouTube mobile site, because both render through a plain <video> tag.
  *
- * LIMIT: this delays the PICTURE. The original audio still plays in real
- * time (quiet, 15%), so it runs ahead of the delayed picture by the delay
- * amount. The Vietnamese voice itself is synced to the delayed picture.
+ * LIMIT (removed in v1.0.9): this used to delay only the PICTURE —
+ * the original audio played live and the dub voice played on
+ * arrival, so the three never matched. Since v1.0.9 the original
+ * audio is muted at the system level (STREAM_MUSIC -> 0) and replayed
+ * delayed by the same D through DelayedBackgroundPlayer, and the dub
+ * voice is held until (utterance start + D) — picture, original
+ * audio and dub voice all land on the same moment, like ALDA.
+ * The video element volume stays 1.0 in delayed mode (the capture
+ * needs it); ducking is applied to the delayed player, not here.
+ * In mic mode (no system capture) the old behaviour remains: the
+ * original audio plays live and is ducked via DubLiveSetVolume.
  */
 object DelayJs {
     const val INJECT = """
@@ -25,7 +33,13 @@ object DelayJs {
   window.__dubLiveInstalled = true;
   window.DubLiveDelayMs = 5000;
   window.DubLiveDelayOn = true;
-  window.DubLiveOriginalVolume = 0.15;
+  // v1.0.9 — the element volume is 1.0 by default now: in delayed
+  // mode the capture needs the full signal (the system mute +
+  // delayed player handle the loudness), and in mic mode the
+  // service sets it explicitly on start. The old 0.15 default made
+  // every newly-appearing video element quiet until the service
+  // happened to re-apply the volume.
+  window.DubLiveOriginalVolume = 1.0;
 
   window.DubLiveSetDelay = function (ms) { window.DubLiveDelayMs = ms; };
   window.DubLiveSetEnabled = function (on) {

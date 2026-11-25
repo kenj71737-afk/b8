@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -29,16 +30,34 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.ln
+import kotlin.math.roundToInt
 
 /**
  * Foreground service that owns the whole dub pipeline:
  *
- *  system audio (AudioPlaybackCapture via MediaProjection, mic fallback)
+ *  system audio stereo 48 kHz (AudioPlaybackCapture via
+ *  MediaProjection, mic fallback mono 16 kHz)
+ *    -> DelayedBackgroundPlayer: the raw stereo replayed D seconds
+ *       late on the alarm stream while STREAM_MUSIC is muted
+ *       (ALDA FIX37) — the original audio matches the delayed
+ *       picture; the VAD/Live path gets a mono 16 kHz downmix
  *    -> VAD (speech >= 150 ms, 500 ms pre-roll)
  *    -> Gemini Live (speech-to-speech) with watchdog + key rotation
  *    -> Groq Whisper fallback when Live is unusable
- *    -> VoicePlayer (Gemini audio, or Vietnamese TTS)
- *    -> DubDelayTracker (periodic sampling, EMA, clamp 3..max s)
+ *    -> VoicePlayer: the dubbed voice HELD until (utterance start
+ *       + D) (ALDA FIX32/FIX33 hold), or Vietnamese TTS with the
+ *       same hold
+ *    -> DubDelayTracker (LatencyEma + burst-start sampling, hold
+ *       per burst, clamp 3..max s)
+ *
+ * v1.0.9 — ALDA sync, all three pieces: the picture waits D (canvas),
+ * the original audio waits D (delayed background player), the dub
+ * voice waits until (utterance start + D) (voice hold). Before this
+ * version only the picture waited, so the three never matched.
+ * The direct audio is muted at the SYSTEM level (STREAM_MUSIC -> 0),
+ * never via the video element volume — element volume kills the
+ * capture itself (the v1.0.2 lesson), while the system stream volume
+ * does not touch the AudioPlaybackCapture tap.
  *
  * LESSONS FROM THE OLD APP, built into this service:
  *  - A Gemini key can die SILENTLY after ~5 minutes (no error, just no
@@ -72,6 +91,12 @@ class DubbingService : Service() {
         /** v1.0.7 — manual delay nudge from the "Trễ −1s / +1s" buttons. */
         const val ACTION_ADJUST_DELAY = "com.dublive.live.ADJUST_DELAY"
         const val EXTRA_DELAY_DELTA_MS = "delay_delta_ms"
+        /** v1.0.9 — enable/disable the video delay from the activity
+         * (delay toggle button, site fullscreen enter/exit). When the
+         * picture goes live, the delayed original audio and the voice
+         * hold must go live too, or the sound would lag a live picture. */
+        const val ACTION_SET_DELAY_ENABLED = "com.dublive.live.SET_DELAY_ENABLED"
+        const val EXTRA_ENABLED = "enabled"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val ACTION_DUB_EVENT = "com.dublive.live.DUB_EVENT"
@@ -102,6 +127,10 @@ class DubbingService : Service() {
         private const val CHANNEL_ID = "dublive"
         private const val NOTIF_ID = 1
         private const val SAMPLE_RATE = 16000
+        /** v1.0.9 — system capture runs at stereo 48 kHz so the
+         * delayed original audio keeps full quality; the VAD/Live
+         * path gets a mono 16 kHz downmix of the same stream. */
+        private const val STEREO_RATE = 48000
         private const val KEY_ROTATE_MS = 5 * 60 * 1000L
         private const val SILENCE_LIMIT_MS = 60_000L
         /** No translated output at all this long after (re)connect -> retry. */
@@ -134,6 +163,38 @@ class DubbingService : Service() {
     private var voicePlayer: VoicePlayer? = null
     private var tracker: DubDelayTracker? = null
     private var vad: VadDetector? = null
+    /**
+     * v1.0.9 — delayed original audio (ALDA FIX37): the captured
+     * system audio replayed D seconds late on the alarm stream while
+     * STREAM_MUSIC is muted. Only active when the system capture is
+     * stereo 48 kHz; mic mode and the mono-capture fallback keep the
+     * old direct-audio behaviour.
+     */
+    private var backgroundPlayer: DelayedBackgroundPlayer? = null
+    @Volatile private var delayedBackgroundActive = false
+    /** v1.0.9 — false while the user turned the video delay off
+     * (delay toggle / site fullscreen): the picture is live, so the
+     * background delay and the voice hold must both be 0. */
+    @Volatile private var delayEnabled = true
+    /** System volumes saved when the delayed mode mutes STREAM_MUSIC
+     * (restored on stop). -1 = not saved. */
+    private var initialMusicVolume = -1
+    private var initialAlarmVolume = -1
+    /** True while the capture thread is reading stereo 48 kHz. */
+    @Volatile private var captureIsStereo48k = false
+    /**
+     * v1.0.9 — source-utterance start (VAD onSpeechStart) for the
+     * latency sample: sample = dub burst start − utterance start.
+     * [lastUtteranceStartMs] is never cleared (the TTS hold target
+     * needs it after onSpeechEnd); [currentUtteranceStartMs] is
+     * cleared at onSpeechEnd so a burst arriving after the utterance
+     * ended cannot sample against a stale start.
+     */
+    @Volatile private var currentUtteranceStartMs = 0L
+    @Volatile private var lastUtteranceStartMs = 0L
+    /** When the first source audio of the session was sent to Live
+     * (ALDA FIX32 first-audio seed). 0 = none yet. */
+    @Volatile private var firstAudioSentAtMs = 0L
 
     private var keyIndex = 0
     private var modelIndex = 0
@@ -161,12 +222,6 @@ class DubbingService : Service() {
      * The VAD send-gate in onSpeechChunk uses this, not the start
      * threshold, so syllable dips inside a sentence still go to Live. */
     private var vadEndThreshold = 240.0
-    /** v1.0.8 — slice FIFO accumulators (see DubDelayTracker).
-     * speechSliceSamples counts 16 kHz samples inside the current
-     * utterance (8000 = 500 ms); dubSliceAccumMs counts Live dub
-     * audio already played (24 kHz 16-bit mono, bytes/48 = ms). */
-    private var speechSliceSamples = 0
-    private var dubSliceAccumMs = 0L
     /** v1.0.5 — subtitle auto-hide generation: bumped on every new
      * subtitle so a stale 6 s timer cannot hide a newer one. */
     private var subtitleGen = 0
@@ -246,12 +301,20 @@ class DubbingService : Service() {
 
     /**
      * v1.0.5 — duck ticker: every 500 ms, compare the dub voice state
-     * with the current duck state and only send a TYPE_DUCK broadcast
-     * when it CHANGES, so the WebView volume is not hammered every tick.
-     * Speaking -> original drops to the user's level (default 80% in
-     * v1.0.6, 0..1 float from Prefs.originalVolume — verified 0.5 for
-     * 50%, NOT 50). Silent -> original back to 100% so the user can
-     * hear the film's own sound between dubbed lines.
+     * with the current duck state and only duck when it CHANGES, so
+     * the original volume is not hammered every tick. Speaking ->
+     * original drops to the user's level (default 80% in v1.0.6,
+     * 0..1 float from Prefs.originalVolume). Silent -> original back
+     * to 100% so the user can hear the film's own sound between
+     * dubbed lines.
+     *
+     * v1.0.9 — WHERE the duck lands depends on the mode. In delayed
+     * mode the original audio comes from DelayedBackgroundPlayer, so
+     * the duck is applied THERE (its volume is post-delay: ducking
+     * the video element would duck the CAPTURE, and the duck would
+     * then play D seconds late, out of step with the voice). In mic
+     * mode / mono fallback the old TYPE_DUCK broadcast still ducks
+     * the WebView/ExoPlayer volume directly.
      */
     private val duckTicker = object : Runnable {
         override fun run() {
@@ -260,10 +323,10 @@ class DubbingService : Service() {
                 val speaking = try { voicePlayer?.isSpeaking() == true } catch (_: Exception) { false }
                 if (speaking && !ducked) {
                     ducked = true
-                    broadcast(TYPE_DUCK, message = Prefs.originalVolume(this@DubbingService).toString())
+                    applyDuck(true)
                 } else if (!speaking && ducked) {
                     ducked = false
-                    broadcast(TYPE_DUCK, message = "1.0")
+                    applyDuck(false)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "duckTicker failed", e)
@@ -272,37 +335,17 @@ class DubbingService : Service() {
         }
     }
 
-    /**
-     * v1.0.7 — segment cutter. Cantonese dialogue runs on for minutes
-     * without a 700 ms silence, so the VAD fires onSpeechStart once and
-     * never ends the utterance. v1.0.7 pushed a fresh burst marker here
-     * every 4 s; v1.0.8 instead uses the same 4 s rhythm as a
-     * SENTENCE BOUNDARY for the tracker: it flushes the median of the
-     * slice samples collected so far and updates the delay once per
-     * ~4 s slice of continuous speech, so the HUD keeps moving even
-     * when the speaker never pauses. Only a boundary marker, never an
-     * onSpeechEnd: utteranceBytes (Groq) and the Live stream are NOT
-     * cut, the model keeps translating continuously. Runs on the main
-     * handler; VAD callbacks run on the capture thread, so the two
-     * shared fields are @Volatile.
-     */
-    @Volatile private var inSpeech = false
-    @Volatile private var currentSegmentStartMs = 0L
-    private val segmentCutter = object : Runnable {
-        override fun run() {
-            if (!capturing) return
+    /** Apply the duck state to the right place (see duckTicker). */
+    private fun applyDuck(duck: Boolean) {
+        val level = if (duck) Prefs.originalVolume(this@DubbingService) else 1.0f
+        if (delayedBackgroundActive) {
             try {
-                if (inSpeech) {
-                    val now = System.currentTimeMillis()
-                    if (now - currentSegmentStartMs >= 4000L) {
-                        currentSegmentStartMs = now
-                        tracker?.noteSentenceBoundary()
-                    }
-                }
+                backgroundPlayer?.setVolume(level, false)
             } catch (e: Exception) {
-                Log.w(TAG, "segmentCutter failed", e)
+                Log.w(TAG, "bg duck failed", e)
             }
-            mainHandler.postDelayed(this, 2000L)
+        } else {
+            broadcast(TYPE_DUCK, message = level.toString())
         }
     }
 
@@ -379,6 +422,27 @@ class DubbingService : Service() {
                         )
                     } catch (e: Exception) {
                         Log.w(TAG, "adjustManual failed", e)
+                    }
+                    return START_NOT_STICKY
+                }
+                ACTION_SET_DELAY_ENABLED -> {
+                    // v1.0.9 — the activity turned the video delay off
+                    // (delay toggle / site fullscreen) or back on: the
+                    // delayed original audio and the voice hold follow
+                    // at once, or the sound would lag a live picture.
+                    delayEnabled = intent.getBooleanExtra(EXTRA_ENABLED, true)
+                    try {
+                        if (delayedBackgroundActive) {
+                            backgroundPlayer?.setDelayMs(
+                                if (delayEnabled) {
+                                    tracker?.currentDelayMs ?: Prefs.baseDelayMs(this)
+                                } else {
+                                    0L
+                                }
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "setDelayEnabled failed", e)
                     }
                     return START_NOT_STICKY
                 }
@@ -473,18 +537,12 @@ class DubbingService : Service() {
         try {
             voicePlayer = VoicePlayer(
                 this,
-                // v1.0.8 — slice FIFO: the first Live audio chunk of a
-                // dubbed turn pairs with the oldest speech slice (one
-                // prompt sample at dub start); onDubSlice below does
-                // the steady 500 ms pairing.
-                onSpeechStarted = {
-                    try { tracker?.noteDubSegmentStart() } catch (_: Exception) { }
-                },
-                // v1.0.8 — TTS read (Groq path): one sample per read,
-                // and the leftover slices of this sentence are dropped.
-                onTtsStarted = {
-                    try { tracker?.noteTtsSegmentStart() } catch (_: Exception) { }
-                }
+                // v1.0.9 — the tracker no longer pairs on voice-play
+                // starts (it samples at burst-start ARRIVAL in
+                // onAudioChunk, and the hold is applied by the voice
+                // queue itself). Both callbacks are unused now.
+                onSpeechStarted = {},
+                onTtsStarted = {}
             ).also {
                 it.start()
                 // v1.0.6 — track/TTS at max (1.0f); the Settings slider
@@ -503,12 +561,22 @@ class DubbingService : Service() {
             tracker = DubDelayTracker(
                 Prefs.maxDelayMs(this),
                 // v1.0.7 — seed from Settings "Trễ hình cơ bản"
-                // (default 5 s); FIFO pairing takes over from the first
-                // dubbed segment, so the delay keeps moving as long as
-                // dialogue keeps coming instead of freezing after one
-                // sample (the v1.0.6 bug).
+                // (default 5 s); the ALDA first-audio seed takes over
+                // from the first translation, so the delay keeps moving
+                // as long as dialogue keeps coming instead of freezing
+                // after one sample (the v1.0.6 bug).
                 Prefs.baseDelayMs(this)
             ) { delayMs ->
+                // v1.0.9 — D moves: the delayed original audio follows
+                // at once (its queue reads the live delay every poll),
+                // and the canvas follows via the TYPE_HUD broadcast.
+                try {
+                    if (delayedBackgroundActive && delayEnabled) {
+                        backgroundPlayer?.setDelayMs(delayMs)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "bg setDelay failed", e)
+                }
                 broadcast(TYPE_HUD, delayMs = delayMs)
             }
         } catch (e: Exception) {
@@ -525,8 +593,11 @@ class DubbingService : Service() {
         reconnects = 0
         modelIndex = 0
         reconnectPending = false
-        inSpeech = false
-        currentSegmentStartMs = 0L
+        currentUtteranceStartMs = 0L
+        lastUtteranceStartMs = 0L
+        firstAudioSentAtMs = 0L
+        delayEnabled = true
+        captureIsStereo48k = false
         comboFailures.clear()
         liveErrorHistory.clear()
         broadcastLiveErrors()
@@ -537,8 +608,6 @@ class DubbingService : Service() {
         // start threshold; the watchdog re-reads both every 10 s.
         vadThreshold = try { Prefs.vadThreshold(this).toDouble() } catch (_: Exception) { 600.0 }
         vadEndThreshold = vadThreshold * 0.4
-        speechSliceSamples = 0
-        dubSliceAccumMs = 0L
         rotateAtMs = System.currentTimeMillis() + KEY_ROTATE_MS
         lastOutputAtMs = 0L
         startedAtMs = System.currentTimeMillis()
@@ -608,12 +677,19 @@ class DubbingService : Service() {
         mainHandler.postDelayed(watchdog, 10_000L)
         mainHandler.postDelayed(levelTicker, 500L)
         mainHandler.postDelayed(duckTicker, 500L)
-        mainHandler.postDelayed(segmentCutter, 2000L)
     }
 
     /** Stop the old (projection) capture thread, then restart it on the mic. */
     private fun switchCaptureToMic() {
         if (stopped) return
+        // v1.0.9 — the mic hears the room, not the film: the delayed
+        // background player has no clean source any more. Stop it and
+        // bring the direct audio (STREAM_MUSIC) back first, or the user
+        // hears nothing at all after the switch.
+        try { stopDelayedBackground() } catch (e: Exception) {
+            Log.w(TAG, "stopDelayedBackground failed", e)
+        }
+        captureIsStereo48k = false
         try { mediaProjection?.stop() } catch (_: Exception) { }
         mediaProjection = null
         val oldThread = captureThread
@@ -668,9 +744,11 @@ class DubbingService : Service() {
                         comboFailures.remove(comboKey())
                         Log.i(TAG, "Gemini Live connected (key ${keyIndex % keys.size + 1}, model=$model)")
                         setStatus("Đã nối, đang nghe…")
-                        // v1.0.8 — fresh delay pairing after (re)connect:
-                        // slices pushed while disconnected are stale.
-                        try { tracker?.clearSlices() } catch (_: Exception) { }
+                        // v1.0.9 — fresh burst pairing after (re)connect:
+                        // the detector restarts (the next chunk is a
+                        // burst start and samples at once); the EMA and
+                        // D are kept, so the delay does not jump.
+                        try { tracker?.resetForReconnect() } catch (_: Exception) { }
                         flushPendingAudio()
                     }
 
@@ -678,21 +756,29 @@ class DubbingService : Service() {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
-                        // v1.0.8 — slice FIFO (replaces the v1.0.7
-                        // noteDubChunk silence gate): Live audio is
-                        // 24 kHz 16-bit mono (48 000 bytes/s), so
-                        // ms = bytes/48. Every 500 ms of dubbed audio
-                        // pairs with the oldest speech slice; the
-                        // tracker collects the sample and applies the
-                        // median at the next sentence boundary.
-                        try {
-                            dubSliceAccumMs += pcm24k.size / 48
-                            while (dubSliceAccumMs >= 500L) {
-                                dubSliceAccumMs -= 500L
-                                tracker?.onDubSlice()
-                            }
+                        // v1.0.9 — ALDA voice hold (FIX32/FIX33): sample
+                        // the latency at burst-start ARRIVAL and get
+                        // this burst's hold = max(0, D − latency). The
+                        // voice queue holds each chunk until its hold
+                        // has elapsed, so the voice starts speaking at
+                        // (utterance start + D) — the moment the
+                        // delayed picture reaches that sentence. While
+                        // the video delay is off (site fullscreen /
+                        // delay toggle) the hold is 0: the picture is
+                        // live, so the voice plays at once.
+                        val holdMs = try {
+                            val h = tracker?.onAudioChunkArrival(
+                                System.currentTimeMillis(),
+                                currentUtteranceStartMs,
+                                firstAudioSentAtMs
+                            ) ?: 0L
+                            if (delayEnabled) h else 0L
                         } catch (e: Exception) {
-                            Log.w(TAG, "onDubSlice failed", e)
+                            Log.w(TAG, "voice hold failed", e)
+                            0L
+                        }
+                        try { voicePlayer?.setVoiceHoldMs(holdMs) } catch (e: Exception) {
+                            Log.w(TAG, "setVoiceHoldMs failed", e)
                         }
                         try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
                             Log.w(TAG, "playAudio failed", e)
@@ -717,11 +803,30 @@ class DubbingService : Service() {
                             broadcast(TYPE_SUBTITLE, text = "")
                         } else if (!audioPlayedThisTurn) {
                             // Model returned text but no audio: read it with TTS.
-                            try {
-                                voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "speakText failed", e)
+                            // v1.0.9 — same hold as the Live voice: the
+                            // sentence speaks at (utterance start + D),
+                            // or at once when that moment already passed
+                            // (lagMs feeds the TTS catch-up speed).
+                            // The subtitle already streamed with its own
+                            // hold, so only the speech is scheduled here.
+                            val targetMs = lastUtteranceStartMs +
+                                (tracker?.currentDelayMs ?: 0L)
+                            val nowMs = System.currentTimeMillis()
+                            val waitMs = if (delayEnabled) {
+                                (targetMs - nowMs).coerceAtLeast(0L)
+                            } else {
+                                0L
                             }
+                            val lagMs = (nowMs - targetMs).coerceAtLeast(0L)
+                            val run = Runnable {
+                                try {
+                                    voicePlayer?.speakText(text, lagMs)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "speakText failed", e)
+                                }
+                            }
+                            if (waitMs > 0L) mainHandler.postDelayed(run, waitMs)
+                            else mainHandler.post(run)
                         }
                         audioPlayedThisTurn = false
                         try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
@@ -897,16 +1002,32 @@ class DubbingService : Service() {
      * 6 s after the last fragment so it never lingers. A new subtitle
      * bumps [subtitleGen], so a stale timer cannot hide a newer one.
      */
-    private fun showSubtitle(fullText: String) {
+    /**
+     * v1.0.9 — subtitle hold (ALDA rule: the subtitle shows when the
+     * voice STARTS PLAYING, not when the text arrives). The display
+     * is delayed by [holdMs] — the current burst hold by default, or
+     * an explicit wait (Groq path: the same wait the TTS speech is
+     * scheduled with, so subtitle and voice start together).
+     * Each fragment posts its OWN runnable (no cancellation): during
+     * continuous speech a newer fragment must not keep pushing the
+     * display back forever. Each runnable shows the text as of ITS
+     * fragment; the 6 s auto-hide timer starts at display time and
+     * only the latest generation may hide it.
+     */
+    private fun showSubtitle(fullText: String, holdMs: Long? = null) {
         val shown = trimSubtitle(fullText)
         subtitleGen++
         val gen = subtitleGen
-        broadcast(TYPE_SUBTITLE, text = shown)
-        mainHandler.postDelayed({
-            if (gen == subtitleGen && capturing) {
-                broadcast(TYPE_SUBTITLE, text = "")
-            }
-        }, 6000L)
+        val hold = holdMs ?: try { tracker?.currentHoldMs ?: 0L } catch (_: Exception) { 0L }
+        val r = Runnable {
+            broadcast(TYPE_SUBTITLE, text = shown)
+            mainHandler.postDelayed({
+                if (gen == subtitleGen && capturing) {
+                    broadcast(TYPE_SUBTITLE, text = "")
+                }
+            }, 6000L)
+        }
+        if (hold > 0L) mainHandler.postDelayed(r, hold) else mainHandler.post(r)
     }
 
     private fun trimSubtitle(full: String): String {
@@ -1029,8 +1150,58 @@ class DubbingService : Service() {
         return if (minBuf <= 0) 6400 else minBuf
     }
 
+    /** v1.0.9 — min buffer for stereo 48 kHz capture (bytes). */
+    private fun minBufferSizeStereo(): Int {
+        val minBuf = try {
+            AudioRecord.getMinBufferSize(
+                STEREO_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "getMinBufferSize (stereo) failed", e)
+            AudioRecord.ERROR_BAD_VALUE
+        }
+        return if (minBuf <= 0) 19200 else minBuf
+    }
+
+    /**
+     * v1.0.9 — stereo 48 kHz system capture. This is the feed for the
+     * delayed original audio: full-quality stereo straight into
+     * DelayedBackgroundPlayer, plus a mono 16 kHz downmix for the
+     * VAD/Live path. Null when the projection token is unusable
+     * (single-app token, OEM block) or the device refuses the format.
+     */
+    private fun buildPlaybackRecordStereo(minBuf: Int): AudioRecord? {
+        val proj = mediaProjection ?: return null
+        return try {
+            val config = AudioPlaybackCaptureConfiguration.Builder(proj)
+                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                .build()
+            val record = AudioRecord.Builder()
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setSampleRate(STEREO_RATE)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBuf * 2)
+                .setAudioPlaybackCaptureConfig(config)
+                .build()
+            if (record.state != AudioRecord.STATE_INITIALIZED) {
+                try { record.release() } catch (_: Exception) { }
+                null
+            } else {
+                record
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Stereo AudioPlaybackCapture unavailable", e)
+            null
+        }
+    }
+
     /** Null when the projection token is unusable (single-app token, OEM block). */
-    private fun buildPlaybackRecord(minBuf: Int): AudioRecord? {
+    private fun buildPlaybackRecordMono(minBuf: Int): AudioRecord? {
         val proj = mediaProjection ?: return null
         return try {
             val config = AudioPlaybackCaptureConfiguration.Builder(proj)
@@ -1096,15 +1267,15 @@ class DubbingService : Service() {
                 startThreshold = vadThreshold,
                 listener = object : VadDetector.Listener {
                 override fun onSpeechStart(preRollAndHead: ShortArray) {
-                    // v1.0.8 — slice FIFO + per-sentence median: a new
-                    // sentence starts, so first close the previous one
-                    // (flush its slice samples into the delay), then
-                    // push a slice marker for this sentence's start.
-                    inSpeech = true
-                    currentSegmentStartMs = System.currentTimeMillis()
-                    speechSliceSamples = 0
-                    try { tracker?.noteSentenceBoundary() } catch (e: Exception) { }
-                    try { tracker?.pushSpeechSlice(currentSegmentStartMs) } catch (e: Exception) { }
+                    // v1.0.9 — a new source sentence starts: record its
+                    // start for the latency sample (burst start −
+                    // utterance start) and for the TTS hold target.
+                    // The ALDA first-audio seed also starts its clock
+                    // here: the first source audio of the session.
+                    val now = System.currentTimeMillis()
+                    currentUtteranceStartMs = now
+                    lastUtteranceStartMs = now
+                    if (firstAudioSentAtMs == 0L) firstAudioSentAtMs = now
                     try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
                     utteranceBytes.reset()
                     val bytes = shortsToBytes(preRollAndHead)
@@ -1126,14 +1297,6 @@ class DubbingService : Service() {
                 override fun onSpeechChunk(samples: ShortArray) {
                     val bytes = shortsToBytes(samples)
                     utteranceBytes.write(bytes)
-                    // v1.0.8 — slice FIFO: every 500 ms of in-speech
-                    // audio pushes a slice marker (20 ms frames =
-                    // 320 samples each, so 8000 samples = 500 ms).
-                    speechSliceSamples += samples.size
-                    while (speechSliceSamples >= 8000) {
-                        speechSliceSamples -= 8000
-                        try { tracker?.pushSpeechSlice() } catch (_: Exception) { }
-                    }
                     if (liveConnected) {
                         // v1.0.8 — hysteresis send gate: inside an
                         // utterance the VAD forwards frames down to the
@@ -1157,14 +1320,17 @@ class DubbingService : Service() {
                 }
 
                 override fun onSpeechEnd() {
-                    // v1.0.8 — this sentence ended: flush the median of
-                    // its slice samples into the delay (once per
-                    // sentence). utteranceBytes (Groq) and the Live
-                    // stream are NOT cut by the 4 s forced markers, and
-                    // the next onSpeechStart pushes the next slice.
-                    inSpeech = false
-                    speechSliceSamples = 0
-                    try { tracker?.noteSentenceBoundary() } catch (e: Exception) { }
+                    // v1.0.9 — this sentence ended. The Live stream is
+                    // NOT cut here (endTurn below only tells the model
+                    // the turn is over); the utterance start is kept
+                    // in lastUtteranceStartMs for the TTS hold target,
+                    // and cleared from currentUtteranceStartMs so a
+                    // late burst cannot sample against it.
+                    // The Groq path captures this utterance's start
+                    // now: by the time the transcription returns, a
+                    // new sentence may already have started.
+                    val uttStart = lastUtteranceStartMs
+                    currentUtteranceStartMs = 0L
                     setStatus(if (useGroqOnly) "Đang dịch bằng Groq…" else "Đang dịch…")
                     if (liveConnected) {
                         try { liveClient?.endTurn() } catch (e: Exception) {
@@ -1202,12 +1368,33 @@ class DubbingService : Service() {
                                 override fun onTranslated(text: String) {
                                     lastOutputAtMs = System.currentTimeMillis()
                                     setStatus("Đang dùng dự phòng Groq")
-                                    showSubtitle(text)
-                                    try {
-                                        voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
-                                    } catch (e: Exception) {
-                                        Log.w(TAG, "speakText failed", e)
+                                    // v1.0.9 — same hold as the Live
+                                    // voice: subtitle + TTS start at
+                                    // (utterance start + D), or at once
+                                    // when that moment already passed
+                                    // (lagMs feeds the TTS catch-up
+                                    // speed). showSubtitle takes the
+                                    // same wait, so the two start
+                                    // together.
+                                    val targetMs = uttStart +
+                                        (tracker?.currentDelayMs ?: 0L)
+                                    val nowMs = System.currentTimeMillis()
+                                    val waitMs = if (delayEnabled) {
+                                        (targetMs - nowMs).coerceAtLeast(0L)
+                                    } else {
+                                        0L
                                     }
+                                    val lagMs = (nowMs - targetMs).coerceAtLeast(0L)
+                                    showSubtitle(text, waitMs)
+                                    val run = Runnable {
+                                        try {
+                                            voicePlayer?.speakText(text, lagMs)
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "speakText failed", e)
+                                        }
+                                    }
+                                    if (waitMs > 0L) mainHandler.postDelayed(run, waitMs)
+                                    else mainHandler.post(run)
                                 }
 
                                 override fun onError(message: String) {
@@ -1235,10 +1422,22 @@ class DubbingService : Service() {
         }
         captureThread = Thread({
             val minBuf = minBufferSize()
+            val minBufStereo = minBufferSizeStereo()
             var record: AudioRecord? = null
+            // v1.0.9 — true while the record below is stereo 48 kHz.
+            var stereo = false
             try {
                 // Step 1: system audio via the projection token, if we have one.
-                record = if (mediaProjection != null) buildPlaybackRecord(minBuf) else null
+                // v1.0.9 — try stereo 48 kHz FIRST: the delayed
+                // background player needs full-quality stereo for the
+                // original audio. If the device refuses stereo, mono
+                // 16 kHz still works for the Live/VAD path (old
+                // behaviour: direct audio, no delayed original).
+                if (mediaProjection != null) {
+                    record = buildPlaybackRecordStereo(minBufStereo)
+                    if (record != null) stereo = true
+                    if (record == null) record = buildPlaybackRecordMono(minBuf)
+                }
                 if (record == null && mediaProjection != null) {
                     // Android 16 single-app token (user picked DubLive itself)
                     // or OriginOS blocked the capture — fall back to the mic.
@@ -1268,6 +1467,7 @@ class DubbingService : Service() {
                 if (!started) {
                     try { record.release() } catch (_: Exception) { }
                     audioRecord = null
+                    stereo = false
                     if (mediaProjection != null) {
                         mediaProjection = null
                         record = buildMicRecord(minBuf)
@@ -1289,21 +1489,67 @@ class DubbingService : Service() {
                         return@Thread
                     }
                 }
-                val buf = ShortArray(1600) // 100 ms at 16 kHz
-                while (capturing) {
-                    val n = try {
-                        record.read(buf, 0, buf.size)
+                // v1.0.9 — stereo system capture: start the delayed
+                // background player (mutes STREAM_MUSIC, replays the
+                // captured audio delayed by D on the alarm stream).
+                // The record is non-null here (every null path above
+                // returned from the thread).
+                val rec: AudioRecord = record ?: return@Thread
+                captureIsStereo48k = stereo
+                if (stereo) {
+                    try {
+                        startDelayedBackground()
                     } catch (e: Exception) {
-                        Log.w(TAG, "AudioRecord.read failed", e)
-                        break
+                        Log.w(TAG, "delayed background failed", e)
                     }
-                    if (n > 0) {
-                        try { vad?.feed(buf, n) } catch (e: Exception) {
-                            Log.w(TAG, "VAD feed failed", e)
+                }
+                val monoBuf = ShortArray(1600) // 100 ms at 16 kHz
+                val stereoBuf = ShortArray(9600) // 100 ms stereo at 48 kHz
+                while (capturing) {
+                    if (captureIsStereo48k) {
+                        val n = try {
+                            rec.read(stereoBuf, 0, stereoBuf.size)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "AudioRecord.read failed", e)
+                            break
                         }
-                    } else if (n < 0) {
-                        Log.w(TAG, "AudioRecord.read error $n")
-                        break
+                        if (n > 0) {
+                            // RAW stereo first: the delayed background
+                            // player gets the audio before the VAD, never
+                            // through it.
+                            try {
+                                backgroundPlayer?.feedPcm(shortsToBytes(stereoBuf, n))
+                            } catch (e: Exception) {
+                                Log.w(TAG, "bg feed failed", e)
+                            }
+                            // Then the mono 16 kHz downmix for VAD/Live.
+                            val monoCount = downmixStereo48kToMono16k(stereoBuf, n, monoBuf)
+                            if (monoCount > 0) {
+                                try {
+                                    vad?.feed(monoBuf, monoCount)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "VAD feed failed", e)
+                                }
+                            }
+                        } else if (n < 0) {
+                            Log.w(TAG, "AudioRecord.read error $n")
+                            break
+                        }
+                    } else {
+                        val n = try {
+                            rec.read(monoBuf, 0, monoBuf.size)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "AudioRecord.read failed", e)
+                            break
+                        }
+                        if (n > 0) {
+                            try { vad?.feed(monoBuf, n) } catch (e: Exception) {
+                                Log.w(TAG, "VAD feed failed", e)
+                            }
+                        } else if (n < 0) {
+                            Log.w(TAG, "AudioRecord.read error $n")
+                            break
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -1325,16 +1571,26 @@ class DubbingService : Service() {
     private fun stopDub() {
         stopped = true
         capturing = false
-        inSpeech = false
         try { mainHandler.removeCallbacks(watchdog) } catch (_: Exception) { }
         try { mainHandler.removeCallbacks(levelTicker) } catch (_: Exception) { }
         try { mainHandler.removeCallbacks(duckTicker) } catch (_: Exception) { }
-        try { mainHandler.removeCallbacks(segmentCutter) } catch (_: Exception) { }
+        // v1.0.9 — stop the delayed original audio first and bring
+        // STREAM_MUSIC back (stopDelayedBackground restores the saved
+        // system volumes). The duck restore below only matters in mic
+        // / mono mode: in delayed mode the activities never ducked
+        // their direct volume (no TYPE_DUCK was sent).
+        val wasDelayed = delayedBackgroundActive
+        try { stopDelayedBackground() } catch (e: Exception) {
+            Log.w(TAG, "stopDelayedBackground failed", e)
+        }
+        captureIsStereo48k = false
         // v1.0.5 — restore the original volume (the duck ticker is gone
         // now, so a ducked state would otherwise stick).
         if (ducked) {
             ducked = false
-            try { broadcast(TYPE_DUCK, message = "1.0") } catch (_: Exception) { }
+            if (!wasDelayed) {
+                try { broadcast(TYPE_DUCK, message = "1.0") } catch (_: Exception) { }
+            }
         }
         try { broadcast(TYPE_SUBTITLE, text = "") } catch (_: Exception) { }
         try { captureThread?.join(1000) } catch (_: Exception) { }
@@ -1361,6 +1617,151 @@ class DubbingService : Service() {
         try { broadcast(TYPE_STATE, state = STATE_STOPPED) } catch (_: Exception) { }
         stopForegroundSafely()
         try { stopSelf() } catch (_: Exception) { }
+    }
+
+    /**
+     * v1.0.9 — start the delayed original audio (ALDA FIX37 end
+     * state). Called once the stereo 48 kHz system capture is
+     * running.
+     *
+     *  1. Mute the direct audio at the SYSTEM level: STREAM_MUSIC ->
+     *     0. This silences the speakers but NOT the
+     *     AudioPlaybackCapture tap — the tap reads the track before
+     *     the stream volume is applied, which is exactly why ALDA
+     *     mutes this way. NEVER mute via the video element volume
+     *     (v.volume = 0): the element volume IS applied at the track,
+     *     so the capture — and with it the delayed player AND the
+     *     Live input — would go silent (the v1.0.2 lesson).
+     *  2. The alarm stream carries the delayed original audio: set
+     *     it to the louder of the dub slider and the original level,
+     *     so both the dub voice and the delayed original are audible.
+     *     (They share STREAM_ALARM only in alarm dub mode; in call
+     *     mode the alarm stream is free.) Both saved volumes are
+     *     restored by [stopDelayedBackground].
+     *  3. Start [DelayedBackgroundPlayer] with the current D (its
+     *     queue reads the live delay every poll, so later D changes
+     *     follow at once) at full volume — the duck ticker drives its
+     *     volume from here on.
+     */
+    private fun startDelayedBackground() {
+        if (delayedBackgroundActive) return
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (initialMusicVolume < 0) {
+                initialMusicVolume = try {
+                    am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                } catch (e: Exception) {
+                    Log.w(TAG, "getStreamVolume (music) failed", e)
+                    -1
+                }
+            }
+            if (initialAlarmVolume < 0) {
+                initialAlarmVolume = try {
+                    am.getStreamVolume(AudioManager.STREAM_ALARM)
+                } catch (e: Exception) {
+                    Log.w(TAG, "getStreamVolume (alarm) failed", e)
+                    -1
+                }
+            }
+            try {
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+            } catch (e: Exception) {
+                Log.w(TAG, "mute STREAM_MUSIC failed", e)
+            }
+            try {
+                val maxAlarm = am.getStreamMaxVolume(AudioManager.STREAM_ALARM).coerceAtLeast(1)
+                val frac = maxOf(
+                    Prefs.dubVolumePct(this),
+                    Prefs.originalVolumePct(this)
+                ) / 100f
+                val target = (frac * maxAlarm).roundToInt().coerceIn(0, maxAlarm)
+                am.setStreamVolume(AudioManager.STREAM_ALARM, target, 0)
+            } catch (e: Exception) {
+                Log.w(TAG, "set STREAM_ALARM failed", e)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "delayed-background volume setup failed", e)
+        }
+        try {
+            backgroundPlayer?.stop()
+            backgroundPlayer = DelayedBackgroundPlayer(this).also {
+                it.start()
+                it.setVolume(1.0f, false)
+                it.setDelayMs(
+                    if (delayEnabled) {
+                        tracker?.currentDelayMs ?: Prefs.baseDelayMs(this)
+                    } else {
+                        0L
+                    }
+                )
+            }
+            delayedBackgroundActive = true
+            setStatus("Tiếng gốc đang trễ theo hình qua kênh báo thức")
+            Log.i(TAG, "Delayed background active (delay ${tracker?.currentDelayMs}ms)")
+        } catch (e: Exception) {
+            Log.e(TAG, "DelayedBackgroundPlayer start failed", e)
+            delayedBackgroundActive = false
+            backgroundPlayer = null
+        }
+    }
+
+    /** Stop the delayed original audio and restore the system
+     * volumes saved by [startDelayedBackground]. No-op when the
+     * delayed mode never started. */
+    private fun stopDelayedBackground() {
+        if (!delayedBackgroundActive && backgroundPlayer == null) return
+        delayedBackgroundActive = false
+        try { backgroundPlayer?.stop() } catch (e: Exception) {
+            Log.w(TAG, "background player stop failed", e)
+        }
+        backgroundPlayer = null
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            if (initialMusicVolume >= 0) {
+                try {
+                    am.setStreamVolume(AudioManager.STREAM_MUSIC, initialMusicVolume, 0)
+                } catch (e: Exception) {
+                    Log.w(TAG, "restore STREAM_MUSIC failed", e)
+                }
+            }
+            if (initialAlarmVolume >= 0) {
+                try {
+                    am.setStreamVolume(AudioManager.STREAM_ALARM, initialAlarmVolume, 0)
+                } catch (e: Exception) {
+                    Log.w(TAG, "restore STREAM_ALARM failed", e)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "restore system volumes failed", e)
+        }
+        initialMusicVolume = -1
+        initialAlarmVolume = -1
+    }
+
+    /**
+     * v1.0.9 — downmix stereo 48 kHz to mono 16 kHz for the VAD/Live
+     * path: average L+R, take every 3rd frame (48 kHz -> 16 kHz).
+     * Returns the number of mono samples written to [out].
+     */
+    private fun downmixStereo48kToMono16k(stereo: ShortArray, n: Int, out: ShortArray): Int {
+        val frames = n / 2
+        var w = 0
+        var i = 0
+        while (i < frames && w < out.size) {
+            val l = stereo[i * 2].toInt()
+            val r = stereo[i * 2 + 1].toInt()
+            out[w++] = ((l + r) / 2).coerceIn(-32768, 32767).toShort()
+            i += 3
+        }
+        return w
+    }
+
+    /** ShortArray -> little-endian PCM bytes, first [length] shorts. */
+    private fun shortsToBytes(samples: ShortArray, length: Int): ByteArray {
+        val len = length.coerceIn(0, samples.size)
+        val buf = ByteBuffer.allocate(len * 2).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in 0 until len) buf.putShort(samples[i])
+        return buf.array()
     }
 
     private fun broadcast(type: String, text: String? = null, delayMs: Long? = null,

@@ -11,7 +11,6 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
-import java.util.concurrent.LinkedBlockingQueue
 import kotlin.math.roundToInt
 
 /**
@@ -25,10 +24,16 @@ import kotlin.math.roundToInt
  *  - TextToSpeech fallback (Vietnamese) when the model returns text only.
  *    Reading speeds up to catch up: lag > 2 s -> 1.2x, lag > 4 s -> 1.35x.
  *
- * v1.0.8 — two separate start callbacks, because the delay tracker
- * pairs them differently: the first Live chunk of a turn
- * ([onSpeechStarted], once per turn via the flag) and a TTS read
- * starting ([onTtsStarted], once per utterance).
+ * v1.0.9 — VOICE HOLD (ALDA mechanism, per burst): the translated
+ * voice must NOT play the moment it arrives — it must wait until
+ * (source utterance start + D), the moment the delayed picture
+ * reaches that sentence. Each burst's hold (= D − latency of that
+ * burst, recomputed at every burst start) is set by the service via
+ * [setVoiceHoldMs]; chunks are queued in a [DelayedAudioQueue] with
+ * that fixed due time and only written to the track once due. The
+ * subtitle still shows when the voice STARTS PLAYING (the
+ * onSpeechStarted callback fires when the first chunk is TAKEN from
+ * the queue, i.e. after its hold), not when the chunk arrives.
  */
 class VoicePlayer(
     context: Context,
@@ -92,7 +97,16 @@ class VoicePlayer(
 
     private val appContext = context.applicationContext
 
-    private val audioQueue = LinkedBlockingQueue<ByteArray>()
+    /**
+     * v1.0.9 — the dubbed voice waits behind its burst hold instead of
+     * playing on arrival. [currentHoldMs] is set by the service at
+     * every burst start (hold = D − latency of that burst); each chunk
+     * enqueued by [playAudio] is due at arrival + that hold. A later
+     * burst's different hold never retimes chunks already queued —
+     * the queue stores a fixed due time per block.
+     */
+    private val holdQueue = DelayedAudioQueue()
+    @Volatile private var currentHoldMs = 0L
     private var audioTrack: AudioTrack? = null
     /**
      * v1.0.7 — LoudnessEnhancer on the dub AudioTrack: the call stream
@@ -231,7 +245,20 @@ class VoicePlayer(
         playerThread = Thread({
             while (running) {
                 try {
-                    val chunk = audioQueue.take()
+                    // v1.0.9 — poll the hold queue instead of blocking
+                    // on take(): a chunk is only written once its hold
+                    // has elapsed. pollDue(now, 0): the 0 is ignored
+                    // for fixed-hold blocks (their due time was stored
+                    // at enqueue time).
+                    val chunk = holdQueue.pollDue(System.currentTimeMillis(), 0L)
+                    if (chunk == null) {
+                        try {
+                            Thread.sleep(5)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
+                        continue
+                    }
                     lastDubAudioAtMs = System.currentTimeMillis()
                     if (!speechStartedSignalled) {
                         speechStartedSignalled = true
@@ -265,9 +292,21 @@ class VoicePlayer(
         return System.currentTimeMillis() - lastDubAudioAtMs < 1500L
     }
 
-    /** Queue Gemini Live PCM (24 kHz, mono, 16-bit). */
+    /** Queue Gemini Live PCM (24 kHz, mono, 16-bit) behind the
+     * current burst hold — it plays at arrival + hold, not at once. */
     fun playAudio(pcm24k: ByteArray) {
-        if (running) audioQueue.offer(pcm24k)
+        if (running) holdQueue.add(System.currentTimeMillis(), pcm24k, currentHoldMs)
+    }
+
+    /**
+     * v1.0.9 — set this burst's voice hold (ms): the voice waits this
+     * long after each chunk's arrival before playing it. Computed by
+     * the service at every burst start (hold = D − latency of that
+     * burst). Chunks already queued keep the hold they were enqueued
+     * with; only the NEXT burst's chunks use the new value.
+     */
+    fun setVoiceHoldMs(holdMs: Long) {
+        currentHoldMs = holdMs.coerceAtLeast(0L)
     }
 
     /** Speak translated text with catch-up speed based on current lag. */
@@ -309,7 +348,7 @@ class VoicePlayer(
         running = false
         playerThread?.interrupt()
         playerThread = null
-        audioQueue.clear()
+        holdQueue.clear()
         try { loudnessEnhancer?.release() } catch (_: Exception) { }
         loudnessEnhancer = null
         try { audioTrack?.stop() } catch (_: Exception) { }

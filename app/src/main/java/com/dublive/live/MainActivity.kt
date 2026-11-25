@@ -308,6 +308,10 @@ class MainActivity : AppCompatActivity() {
                     )
                 } catch (_: Exception) {
                 }
+                // v1.0.9 — site fullscreen shows the LIVE video: the
+                // delayed original audio and the voice hold must go
+                // live too (restored on exit, see onHideCustomView).
+                setServiceDelayEnabled(false)
                 (window.decorView as ViewGroup).addView(
                     view, ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -365,6 +369,10 @@ class MainActivity : AppCompatActivity() {
                     )
                 } catch (_: Exception) {
                 }
+                // v1.0.9 — delay back on (if the user did not turn it
+                // off): the delayed original audio and the voice hold
+                // resume with it.
+                setServiceDelayEnabled(delayOn)
                 updateDelayButtons()
             }
         }
@@ -405,7 +413,29 @@ class MainActivity : AppCompatActivity() {
     private fun toggleDelay() {
         delayOn = !delayOn
         webView.evaluateJavascript("window.DubLiveSetEnabled($delayOn)", null)
+        // v1.0.9 — the service must follow: picture live => sound
+        // live too (delayed original audio + voice hold both to 0),
+        // or the sound would lag the live picture by D.
+        setServiceDelayEnabled(delayOn)
         updateDelayButtons()
+    }
+
+    /**
+     * v1.0.9 — tell the service the picture delay went on/off, so the
+     * delayed original audio and the voice hold follow: when the
+     * picture is live (delay off / site fullscreen), the sound must
+     * be live too, or it would lag the live picture by D.
+     */
+    private fun setServiceDelayEnabled(enabled: Boolean) {
+        try {
+            val intent = Intent(this, DubbingService::class.java).apply {
+                action = DubbingService.ACTION_SET_DELAY_ENABLED
+                putExtra(DubbingService.EXTRA_ENABLED, enabled)
+            }
+            startService(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "setServiceDelayEnabled failed", e)
+        }
     }
 
     private fun updateDelayButtons() {

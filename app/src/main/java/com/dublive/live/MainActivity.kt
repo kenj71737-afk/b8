@@ -64,7 +64,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var levelBar: android.widget.ProgressBar
     private lateinit var levelValue: TextView
     private lateinit var delayToggleButton: Button
+    private lateinit var subtitleToggleButton: Button
     private var delayOn = true
+    /** v1.0.5 — user can hide subtitles and listen to the dub only. */
+    private var subtitlesVisible = true
     private var dubbing = false
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
@@ -117,7 +120,7 @@ class MainActivity : AppCompatActivity() {
             when (intent.getStringExtra(DubbingService.EXTRA_TYPE)) {
                 DubbingService.TYPE_SUBTITLE -> {
                     val text = intent.getStringExtra(DubbingService.EXTRA_TEXT).orEmpty()
-                    if (text.isBlank()) {
+                    if (text.isBlank() || !subtitlesVisible) {
                         subtitleView.visibility = View.GONE
                     } else {
                         subtitleView.text = text
@@ -196,6 +199,7 @@ class MainActivity : AppCompatActivity() {
         levelBar = findViewById(R.id.levelBar)
         levelValue = findViewById(R.id.levelValue)
         delayToggleButton = findViewById(R.id.delayToggleButton)
+        subtitleToggleButton = findViewById(R.id.subtitleToggleButton)
 
         webView.settings.javaScriptEnabled = true
         webView.settings.domStorageEnabled = true
@@ -254,6 +258,15 @@ class MainActivity : AppCompatActivity() {
             webView.evaluateJavascript("window.DubLiveSetEnabled($delayOn)", null)
             delayToggleButton.setText(
                 if (delayOn) R.string.delay_off else R.string.delay_on
+            )
+        }
+        // v1.0.5 — hide/show subtitles; the service keeps sending them,
+        // the view just stays hidden while the flag is off.
+        subtitleToggleButton.setOnClickListener {
+            subtitlesVisible = !subtitlesVisible
+            if (!subtitlesVisible) subtitleView.visibility = View.GONE
+            subtitleToggleButton.setText(
+                if (subtitlesVisible) R.string.subtitle_hide else R.string.subtitle_show
             )
         }
     }

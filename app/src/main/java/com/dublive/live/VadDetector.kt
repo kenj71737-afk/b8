@@ -12,6 +12,10 @@ import kotlin.math.sqrt
  */
 class VadDetector(
     private val sampleRate: Int = 16000,
+    /** v1.0.5: configurable. Default 600 (ALDA's value). Was a hard-coded
+     * 250, far below a loud scene's RMS (1632 in the user's screenshot),
+     * so background music alone kept the VAD "in speech" forever. */
+    private val energyThreshold: Double = 600.0,
     private val listener: Listener
 ) {
     interface Listener {
@@ -24,7 +28,6 @@ class VadDetector(
     private val frameSamples = sampleRate / 50 // 20 ms frames
     private val speechFramesNeeded = 8 // 8 x 20 ms = 160 ms >= 150 ms
     private val silenceFramesToEnd = 35 // 35 x 20 ms = 700 ms
-    private val energyThreshold = 250.0 // RMS threshold, tuned for system audio
 
     /** RMS of the most recent 20 ms frame (0 when silent). Read by the
      * service's level ticker so the UI can show a live input-level meter. */

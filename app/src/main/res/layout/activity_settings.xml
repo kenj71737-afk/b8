@@ -53,6 +53,27 @@
         <TextView android:id="@+id/maxDelayLabel" android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:text="20 giây" />
 
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_original_volume" />
+        <SeekBar android:id="@+id/originalVolumeSeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="100" android:progress="60" />
+        <TextView android:id="@+id/originalVolumeLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="60%" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_dub_volume" />
+        <SeekBar android:id="@+id/dubVolumeSeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="100" android:progress="90" />
+        <TextView android:id="@+id/dubVolumeLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="90%" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_vad_threshold" />
+        <SeekBar android:id="@+id/vadThresholdSeek" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:max="950" android:progress="350" />
+        <TextView android:id="@+id/vadThresholdLabel" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:text="600" />
+
         <Button android:id="@+id/testKeyButton" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:text="@string/settings_test_key" />
         <TextView android:id="@+id/testKeyResult" android:layout_width="wrap_content"

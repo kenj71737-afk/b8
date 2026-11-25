@@ -13,23 +13,19 @@ import kotlin.math.min
  * after >= 1 s of silence). Fast Cantonese dialogue has no such gaps, so
  * there was never a burst start and never a sample.
  *
- * DubLive therefore samples PERIODICALLY, independent of bursts:
- *  - a sample is taken when a translation starts speaking, and
- *  - every 2 s while a translation is in flight, a provisional sample is
- *    taken from (now - utterance start).
- * Samples are smoothed with EMA (alpha 0.3) and clamped to [3 s, maxDelay].
- *
- * v1.0.4 — the periodic sampling had a hole: startUtterance() started the
- * 2 s tick even when the dubbed voice had NEVER played (dead Live, no
- * output at all), so the tick kept sampling (now - utteranceStart) of
- * untranslated speech and the delay ballooned to the 20 s cap — the user
- * screenshot showed "Trễ hình: 19,3 s" with zero translations. Now:
- *  - the tick only samples while dubbed speech is actually playing
- *    (after onDubSpeechStarted() for the current utterance);
- *  - while no translated output has ever arrived (hasDubOutput() false)
- *    the delay stays FROZEN at the 5.2 s seed — no periodic samples;
- *  - endUtterance() with no dubbed speech for that utterance stops the
- *    sampling outright.
+ * v1.0.5 — ONE sample per utterance, taken exactly when the dubbed voice
+ * STARTS speaking: sample = now - utteranceStart (the real latency from
+ * the character starting to speak to the Vietnamese voice starting).
+ * v1.0.4 sampled again every 2 s WHILE the dub was speaking, so with
+ * continuous dialogue (VAD never sees a 700 ms silence, so the utterance
+ * never ends) the sample grew with the utterance length and the delay
+ * climbed to the 20 s cap — the user screenshot at 19:21 still showed
+ * "Trễ hình: 19,4 s" even though dubbing was working. The periodic tick
+ * is GONE: it only watches for a stale utterance (speech running > 30 s
+ * with no dubbed voice yet) and resets its start time, so the sample
+ * can never balloon. Samples are smoothed with EMA (alpha 0.3) and
+ * clamped to [3 s, maxDelay]. While no translation has ever arrived the
+ * delay stays FROZEN at the 5.2 s seed (v1.0.4).
  */
 class DubDelayTracker(
     private val maxDelayMs: Long,
@@ -39,22 +35,24 @@ class DubDelayTracker(
     private val handler = Handler(Looper.getMainLooper())
     private var emaMs: Long = 5238L // seed: first-translation latency + 2 s margin
     private var utteranceStartMs: Long = -1L
-    private var sampling = false
-    /** True only between onDubSpeechStarted() and the next startUtterance(). */
-    private var dubSpeaking = false
     /** True once the dubbed voice has spoken for the current utterance. */
     private var dubSpokeThisTurn = false
+    private var tickRunning = false
 
+    /**
+     * Watchdog tick only: if one utterance runs longer than 30 s with
+     * no dubbed voice yet, its start time is stale (a new sentence
+     * started long ago inside the same VAD utterance) — reset it to now
+     * so the one sample taken later cannot be a 30 s+ balloon. This
+     * tick NEVER adds a sample.
+     */
     private val tick = object : Runnable {
         override fun run() {
-            // v1.0.4: sample ONLY while dubbed speech is actually playing
-            // for this utterance AND at least one translation has arrived
-            // before. Otherwise the delay would balloon while Live is
-            // dead — exactly the 19.3 s in the v1.0.3 screenshot.
-            if (sampling && dubSpeaking && utteranceStartMs > 0 && hasDubOutput()) {
-                addSample(System.currentTimeMillis() - utteranceStartMs)
+            if (utteranceStartMs > 0 && !dubSpokeThisTurn) {
+                val age = System.currentTimeMillis() - utteranceStartMs
+                if (age > 30_000L) utteranceStartMs = System.currentTimeMillis()
             }
-            if (sampling) handler.postDelayed(this, 2000L)
+            if (tickRunning) handler.postDelayed(this, 2000L)
         }
     }
 
@@ -62,45 +60,36 @@ class DubDelayTracker(
 
     fun startUtterance() {
         utteranceStartMs = System.currentTimeMillis()
-        // A new utterance: the dubbed voice has not spoken for THIS one
-        // yet. Do NOT start periodic sampling here — it starts in
-        // onDubSpeechStarted(). With no output ever, nothing samples and
-        // the delay stays frozen at the 5.2 s seed.
-        dubSpeaking = false
         dubSpokeThisTurn = false
+        if (!tickRunning) {
+            tickRunning = true
+            handler.postDelayed(tick, 2000L)
+        }
     }
 
-    /** Called when the dubbed voice actually starts speaking. */
+    /** Called when the dubbed voice actually starts speaking. Takes the
+     * ONE sample for this utterance, then never samples again until the
+     * next utterance starts. */
     fun onDubSpeechStarted() {
-        dubSpeaking = true
+        if (dubSpokeThisTurn) return
         dubSpokeThisTurn = true
         if (utteranceStartMs > 0 && hasDubOutput()) {
             addSample(System.currentTimeMillis() - utteranceStartMs)
-        }
-        if (!sampling) {
-            sampling = true
-            handler.postDelayed(tick, 2000L)
         }
     }
 
     fun endUtterance() {
         utteranceStartMs = -1L
         if (!dubSpokeThisTurn) {
-            // No dubbed speech for this utterance: stop sampling outright
-            // (v1.0.4) — otherwise the tick keeps measuring untranslated
-            // speech and the delay climbs for nothing.
-            dubSpeaking = false
-            sampling = false
+            // No dubbed speech for this utterance: stop the watchdog
+            // tick — a new utterance will restart it.
+            tickRunning = false
             handler.removeCallbacks(tick)
         }
-        // If the dub voice DID speak, the tick keeps running (it will
-        // resume sampling at the next utterance's onDubSpeechStarted);
-        // dubSpeaking is reset by the next startUtterance().
     }
 
     fun stop() {
-        sampling = false
-        dubSpeaking = false
+        tickRunning = false
         dubSpokeThisTurn = false
         utteranceStartMs = -1L
         handler.removeCallbacks(tick)

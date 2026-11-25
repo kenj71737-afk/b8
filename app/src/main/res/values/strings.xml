@@ -43,6 +43,11 @@
     <string name="status_idle">Trạng thái: chưa lồng tiếng</string>
     <string name="level_label">Mức tiếng:</string>
     <string name="view_live_errors">Xem lỗi Live</string>
+    <string name="subtitle_hide">Ẩn phụ đề</string>
+    <string name="subtitle_show">Hiện phụ đề</string>
+    <string name="settings_original_volume">Âm lượng tiếng gốc khi lồng tiếng (lúc giọng dịch đang nói)</string>
+    <string name="settings_dub_volume">Âm lượng giọng dịch</string>
+    <string name="settings_vad_threshold">Độ nhạy nghe tiếng — ngưỡng càng cao càng ít tạp âm (250–1200)</string>
     <string name="live_errors_title">Nhật ký lỗi Live (8 lỗi gần nhất)</string>
     <string name="live_errors_empty">Chưa có lỗi Live nào. Nếu app báo lỗi, bấm lại nút này để xem toàn bộ lịch sử lỗi rồi chụp màn hình gửi lại.</string>
     <string name="key_live_ok">Live nối được (model %1$s) — key và model Live đều tốt</string>

@@ -38,6 +38,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var voiceSpinner: Spinner
     private lateinit var maxDelaySeek: SeekBar
     private lateinit var maxDelayLabel: TextView
+    private lateinit var originalVolumeSeek: SeekBar
+    private lateinit var originalVolumeLabel: TextView
+    private lateinit var dubVolumeSeek: SeekBar
+    private lateinit var dubVolumeLabel: TextView
+    private lateinit var vadThresholdSeek: SeekBar
+    private lateinit var vadThresholdLabel: TextView
     private lateinit var testKeyResult: TextView
 
     private val http = OkHttpClient.Builder()
@@ -56,6 +62,12 @@ class SettingsActivity : AppCompatActivity() {
         voiceSpinner = findViewById(R.id.voiceSpinner)
         maxDelaySeek = findViewById(R.id.maxDelaySeek)
         maxDelayLabel = findViewById(R.id.maxDelayLabel)
+        originalVolumeSeek = findViewById(R.id.originalVolumeSeek)
+        originalVolumeLabel = findViewById(R.id.originalVolumeLabel)
+        dubVolumeSeek = findViewById(R.id.dubVolumeSeek)
+        dubVolumeLabel = findViewById(R.id.dubVolumeLabel)
+        vadThresholdSeek = findViewById(R.id.vadThresholdSeek)
+        vadThresholdLabel = findViewById(R.id.vadThresholdLabel)
         testKeyResult = findViewById(R.id.testKeyResult)
 
         val prefs = Prefs.prefs(this)
@@ -93,6 +105,45 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seek: SeekBar?) {}
         })
 
+        // v1.0.5 — three new sliders. Original volume: the level the
+        // film's own sound drops to WHILE the dub voice speaks (default
+        // 60%, 0–100%). Dub volume: the dubbed voice itself (default
+        // 90%). VAD threshold: SeekBar progress 0–950 maps to RMS
+        // 250–1200 (default 600, ALDA's value); higher = fewer noise
+        // utterances from background music.
+        originalVolumeSeek.progress = Prefs.originalVolumePct(this)
+        originalVolumeLabel.text = "${Prefs.originalVolumePct(this)}%"
+        originalVolumeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
+                originalVolumeLabel.text = "$progress%"
+            }
+
+            override fun onStartTrackingTouch(seek: SeekBar?) {}
+            override fun onStopTrackingTouch(seek: SeekBar?) {}
+        })
+
+        dubVolumeSeek.progress = Prefs.dubVolumePct(this)
+        dubVolumeLabel.text = "${Prefs.dubVolumePct(this)}%"
+        dubVolumeSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
+                dubVolumeLabel.text = "$progress%"
+            }
+
+            override fun onStartTrackingTouch(seek: SeekBar?) {}
+            override fun onStopTrackingTouch(seek: SeekBar?) {}
+        })
+
+        vadThresholdSeek.progress = (Prefs.vadThreshold(this) - 250).coerceIn(0, 950)
+        vadThresholdLabel.text = "${Prefs.vadThreshold(this)}"
+        vadThresholdSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
+                vadThresholdLabel.text = "${progress + 250}"
+            }
+
+            override fun onStartTrackingTouch(seek: SeekBar?) {}
+            override fun onStopTrackingTouch(seek: SeekBar?) {}
+        })
+
         findViewById<Button>(R.id.testKeyButton).setOnClickListener { testKey() }
         findViewById<Button>(R.id.saveButton).setOnClickListener { save() }
     }
@@ -108,6 +159,9 @@ class SettingsActivity : AppCompatActivity() {
             .putBoolean(Prefs.KEY_WHOLE_SENTENCE, wholeSentenceCheck.isChecked)
             .putString(Prefs.KEY_VOICE, Prefs.VOICES[voiceLabel] ?: "Aoede")
             .putInt(Prefs.KEY_MAX_DELAY_SEC, maxDelaySeek.progress + 3)
+            .putInt(Prefs.KEY_ORIGINAL_VOLUME, originalVolumeSeek.progress.coerceIn(0, 100))
+            .putInt(Prefs.KEY_DUB_VOLUME, dubVolumeSeek.progress.coerceIn(0, 100))
+            .putInt(Prefs.KEY_VAD_THRESHOLD, (vadThresholdSeek.progress + 250).coerceIn(250, 1200))
             .apply()
         Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
         finish()

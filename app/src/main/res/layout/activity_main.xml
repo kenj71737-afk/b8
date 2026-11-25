@@ -75,6 +75,13 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="@string/delay_off" />
+
+        <Button
+            android:id="@+id/subtitleToggleButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/subtitle_hide" />
     </LinearLayout>
 
     <LinearLayout
@@ -163,16 +170,27 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <!-- v1.0.5 — small subtitle, bottom of the video, max 3 lines.
+             v1.0.4 showed the whole ever-growing translation at 18sp and
+             it covered the entire video. Now the service only ever sends
+             the last 1–2 sentences (~120 chars), and the view itself is
+             capped at 3 lines over a 60% black rounded background, so it
+             can never cover more than ~1/3 of the screen. -->
         <TextView
             android:id="@+id/subtitleView"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"
-            android:background="@color/dub_black"
+            android:layout_marginLeft="12dp"
+            android:layout_marginRight="12dp"
+            android:layout_marginBottom="8dp"
+            android:background="@color/dub_black_60"
+            android:ellipsize="end"
             android:gravity="center"
+            android:maxLines="3"
             android:padding="8dp"
             android:textColor="@color/dub_white"
-            android:textSize="18sp"
+            android:textSize="15sp"
             android:visibility="gone" />
 
         <TextView

@@ -1,15 +1,171 @@
+# DubLive v1.0.4 — SỬA RACE SOCKET CŨ PHÁ SOCKET MỚI + KHỚP ALDA TỪNG DÒNG
+
+Build xong 25/11/2026 19:15 VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.4.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.4.apk`)
+- Kích thước: 9.462.374 byte (~9,0 MB). MD5: 5502174d47fd50c37e4e98b2af5a7ae1.
+- aapt2: package `com.dublive.live`, versionCode 5, versionName 1.0.4,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **45611383761** (completed/success, build đậu ngay
+  lần đầu, 0 lần build lỗi), commit `b6779d4df8696e00c21b4f74e9bb5e2fba651f3b`
+  trên nhánh `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15019878045, bản Debug; bản Release unsigned trong
+  cùng artifact thì không cài được nên không giao).
+
+## Phép thử đối chứng 25/11 19:06 — lỗi 100% phía DubLive
+
+User mở ALDA, dùng ĐÚNG key Gemini đó, mở ĐÚNG video NetShort "hồng diện
+sát", và ALDA "Vẫn dịch bình thường" — bong bóng ALAD SUBTITLES hiện cả câu
+gốc tiếng Trung lẫn bản dịch tiếng Việt. Kết luận chắc chắn: key còn tốt,
+hạn mức còn tốt, model gemini-3.5-live-translate-preview còn sống, server
+Google còn tốt lúc 19:06. Lỗi là 100% ở phía client DubLive, không phải
+key/model/server/quota. Vì vậy v1.0.4 soi từng dòng DubLive với ALDA FIX43
+(`ALADWebSocketManager.kt`) và sửa mọi điểm khác còn sót, không chỉ
+generation guard.
+
+## Lỗi chính — callback của socket cũ phá socket mới (race)
+
+- `reconnectLive()` làm: `closingForReconnect=true; liveClient?.close();
+  closingForReconnect=false; connectLive()`. Nhưng `close()` của OkHttp là
+  bất đồng bộ: `onClosed` của socket CŨ có thể tới SAU khi cờ đã reset về
+  false, nên `onClosed` đó bị tưởng là "server tự ngắt" →
+  `handleLiveError("Gemini Live tự ngắt kết nối")` → advance model/key +
+  scheduleReconnect → đóng socket MỚI vừa nối được → `onClosed` của nó lại
+  kích hoạt tiếp. Vòng lặp đốt hết 6 tổ hợp (model, key) trong vài giây và
+  hiện đúng dòng lỗi trong ảnh v1.0.3 lúc 19:01: "Lỗi Live [2.5-native]:
+  Gemini Live tự ngắt kết nối" (mức tiếng 1000, trễ hình 19,3 s, không phụ
+  đề/giọng Việt).
+- Sửa: mỗi lần `connectLive()` tăng một generation (AtomicInteger, lưu cả
+  ở client `GeminiLiveClient.generation` lẫn service `liveGeneration`); mọi
+  callback `onOpen/onMessage/onFailure/onClosed` của client kiểm tra
+  `webSocket === socket` (đúng mẫu ALDA) và mọi callback của service kiểm
+  tra generation có phải lần nối hiện tại không — callback socket cũ bỏ qua
+  hoàn toàn. Bỏ hẳn cờ `closingForReconnect`.
+- Khi đổi model/key thì RETRY cùng tổ hợp 1 lần trước khi advance (server
+  hiccup một lần không đáng đổi model); chỉ advance sau 2 lần lỗi liên tiếp
+  trên cùng tổ hợp. Đếm riêng từng tổ hợp (`comboFailures`, key
+  "modelIndex:keyIndex"); `MAX_RECONNECTS` nâng 5 → 12 (= 6 tổ hợp x 2 lần)
+  làm trần an toàn, không dùng chung một biến cho cả 6 tổ hợp. Nối lại
+  thành công thì xóa số lỗi của tổ hợp đó.
+- `onClosed` giờ truyền cả code + reason vào status: "Live tự ngắt (mã
+  <code>: <reason>)" thay vì chỉ "tự ngắt kết nối"; `onFailure` ghi rõ mã
+  HTTP + reason phrase khi có.
+
+## So sánh với ALDA FIX43 — các điểm khác còn sót đã khớp
+
+1. **OkHttpClient**: ALDA dùng `pingInterval(15s) + retryOnConnectionFailure(true)`
+   với timeout mặc định; DubLive không có ping, lại `readTimeout(0)` (vô hạn).
+   Đã đổi đúng cấu hình ALDA.
+2. **Gửi audio — điểm khác lớn nhất, nghi là cò súng**: ALDA có
+   `PendingAudioQueue` (tối đa ~6 s, xả 2 block/nhịp = 2x thời gian thực,
+   oldest-first) + `sendAudioNow` bỏ block khi `socket.queueSize() > 64 KB`.
+   DubLive `flushPendingAudio()` dồn cả ~10 s buffer gửi 1 lượt ngay khi
+   `setupComplete` — đúng cái comment FIX36 của ALDA cảnh báo là flood socket
+   queue past the 64 KB congestion drop. Một cú flood như vậy là nguyên nhân
+   hợp lý khiến server ngắt session ngay sau khi nối ("tự ngắt kết nối").
+   Sửa: client có hàng đợi riêng (`queueAudio`/`drainPending`, tối đa ~6 s
+   = 192.000 byte, xả 2 block/nhịp, dừng xả khi socket nghẽn thay vì bỏ
+   block), `sendAudio` giờ là queue + drain; `flushPendingAudio` chỉ enqueue
+   rồi drain 2 block, phần còn lại xả dần theo các nhịp speech tiếp theo.
+   Buffer pre-connect của service cũng hạ 10 s → 6 s (192.000 byte).
+   Thêm cờ `isSetupComplete` (chỉ xả audio sau setupComplete, như ALDA),
+   thay vì `connected` bật ngay từ `onOpen`.
+3. **Setup JSON**: DubLive chèn câu hint ngôn ngữ nguồn ("The speech you
+   hear is in ...") mà ALDA không bao giờ gửi (model tự nhận diện; hint sai
+   khi cài đặt khác tiếng video thật thì chỉ có hại) — đã bỏ. Thứ tự các
+   khối instruction và câu cuối "preserve meaning and speaker intent..."
+   đã viết đúng y ALDA ở cả 2 chế độ (chế độ nguyên câu trước đây thiếu câu
+   này). Thêm `isKeyError` (regex quota/429/invalid key như ALDA FIX27) để
+   ghi chú "(lỗi key/hạn mức?)" vào lịch sử lỗi.
+4. **Xử lý callback**: ALDA chấp nhận cả snake_case lẫn camelCase cho mọi
+   field (`serverContent/server_content`, `outputTranscription/...`,
+   `modelTurn/...`, `turnComplete/...`, `setupComplete/...`) + `onMessage`
+   dạng bytes + `onClosing` (tín hiệu ngắt sớm nhất); DubLive chỉ làm
+   camelCase text + `onClosed`. Đã thêm đủ 3 cái. Thứ tự xử lý message cũng
+   đổi theo ALDA: serverContent → setupComplete → error.
+5. **Reconnect**: ALDA chờ 2 s sau khi mất nối; DubLive chờ 1 s — đã đổi
+   `scheduleReconnect(2000L)`. ALDA single-flight reconnect
+   (`reconnectInFlight`) tương đương cờ `reconnectPending` sẵn có của
+   DubLive — giữ nguyên.
+- KHÔNG đổi theo ALDA: chính sách thử hết 6 tổ hợp (3 model x 2 key) rồi
+  mới sang Groq — ALDA chỉ dùng 1 model nên không có fallback model; giữ
+  thiết kế DubLive. Ngưỡng VAD 250 giữ nguyên (ALDA dùng 600 — chặt hơn,
+  không phải nguyên nhân; DubLive nghe được ở RMS ~150–220 nên ngưỡng thấp
+  hơn là đúng). VAD không reset mỗi lần nối lại (ALDA reset gate, nhưng
+  `VadDetector` của DubLive không đồng bộ — reset giữa chừng từ main thread
+  trong khi capture thread đang feed sẽ race).
+
+## Lỗi phụ 1 — lịch sử lỗi bị ghi đè, chỉ thấy lỗi cuối
+
+- Ảnh v1.0.3 chỉ thấy lỗi của model 2.5-native, không biết translate-preview
+  (key 1, key 2) lỗi gì nên không chẩn đoán được.
+- Sửa: service giữ 8 lỗi gần nhất (giờ, model, key số mấy, message ĐẦY ĐỦ
+  không cắt 90 ký tự), đẩy qua broadcast `TYPE_LIVE_ERRORS` mỗi khi có lỗi
+  mới; MainActivity thêm nút "Xem lỗi Live" mở hộp thoại TextView cuộn được
+  hiện toàn bộ lịch sử. Dòng Trạng thái hiện tại giữ nguyên.
+
+## Lỗi phụ 2 — trễ hình phình tới 19,3 s khi không có bản dịch nào
+
+- `DubDelayTracker.startUtterance` bật sampling, tick mỗi 2 s cộng mẫu
+  `(now - utteranceStart)` dù giọng dịch chưa bao giờ phát, nên trễ cứ tăng
+  dần tới trần 20 s (ảnh v1.0.3: 19,3 s).
+- Sửa: chỉ lấy mẫu khi giọng dịch đang phát (sau `onDubSpeechStarted` của
+  đúng utterance đó) và đã có output (`lastOutputAtMs > 0`); khi chưa có
+  output nào thì ĐÓNG BĂNG trễ ở seed 5,2 s, không lấy mẫu định kỳ;
+  `endUtterance` mà không có giọng dịch thì dừng sampling luôn.
+- Kiểm tra bằng logic: mở app, không dịch được, trễ phải đứng yên ~5,2 s
+  chứ không leo lên 19 s.
+
+## Lỗi phụ 3 — mức tiếng kịch trần 1000
+
+- `level = (rms/2000)*1000` nên tiếng to là kịch 1000, không biết to bao
+  nhiêu và VAD luôn tưởng đang nói (nhạc nền liên tục).
+- Sửa: thang log `level = ln(1+rms)/ln(1+8000)*1000`, hiện thêm số RMS thô
+  bên cạnh thanh mức tiếng (`"842 (RMS 1930)"`). Không đổi ngưỡng VAD.
+
+## Checklist thử lại cho user (bản 1.0.4)
+
+1. Gỡ v1.0.3, cài v1.0.4.
+2. Cài đặt → bấm "Kiểm tra key Gemini" — phải báo "Live nối được
+   (gemini-3.5-live-translate-preview)"; nếu báo lỗi khác thì chụp lại dòng đó.
+3. Mở video NetShort "hồng diện sát", bấm Play cho chạy có tiếng.
+4. Bấm "Bắt đầu lồng tiếng" → cấp quyền Micro → chọn "Chia sẻ toàn bộ
+   màn hình".
+5. Trạng thái phải chạy "Đang nối…" → "Đã nối, đang nghe…" → "Đang nghe câu
+   nói…" → "Đang dịch…" rồi phụ đề + giọng Việt. Mức tiếng phải nhảy > 0
+   (thang log, kèm số RMS). Trễ hình phải đứng yên ~5,2 s cho tới khi có
+   bản dịch đầu tiên, rồi mới nhích theo độ trễ thật — KHÔNG leo lên 19 s.
+6. Nếu vẫn lỗi: bấm nút "Xem lỗi Live" trên màn hình chính và CHỤP TOÀN BỘ
+   lịch sử lỗi gửi lại — đó là thứ cần nhất để chẩn đoán (dòng đầu tiên
+   trong lịch sử mới là lỗi gốc, thường là translate-preview key 1).
+7. Báo lại: (a) Kiểm tra key báo gì, (b) trạng thái dừng ở đâu + ảnh lịch
+   sử lỗi, (c) có phụ đề/giọng Việt không, (d) trễ hình đứng ở bao nhiêu
+   giây khi chưa dịch được.
+
+## Giới hạn còn lại
+
+- Chưa chạy kiểm chứng trên máy thật (máy đích iQOO Z9 Turbo / OriginOS 6 /
+  Android 16) — mới kiểm chứng ở mức biên dịch + đóng gói + đối chiếu code
+  ALDA; đang chờ user chạy checklist trên.
+- Nếu Google đổi tên cả model translate-preview lẫn 2 model native trong
+  tương lai, app tự chuyển sang Groq (cần key Groq trong Cài đặt) và báo rõ
+  trên dòng Trạng thái.
+
+---
+
 # DubLive v1.0.3 — SỬA "GEMINI LIVE LỖI": SAI GIAO THỨC LIVE (DÙNG ĐÚNG BẢN ALDA)
 
-Build xong 25/11/2026 ~18:4x VN. APK Debug, cài được.
+Build xong 25/11/2026 ~18:52 VN. APK Debug, cài được.
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.3.apk`
   (symlink `~/workspace/your_files/DubLive-v1.0.3.apk`)
-- Kích thước: ~9,1 MB. MD5: (ghi sau khi tải artifact).
+- Kích thước: 9.453.850 byte (~9,1 MB). MD5: 3bc98088b6732863d2c26addf717e3c7.
 - aapt2: package `com.dublive.live`, versionCode 4, versionName 1.0.3,
   minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
-- Actions run thành công: (ghi sau khi build xong), commit (ghi sau khi đẩy)
+- Actions run thành công: **45608009688** (completed/success, build đậu ngay
+  lần đầu, 0 lần build lỗi), commit `8debbf93d1398275a63cd03d7f6bf65eff0c479c`
   trên nhánh `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
-  artifact `alad-apks` (bản Debug; bản Release unsigned trong cùng artifact
-  thì không cài được nên không giao).
+  artifact `alad-apks` (id 15017869642, bản Debug; bản Release unsigned trong
+  cùng artifact thì không cài được nên không giao).
 
 ## Chẩn đoán user xác nhận trên v1.0.2 (25/11 18:40, ảnh chụp màn hình)
 

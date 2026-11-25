@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -35,6 +36,17 @@ class VoicePlayer(
     private var playerThread: Thread? = null
     @Volatile private var running = false
     @Volatile private var speechStartedSignalled = false
+    /** v1.0.5 — dub voice volume 0..1 (Settings, default 0.9). */
+    @Volatile private var dubVolume = 0.9f
+    /**
+     * v1.0.5 — when the last dubbed audio chunk was taken from the
+     * queue (Live audio) or TTS started. The service's duck ticker
+     * reads isSpeaking(): the original audio is only ducked while the
+     * dub voice is REALLY playing, and returns to 100% 1.5 s after it
+     * stops — v1.0.4 ducked once forever, so the user could never hear
+     * the original sound again.
+     */
+    @Volatile private var lastDubAudioAtMs = 0L
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -54,6 +66,7 @@ class VoicePlayer(
                         }
                         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                             override fun onStart(utteranceId: String?) {
+                                lastDubAudioAtMs = System.currentTimeMillis()
                                 if (!speechStartedSignalled) {
                                     speechStartedSignalled = true
                                     try { onSpeechStarted() } catch (_: Exception) { }
@@ -113,10 +126,12 @@ class VoicePlayer(
         }
         audioTrack = track
         running = true
+        try { track.setVolume(dubVolume) } catch (_: Exception) { }
         playerThread = Thread({
             while (running) {
                 try {
                     val chunk = audioQueue.take()
+                    lastDubAudioAtMs = System.currentTimeMillis()
                     if (!speechStartedSignalled) {
                         speechStartedSignalled = true
                         try { onSpeechStarted() } catch (_: Exception) { }
@@ -127,6 +142,26 @@ class VoicePlayer(
                 }
             }
         }, "DubLive-AudioOut").apply { start() }
+    }
+
+    /** v1.0.5 — dub voice volume 0..1, applied to the live AudioTrack
+     * immediately and used for the next TTS utterance. */
+    fun setDubVolume(vol: Float) {
+        dubVolume = vol.coerceIn(0f, 1f)
+        try { audioTrack?.setVolume(dubVolume) } catch (_: Exception) { }
+    }
+
+    /**
+     * v1.0.5 — true while the dubbed voice is really playing: a Live
+     * audio chunk was taken within the last 1.5 s, or TTS is speaking.
+     * The service ducks the original audio only while this is true.
+     */
+    fun isSpeaking(): Boolean {
+        if (!running) return false
+        try {
+            if (tts?.isSpeaking == true) return true
+        } catch (_: Exception) { }
+        return System.currentTimeMillis() - lastDubAudioAtMs < 1500L
     }
 
     /** Queue Gemini Live PCM (24 kHz, mono, 16-bit). */
@@ -152,7 +187,11 @@ class VoicePlayer(
                     .build()
             )
             speechStartedSignalled = false
-            tts.speak(text, TextToSpeech.QUEUE_ADD, null, "dublive-${System.currentTimeMillis()}")
+            lastDubAudioAtMs = System.currentTimeMillis()
+            val params = Bundle().apply {
+                putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, dubVolume)
+            }
+            tts.speak(text, TextToSpeech.QUEUE_ADD, params, "dublive-${System.currentTimeMillis()}")
         } catch (e: Exception) {
             Log.w(TAG, "TTS speak failed", e)
         }

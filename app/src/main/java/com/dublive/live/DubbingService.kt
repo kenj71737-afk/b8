@@ -142,7 +142,21 @@ class DubbingService : Service() {
     private var useGroqOnly = false
     private var liveConnected = false
     private var reconnectPending = false
-    private var duckApplied = false
+    /**
+     * v1.0.5 — rhythmic ducking. The old applyDuckOnce() dropped the
+     * original audio to the user's level the moment the first dubbed
+     * speech played and NEVER restored it, so the user could only hear
+     * the dub voice and never the original sound. Now the duck ticker
+     * (every 500 ms) ducks ONLY while VoicePlayer.isSpeaking() is true
+     * and restores the original to 100% as soon as the dub voice has
+     * been silent for 1.5 s. `ducked` is the current duck state.
+     */
+    private var ducked = false
+    /** v1.0.5 — VAD RMS threshold for this session (Prefs, default 600). */
+    private var vadThreshold = 600.0
+    /** v1.0.5 — subtitle auto-hide generation: bumped on every new
+     * subtitle so a stale 6 s timer cannot hide a newer one. */
+    private var subtitleGen = 0
     private var lastStatus = ""
     private var lastHeardAtMs = 0L
 
@@ -201,9 +215,8 @@ class DubbingService : Service() {
             // saturated at 1000 for any loud sound (the v1.0.3 screenshot
             // showed a flat 1000), hiding how loud it really was, and
             // background music kept the VAD thinking speech was constant.
-            // Log scale: rms 8000 -> 1000, rms 2000 -> ~846, rms 250
-            // (VAD threshold) -> ~512, rms 50 -> ~396. VAD threshold
-            // itself is UNCHANGED — this is display only.
+            // Log scale: rms 8000 -> 1000, rms 2000 -> ~846, rms 600
+            // (VAD threshold, v1.0.5 default) -> ~623, rms 50 -> ~396.
             val level = (ln(1.0 + rms) / ln(1.0 + 8000.0) * 1000.0)
                 .toInt().coerceIn(0, 1000)
             broadcast(TYPE_LEVEL, level = level, rms = rms)
@@ -213,6 +226,34 @@ class DubbingService : Service() {
                 now - lastHeardAtMs > 15_000L
             ) {
                 setStatus("Không nghe thấy tiếng — kiểm tra video có phát tiếng không")
+            }
+            mainHandler.postDelayed(this, 500L)
+        }
+    }
+
+    /**
+     * v1.0.5 — duck ticker: every 500 ms, compare the dub voice state
+     * with the current duck state and only send a TYPE_DUCK broadcast
+     * when it CHANGES, so the WebView volume is not hammered every tick.
+     * Speaking -> original drops to the user's level (default 60%,
+     * 0..1 float from Prefs.originalVolume — verified 0.5 for 50%, NOT
+     * 50). Silent -> original back to 100% so the user can hear the
+     * film's own sound between dubbed lines.
+     */
+    private val duckTicker = object : Runnable {
+        override fun run() {
+            if (!capturing) return
+            try {
+                val speaking = try { voicePlayer?.isSpeaking() == true } catch (_: Exception) { false }
+                if (speaking && !ducked) {
+                    ducked = true
+                    broadcast(TYPE_DUCK, message = Prefs.originalVolume(this@DubbingService).toString())
+                } else if (!speaking && ducked) {
+                    ducked = false
+                    broadcast(TYPE_DUCK, message = "1.0")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "duckTicker failed", e)
             }
             mainHandler.postDelayed(this, 500L)
         }
@@ -355,7 +396,11 @@ class DubbingService : Service() {
         try {
             voicePlayer = VoicePlayer(this) {
                 tracker?.onDubSpeechStarted()
-            }.also { it.start() }
+            }.also {
+                it.start()
+                // v1.0.5 — dub voice volume from Settings (default 90%).
+                try { it.setDubVolume(Prefs.dubVolume(this)) } catch (_: Exception) { }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "VoicePlayer failed", e)
             voicePlayer = null
@@ -388,7 +433,10 @@ class DubbingService : Service() {
         comboFailures.clear()
         liveErrorHistory.clear()
         broadcastLiveErrors()
-        duckApplied = false
+        ducked = false
+        subtitleGen = 0
+        // v1.0.5 — VAD threshold for this session (Settings, default 600).
+        vadThreshold = try { Prefs.vadThreshold(this).toDouble() } catch (_: Exception) { 600.0 }
         rotateAtMs = System.currentTimeMillis() + KEY_ROTATE_MS
         lastOutputAtMs = 0L
         startedAtMs = System.currentTimeMillis()
@@ -448,13 +496,16 @@ class DubbingService : Service() {
             switchToGroq("Gemini Live lỗi kết nối (${e.message}), chuyển sang dự phòng Groq")
         }
         broadcast(TYPE_STATE, state = STATE_RUNNING)
-        // v1.0.2: do NOT duck the original audio here. AudioPlaybackCapture
-        // records the sound after ducking, so ducking to 15% at start
-        // starved the VAD and nothing was ever heard. The original stays
-        // at full volume until the first dubbed speech actually plays
-        // (see applyDuckOnce), and only then drops to the user's level.
+        // v1.0.5: do NOT duck the original audio here, and do NOT duck
+        // it once forever either (the old applyDuckOnce). The duck ticker
+        // ducks only while the dubbed voice is really speaking and
+        // restores 100% when it goes silent, so the original sound stays
+        // audible between dubbed lines. AudioPlaybackCapture records the
+        // sound after ducking, so ducking at start would also have
+        // starved the VAD (the v1.0.2 lesson).
         mainHandler.postDelayed(watchdog, 10_000L)
         mainHandler.postDelayed(levelTicker, 500L)
+        mainHandler.postDelayed(duckTicker, 500L)
     }
 
     /** Stop the old (projection) capture thread, then restart it on the mic. */
@@ -521,7 +572,6 @@ class DubbingService : Service() {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
-                        applyDuckOnce()
                         try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
                             Log.w(TAG, "playAudio failed", e)
                         }
@@ -531,7 +581,7 @@ class DubbingService : Service() {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         pendingText.append(text)
-                        broadcast(TYPE_SUBTITLE, text = pendingText.toString())
+                        showSubtitle(pendingText.toString())
                     }
 
                     override fun onTurnComplete() {
@@ -539,10 +589,12 @@ class DubbingService : Service() {
                         val text = pendingText.toString().trim()
                         pendingText.clear()
                         if (!SpeechFilter.isMeaningful(text)) {
+                            // Noise-only turn: hide the subtitle at once
+                            // and cancel its 6 s auto-hide timer.
+                            subtitleGen++
                             broadcast(TYPE_SUBTITLE, text = "")
                         } else if (!audioPlayedThisTurn) {
                             // Model returned text but no audio: read it with TTS.
-                            applyDuckOnce()
                             try {
                                 voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
                             } catch (e: Exception) {
@@ -712,11 +764,46 @@ class DubbingService : Service() {
         broadcast(TYPE_STATUS, message = text)
     }
 
-    /** Drop the original volume only once dubbed speech really plays. */
-    private fun applyDuckOnce() {
-        if (duckApplied) return
-        duckApplied = true
-        broadcast(TYPE_DUCK, message = Prefs.originalVolume(this).toString())
+    /**
+     * v1.0.5 — subtitle trim + auto-hide. The translate-preview model
+     * streams continuously and rarely sends turnComplete, so the old
+     * code appended every fragment into pendingText and broadcast the
+     * WHOLE text: it grew without bound and the user screenshot showed
+     * one giant block covering the whole video. Now only the last 1–2
+     * sentences are shown (max ~120 chars; if the text is over 200
+     * chars only the last 120 are kept), and the subtitle hides itself
+     * 6 s after the last fragment so it never lingers. A new subtitle
+     * bumps [subtitleGen], so a stale timer cannot hide a newer one.
+     */
+    private fun showSubtitle(fullText: String) {
+        val shown = trimSubtitle(fullText)
+        subtitleGen++
+        val gen = subtitleGen
+        broadcast(TYPE_SUBTITLE, text = shown)
+        mainHandler.postDelayed({
+            if (gen == subtitleGen && capturing) {
+                broadcast(TYPE_SUBTITLE, text = "")
+            }
+        }, 6000L)
+    }
+
+    private fun trimSubtitle(full: String): String {
+        val t = full.trim()
+        if (t.length <= 120) return t
+        // Split into sentences, keeping the terminator with its sentence.
+        val sentences = t.split(Regex("(?<=[.?!…。！？])\\s*|\\n+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        val tail = if (sentences.size >= 2) {
+            sentences.takeLast(2).joinToString(" ")
+        } else {
+            t
+        }
+        if (tail.length <= 120) return tail
+        // Still too long: keep the last 120 chars, dropping a cut word.
+        val cut = tail.takeLast(120).trimStart()
+        val firstSpace = cut.indexOf(' ')
+        return if (firstSpace in 1..20) cut.substring(firstSpace + 1) else cut
     }
 
     /** Queue audio spoken while Live is still connecting (max ~6 s,
@@ -879,7 +966,11 @@ class DubbingService : Service() {
 
     private fun startCapture() {
         try {
-            vad = VadDetector(listener = object : VadDetector.Listener {
+            vad = VadDetector(
+                // v1.0.5 — threshold from Settings (default 600, ALDA's
+                // value) instead of the hard-coded 250.
+                energyThreshold = vadThreshold,
+                listener = object : VadDetector.Listener {
                 override fun onSpeechStart(preRollAndHead: ShortArray) {
                     try { tracker?.startUtterance() } catch (_: Exception) { }
                     try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
@@ -904,8 +995,18 @@ class DubbingService : Service() {
                     val bytes = shortsToBytes(samples)
                     utteranceBytes.write(bytes)
                     if (liveConnected) {
-                        try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
-                            Log.w(TAG, "sendAudio failed", e)
+                        // v1.0.5 — second noise gate: inside an utterance
+                        // the VAD also forwards quiet frames (music/noise
+                        // between words) until 700 ms of silence ends it.
+                        // A chunk below the VAD threshold is noise, not
+                        // speech: do NOT send it to Live, or the model
+                        // invents words for it. (It still goes into
+                        // utteranceBytes for the Groq path — Whisper
+                        // tolerates noise far better than Live does.)
+                        if (rmsOf(samples) >= vadThreshold) {
+                            try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
+                                Log.w(TAG, "sendAudio failed", e)
+                            }
                         }
                     } else {
                         bufferAudio(bytes)
@@ -951,7 +1052,7 @@ class DubbingService : Service() {
                                 override fun onTranslated(text: String) {
                                     lastOutputAtMs = System.currentTimeMillis()
                                     setStatus("Đang dùng dự phòng Groq")
-                                    broadcast(TYPE_SUBTITLE, text = text)
+                                    showSubtitle(text)
                                     try {
                                         voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
                                     } catch (e: Exception) {
@@ -1076,6 +1177,14 @@ class DubbingService : Service() {
         capturing = false
         try { mainHandler.removeCallbacks(watchdog) } catch (_: Exception) { }
         try { mainHandler.removeCallbacks(levelTicker) } catch (_: Exception) { }
+        try { mainHandler.removeCallbacks(duckTicker) } catch (_: Exception) { }
+        // v1.0.5 — restore the original volume (the duck ticker is gone
+        // now, so a ducked state would otherwise stick).
+        if (ducked) {
+            ducked = false
+            try { broadcast(TYPE_DUCK, message = "1.0") } catch (_: Exception) { }
+        }
+        try { broadcast(TYPE_SUBTITLE, text = "") } catch (_: Exception) { }
         try { captureThread?.join(1000) } catch (_: Exception) { }
         captureThread = null
         try { liveClient?.close() } catch (_: Exception) { }
@@ -1088,7 +1197,7 @@ class DubbingService : Service() {
         voicePlayer = null
         synchronized(pendingChunks) { pendingChunks.clear() }
         pendingBytes = 0
-        duckApplied = false
+        ducked = false
         reconnectPending = false
         try {
             projectionCallback?.let { mediaProjection?.unregisterCallback(it) }
@@ -1129,6 +1238,14 @@ class DubbingService : Service() {
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(channel)
         }
+    }
+
+    /** v1.0.5 — RMS of one PCM chunk, for the noise gate in onSpeechChunk. */
+    private fun rmsOf(samples: ShortArray): Double {
+        if (samples.isEmpty()) return 0.0
+        var sum = 0.0
+        for (s in samples) sum += s.toDouble() * s.toDouble()
+        return kotlin.math.sqrt(sum / samples.size)
     }
 
     private fun shortsToBytes(samples: ShortArray): ByteArray {

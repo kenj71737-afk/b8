@@ -86,9 +86,16 @@
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="@string/settings_vad_threshold" />
         <SeekBar android:id="@+id/vadThresholdSeek" android:layout_width="match_parent"
-            android:layout_height="wrap_content" android:max="950" android:progress="350" />
+            android:layout_height="wrap_content" android:max="650" android:progress="350" />
         <TextView android:id="@+id/vadThresholdLabel" android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:text="600" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_vad_threshold_hint" android:textSize="12sp" />
+        <CheckBox android:id="@+id/spectralGateCheck" android:layout_width="wrap_content"
+            android:layout_height="wrap_content" android:checked="true"
+            android:text="@string/settings_spectral_gate" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/settings_spectral_gate_hint" android:textSize="12sp" />
 
         <Button android:id="@+id/testKeyButton" android:layout_width="match_parent"
             android:layout_height="wrap_content" android:text="@string/settings_test_key" />

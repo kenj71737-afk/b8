@@ -119,6 +119,13 @@ class GroqFallback(
                         listener.onError("Whisper trả về rỗng (model $model) — không nghe rõ lời")
                         return
                     }
+                    // v1.0.8 — Whisper often "hears" wordless music as
+                    // words ("[Music]", "la la la"). Drop it before the
+                    // translate step, or the dub voice reads the music.
+                    if (isMusicOnly(text)) {
+                        listener.onError("Whisper chỉ nghe thấy nhạc nên bỏ qua (model $model): \"${text.take(60)}\"")
+                        return
+                    }
                     if (!SpeechFilter.isMeaningful(text)) {
                         listener.onError("Groq nghe được nhưng câu không có nghĩa nên bỏ qua (model $model): \"${text.take(60)}\"")
                         return
@@ -127,6 +134,25 @@ class GroqFallback(
                 }
             }
         })
+    }
+
+    /**
+     * v1.0.8 — true when a Whisper result is music, not speech:
+     * it contains a music marker ("[Music]", "[Nhạc]", "[Âm nhạc]"),
+     * or the whole text is 1–2 distinct words repeated ("la la la",
+     * "na na na") — Whisper's classic music hallucination. A real
+     * sentence with several different words never matches.
+     */
+    private fun isMusicOnly(text: String): Boolean {
+        val lower = text.trim().lowercase()
+        if (lower.isEmpty()) return true
+        if (lower.contains("[music]") || lower.contains("[nhạc]") ||
+            lower.contains("[âm nhạc]")
+        ) return true
+        val words = lower
+            .replace(Regex("[\\p{Punct}…。！？.,!?\\s]+"), " ")
+            .trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        return words.size >= 3 && words.distinct().size <= 2
     }
 
     /** Translate via Groq chat first, then Gemini text models. */

@@ -33,6 +33,8 @@ object Prefs {
         "Âm lượng báo thức (to hơn, không vọng)" to "alarm"
     )
     const val KEY_VAD_THRESHOLD = "vad_threshold"
+    /** v1.0.8 — spectral gate toggle (default ON). */
+    const val KEY_SPECTRAL_GATE = "spectral_gate"
     const val KEY_SHARE_TIP_SHOWN = "share_tip_shown"
 
     /** Display name to Gemini Live voice name. */
@@ -150,10 +152,19 @@ object Prefs {
      * was sent to Live and translated. Higher = less sensitive, less
      * noise; lower = catches quiet speech but also noise. Range 250–1200.
      */
+    /** v1.0.5 — VAD energy threshold (default 600, ALDA's value).
+     * v1.0.8 — range narrowed to 250–900 (1000–1200 always choked
+     * speech: quiet syllables fell below it, see VadDetector);
+     * this is the START threshold, the hysteresis END threshold
+     * (40%) is derived inside the VAD. */
     fun vadThreshold(context: Context): Int {
         val t = prefs(context).getInt(KEY_VAD_THRESHOLD, 600)
-        return t.coerceIn(250, 1200)
+        return t.coerceIn(250, 900)
     }
+
+    /** v1.0.8 — spectral gate on/off (Settings, default ON). */
+    fun spectralGateEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SPECTRAL_GATE, true)
 
     /** True once the "pick whole screen, not a single app" tip was shown. */
     fun shareTipShown(context: Context): Boolean =

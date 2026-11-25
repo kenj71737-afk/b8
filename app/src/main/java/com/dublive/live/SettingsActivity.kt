@@ -49,6 +49,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var dubOutputSpinner: Spinner
     private lateinit var vadThresholdSeek: SeekBar
     private lateinit var vadThresholdLabel: TextView
+    /** v1.0.8 — spectral gate toggle (default ON). */
+    private lateinit var spectralGateCheck: CheckBox
     private lateinit var testKeyResult: TextView
 
     private val http = OkHttpClient.Builder()
@@ -76,6 +78,7 @@ class SettingsActivity : AppCompatActivity() {
         dubOutputSpinner = findViewById(R.id.dubOutputSpinner)
         vadThresholdSeek = findViewById(R.id.vadThresholdSeek)
         vadThresholdLabel = findViewById(R.id.vadThresholdLabel)
+        spectralGateCheck = findViewById(R.id.spectralGateCheck)
         testKeyResult = findViewById(R.id.testKeyResult)
 
         val prefs = Prefs.prefs(this)
@@ -178,7 +181,13 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seek: SeekBar?) {}
         })
 
-        vadThresholdSeek.progress = (Prefs.vadThreshold(this) - 250).coerceIn(0, 950)
+        // v1.0.5: progress 0..950 maps to threshold 250..1200.
+        // v1.0.8: range narrowed to 250..900 (progress 0..650) —
+        // 1000–1200 always choked speech (quiet syllables fell below
+        // it and the VAD cut sentences mid-way, the 20:37 report).
+        // The watchdog re-reads the saved value every 10 s, so this
+        // takes effect mid-session without restarting the dub.
+        vadThresholdSeek.progress = (Prefs.vadThreshold(this) - 250).coerceIn(0, 650)
         vadThresholdLabel.text = "${Prefs.vadThreshold(this)}"
         vadThresholdSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -188,6 +197,11 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seek: SeekBar?) {}
             override fun onStopTrackingTouch(seek: SeekBar?) {}
         })
+
+        // v1.0.8 — spectral gate toggle (default ON): filter background
+        // music by spectrum at utterance start. Saved below; the
+        // watchdog picks it up live, like the threshold.
+        spectralGateCheck.isChecked = Prefs.spectralGateEnabled(this)
 
         findViewById<Button>(R.id.testKeyButton).setOnClickListener { testKey() }
         findViewById<Button>(R.id.saveButton).setOnClickListener { save() }
@@ -209,7 +223,8 @@ class SettingsActivity : AppCompatActivity() {
             .putInt(Prefs.KEY_BASE_DELAY_SEC, baseDelaySeek.progress + 3)
             .putInt(Prefs.KEY_ORIGINAL_VOLUME, originalVolumeSeek.progress.coerceIn(0, 100))
             .putInt(Prefs.KEY_DUB_VOLUME, dubVolumeSeek.progress.coerceIn(0, 100))
-            .putInt(Prefs.KEY_VAD_THRESHOLD, (vadThresholdSeek.progress + 250).coerceIn(250, 1200))
+            .putInt(Prefs.KEY_VAD_THRESHOLD, (vadThresholdSeek.progress + 250).coerceIn(250, 900))
+            .putBoolean(Prefs.KEY_SPECTRAL_GATE, spectralGateCheck.isChecked)
             .apply()
         Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
         finish()

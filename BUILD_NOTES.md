@@ -1,3 +1,126 @@
+# DubLive v1.0.7 — TRỄ HÌNH TỰ ĐỔI THEO TỪNG CÂU + GIỌNG DỊCH TO HƠN
+
+Build xong 25/11/2026 20:27 VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.7.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.7.apk`)
+- Kích thước: 9.1 MB. MD5: 2b12823fb71d6e856431f8a6b8aa141a.
+- aapt2: package `com.dublive.live`, versionCode 8, versionName 1.0.7,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **45623109794** (completed/success, đậu ngay lần
+  đầu), commit cuối `4af5126cc62995df4bb2cd8725081c7b2b863e08` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15027665648, bản Debug).
+- 2 commit trong bản này (cùng version 1.0.7): `dac726ca` (ghép cặp FIFO +
+  nút ±1s, run 45622288780 success) và `4af5126c` (giọng to hơn:
+  LoudnessEnhancer + chế độ báo thức, run 45623109794 success — đây là
+  commit giao). Lần build nào cũng đậu ngay lần đầu, không dùng tới giới
+  hạn 3 lần thử lại.
+
+## Bối cảnh
+
+User thử v1.0.6 báo 20:12 "Độ trễ hình đứng nguyên từ lúc vào. Không thấy
+đổi để khớp với giọng dịch" và 20:19 "Dùng âm lượng của cuộc gọi điện thoại
+nên nhỏ tiếng quá". Cả 2 đều là lỗi thật, khác nhau, sửa hết trong v1.0.7.
+
+## 1. Trễ hình đóng băng — đo đúng 1 mẫu rồi đứng yên cả phiên
+
+- Nguyên nhân: `DubDelayTracker` v1.0.5/v1.0.6 chỉ lấy ĐÚNG 1 mẫu mỗi lượt
+  nói (cờ `dubSpokeThisTurn`, chỉ reset khi VAD thấy 700 ms im lặng).
+  Thoại Quảng Đông nói liên tục không có khoảng lặng 700 ms nên thực tế
+  chỉ có MỘT lượt nói kéo dài nhiều phút → đúng 1 mẫu từ đầu phiên rồi
+  trễ đứng yên mãi. Đường forward delay vào JS (nhánh `TYPE_HUD`,
+  MainActivity dòng 170) đã có và đúng — tracker không sinh mẫu mới,
+  không phải đường forward hỏng. Bản v1.0.5 bỏ tick lấy mẫu định kỳ đã
+  chữa phình (19,4 s) nhưng làm trễ đóng băng luôn. Hai cực đối nhau:
+  v1.0.4 cộng mẫu `(now - utteranceStart)` mỗi 2 s → đo độ DÀI lượt nói,
+  phình tới trần; v1.0.5/1.0.6 một mẫu/lượt nói → đóng băng.
+- Sửa — GHÉP CẶP FIFO (`DubDelayTracker` viết lại):
+  - Service đẩy mốc bắt đầu lượt nói vào hàng đợi FIFO mỗi khi VAD
+    `onSpeechStart`, VÀ timer `segmentCutter` (2 s) ép cắt đoạn mỗi 4 s
+    khi đang nói liên tục — chỉ đẩy mốc cho tracker, KHÔNG gọi
+    `onSpeechEnd`, không cắt `utteranceBytes` của Groq, không gửi
+    `endTurn` (Live stream liên tục). Một đoạn thoại dài 3 phút thành
+    ~45 đoạn, không còn là 1 lượt nói.
+  - Mỗi khi một đoạn giọng dịch mới bắt đầu (chunk giọng tới sau ≥800 ms
+    im — theo dõi trong `DubbingService.onAudioChunk` và callback
+    `VoicePlayer` cho TTS), lấy mốc CŨ NHẤT chưa ghép trong hàng đợi,
+    mẫu = dubStart − burstStart. Mẫu hợp lệ trong [500 ms, 20000 ms]
+    thì EMA alpha 0.5 cập nhật trễ và broadcast `TYPE_HUD` (đường
+    forward JS giữ nguyên); mẫu ngoài khoảng thì XÓA SẠCH hàng đợi để
+    đồng bộ lại (một đoạn bị lọc/mất sẽ làm lệch cặp, phải resync chứ
+    không ghép sai tiếp). Bỏ hẳn `startUtterance` / `onDubSpeechStarted` /
+    `endUtterance` và cờ `dubSpokeThisTurn`; giữ kẹp [3 s, maxDelay].
+  - Các hàm tracker đều `@Synchronized` (mốc từ thread capture/VAD,
+    chunk giọng từ thread socket Live và listener TTS).
+- NÚT CHỈNH TAY (bắt buộc — user cần chỉnh bằng mắt ngay khi đang xem):
+  2 nút "Trễ −1s" / "Trễ +1s" trên màn hình chính cạnh HUD "Trễ hình"
+  (nằm trong `hudRow` nên khi vào fullscreen của trang web cả cụm chuyển
+  sang decorView cùng nhau) và 2 nút tương tự trong thanh toàn màn hình
+  của app (Phóng to). Bấm nút gửi intent `ACTION_ADJUST_DELAY` tới
+  service → `tracker.adjustManual(±1000 ms)` (kẹp [3 s, maxDelay]) và
+  forward ngay vào JS qua `TYPE_HUD`; mẫu tự động sau đó EMA tiếp từ
+  giá trị tay vừa đặt (không kéo ngược lại). Khi chưa lồng tiếng, bấm
+  nút chỉnh luôn seed "Trễ hình cơ bản" và áp vào canvas ngay.
+- Thanh trượt "Trễ hình cơ bản" 3–20 s (mặc định 5 s) trong Cài đặt
+  (`Prefs.KEY_BASE_DELAY_SEC`) làm seed ban đầu, thay cho 5238 ms cố
+  định trong tracker và 5000 ms hardcode trong `MainActivity`
+  (`onPageFinished` và lúc bắt đầu lồng tiếng đều đẩy seed này vào JS).
+
+## 2. Giọng dịch nhỏ vì chạy trên stream cuộc gọi
+
+- Nguyên nhân: giọng dịch phát qua `USAGE_VOICE_COMMUNICATION` (cố ý để
+  `AudioPlaybackCapture` chỉ bắt `USAGE_MEDIA` nên không thu lại giọng
+  dịch gây vọng), mà stream cuộc gọi trên nhiều máy — kể cả khi chỉ số
+  đã tối đa — vẫn nhỏ hơn hẳn stream media, và `AudioTrack.setVolume(1.0f)`
+  ở v1.0.6 đã là trần của gain thường.
+- Sửa (KHÔNG đổi `USAGE_VOICE_COMMUNICATION` mặc định):
+  - `LoudnessEnhancer` gắn vào AudioTrack của giọng dịch ngay khi tạo
+    track (`audioSessionId` của track): `setTargetGain(800)` (+8 dB),
+    nếu ném ngoại lệ thì thử 500 rồi 0, không bao giờ crash; release
+    trong `stop()`. TTS không lấy được audioSessionId công khai nên
+    không gắn (TTS chỉ là đường dự phòng). Đây là cách tăng to vượt trần
+    gain 1.0 mà vẫn giữ stream cuộc gọi.
+  - Lựa chọn mới trong Cài đặt — "Giọng dịch phát qua":
+    [Âm lượng cuộc gọi (mặc định, không vọng)] / [Âm lượng báo thức
+    (to hơn, không vọng)]. Khi chọn báo thức, `VoicePlayer` dùng
+    `USAGE_ALARM` cho cả AudioTrack lẫn TTS (stream báo thức to hơn
+    hẳn, và capture chỉ bắt `USAGE_MEDIA` + `USAGE_GAME` — đã kiểm tra
+    lại `buildPlaybackRecord` — nên giọng báo thức KHÔNG bị thu lại gây
+    vọng). Lưu vào `Prefs.KEY_DUB_OUTPUT`, áp dụng khi bắt đầu lồng
+    tiếng lần sau (ghi chú trong Cài đặt: "Đổi xong thì Dừng rồi Bắt đầu
+    lại"). Mặc định vẫn là cuộc gọi.
+  - Thanh trượt giọng dịch v1.0.6 vẫn chỉnh đúng stream đang dùng:
+    `applyCallVolume` giờ chọn `STREAM_ALARM` khi ở chế độ báo thức,
+    `STREAM_VOICE_CALL` khi ở chế độ cuộc gọi.
+
+## Checklist thử lại cho user
+
+1. Gỡ bản cũ, cài v1.0.7 (cài đè thì key còn nguyên).
+2. Xem 2–3 phút ở chế độ thường: số "Trễ hình" phải TỰ THAY ĐỔI theo
+   từng câu nói (không đứng yên như v1.0.6); hình với giọng khớp dần
+   sau vài câu.
+3. Bấm "Trễ +1s" thì hình chờ thêm 1 s ngay (giọng đi trước hình thì
+   bấm +1s), bấm "Trễ −1s" thì hình nhanh lên 1 s ngay; bấm vài lần
+   tới khi miệng và giọng khớp hẳn.
+4. Ở chế độ mặc định (cuộc gọi): kéo giọng dịch lên 100% — giọng phải
+   to rõ hơn hẳn bản 1.0.6 (nhờ LoudnessEnhancer +8 dB).
+5. Vào Cài đặt → "Giọng dịch phát qua" → chọn "Âm lượng báo thức",
+   Lưu, Dừng lồng tiếng hẳn rồi Bắt đầu lại: giọng phải to hơn nữa và
+   KHÔNG bị vọng (không có câu dịch lặp lại chính giọng Việt vừa đọc).
+   Muốn về lại thì chọn lại "Âm lượng cuộc gọi", Dừng/Bắt đầu lại.
+6. Báo lại: số trễ có tự đổi theo câu nói không, bấm ±1s có tác dụng
+   ngay không, giọng ở chế độ cuộc gọi đủ to chưa, chế độ báo thức có
+   to hơn và có bị vọng không.
+
+## Giới hạn
+
+- Chế độ báo thức chỉ đổi ở lần bắt đầu lồng tiếng sau (VoicePlayer
+  đọc lựa chọn khi tạo track); đang lồng tiếng mà đổi thì phải Dừng
+  rồi Bắt đầu lại — đã ghi chú trong Cài đặt.
+- Chưa kiểm chứng trên máy thật (iQOO Z9 Turbo / OriginOS 6 /
+  Android 16) — mới kiểm chứng ở mức biên dịch + đóng gói + đối chiếu
+  code đã đẩy + chuỗi mới có trong APK; đang chờ user chạy checklist trên.
+
 # DubLive v1.0.6 — TRỄ HÌNH KHỚP GIỌNG + XEM ĐƯỢC TOÀN MÀN HÌNH + ÂM LƯỢNG TO
 
 Build xong 25/11/2026 20:05 VN. APK Debug, cài được.

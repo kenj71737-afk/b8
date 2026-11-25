@@ -157,6 +157,16 @@ class DubbingService : Service() {
     private var ducked = false
     /** v1.0.5 — VAD RMS threshold for this session (Prefs, default 600). */
     private var vadThreshold = 600.0
+    /** v1.0.8 — hysteresis END threshold = 40% of [vadThreshold].
+     * The VAD send-gate in onSpeechChunk uses this, not the start
+     * threshold, so syllable dips inside a sentence still go to Live. */
+    private var vadEndThreshold = 240.0
+    /** v1.0.8 — slice FIFO accumulators (see DubDelayTracker).
+     * speechSliceSamples counts 16 kHz samples inside the current
+     * utterance (8000 = 500 ms); dubSliceAccumMs counts Live dub
+     * audio already played (24 kHz 16-bit mono, bytes/48 = ms). */
+    private var speechSliceSamples = 0
+    private var dubSliceAccumMs = 0L
     /** v1.0.5 — subtitle auto-hide generation: bumped on every new
      * subtitle so a stale 6 s timer cannot hide a newer one. */
     private var subtitleGen = 0
@@ -263,17 +273,18 @@ class DubbingService : Service() {
     }
 
     /**
-     * v1.0.7 — segment cutter (FIFO pairing, second half). Cantonese
-     * dialogue runs on for minutes without a 700 ms silence, so the VAD
-     * fires onSpeechStart once and never ends the utterance — one burst
-     * marker for a whole scene would freeze the delay after the first
-     * sample (the 20:12 report). Every 2 s this checks whether speech
-     * has been running for >= 4 s since the current segment started; if
-     * so it pushes a FRESH burst marker into the tracker queue — only a
-     * marker, never an onSpeechEnd: utteranceBytes (Groq) and the Live
-     * stream are NOT cut, the model keeps translating continuously.
-     * Runs on the main handler; VAD callbacks run on the capture
-     * thread, so the two shared fields are @Volatile.
+     * v1.0.7 — segment cutter. Cantonese dialogue runs on for minutes
+     * without a 700 ms silence, so the VAD fires onSpeechStart once and
+     * never ends the utterance. v1.0.7 pushed a fresh burst marker here
+     * every 4 s; v1.0.8 instead uses the same 4 s rhythm as a
+     * SENTENCE BOUNDARY for the tracker: it flushes the median of the
+     * slice samples collected so far and updates the delay once per
+     * ~4 s slice of continuous speech, so the HUD keeps moving even
+     * when the speaker never pauses. Only a boundary marker, never an
+     * onSpeechEnd: utteranceBytes (Groq) and the Live stream are NOT
+     * cut, the model keeps translating continuously. Runs on the main
+     * handler; VAD callbacks run on the capture thread, so the two
+     * shared fields are @Volatile.
      */
     @Volatile private var inSpeech = false
     @Volatile private var currentSegmentStartMs = 0L
@@ -285,7 +296,7 @@ class DubbingService : Service() {
                     val now = System.currentTimeMillis()
                     if (now - currentSegmentStartMs >= 4000L) {
                         currentSegmentStartMs = now
-                        tracker?.noteBurstStart(now)
+                        tracker?.noteSentenceBoundary()
                     }
                 }
             } catch (e: Exception) {
@@ -299,6 +310,22 @@ class DubbingService : Service() {
         override fun run() {
             if (!capturing) return
             val now = System.currentTimeMillis()
+            // v1.0.8 — live-update VAD thresholds: the user may drag the
+            // "Độ nhạy nghe tiếng" slider or toggle the spectral gate in
+            // Settings mid-session; re-read every 10 s and push new
+            // values into the running VAD, so no restart is needed.
+            // (Prefs.vadThreshold already clamps to 250–900.)
+            try {
+                val t = Prefs.vadThreshold(this@DubbingService).toDouble()
+                if (t != vadThreshold) {
+                    vadThreshold = t
+                    vadEndThreshold = t * 0.4
+                    vad?.updateThreshold(t)
+                }
+                vad?.updateSpectralGate(Prefs.spectralGateEnabled(this@DubbingService))
+            } catch (e: Exception) {
+                Log.w(TAG, "VAD threshold refresh failed", e)
+            }
             if (!useGroqOnly) {
                 if (lastOutputAtMs > 0 && now - lastOutputAtMs > SILENCE_LIMIT_MS) {
                     if (reconnects < MAX_RECONNECTS) {
@@ -444,14 +471,21 @@ class DubbingService : Service() {
             return
         }
         try {
-            voicePlayer = VoicePlayer(this) {
-                // v1.0.7 — FIFO pairing: every time the dubbed voice
-                // actually starts (first AudioTrack chunk taken, or TTS
-                // onStart) the tracker pairs it with the oldest burst
-                // marker. The >= 800 ms gap gate inside noteDubChunk
-                // makes duplicate calls for the same segment harmless.
-                tracker?.noteDubChunk()
-            }.also {
+            voicePlayer = VoicePlayer(
+                this,
+                // v1.0.8 — slice FIFO: the first Live audio chunk of a
+                // dubbed turn pairs with the oldest speech slice (one
+                // prompt sample at dub start); onDubSlice below does
+                // the steady 500 ms pairing.
+                onSpeechStarted = {
+                    try { tracker?.noteDubSegmentStart() } catch (_: Exception) { }
+                },
+                // v1.0.8 — TTS read (Groq path): one sample per read,
+                // and the leftover slices of this sentence are dropped.
+                onTtsStarted = {
+                    try { tracker?.noteTtsSegmentStart() } catch (_: Exception) { }
+                }
+            ).also {
                 it.start()
                 // v1.0.6 — track/TTS at max (1.0f); the Settings slider
                 // now drives the SYSTEM call-stream volume, which is
@@ -499,7 +533,12 @@ class DubbingService : Service() {
         ducked = false
         subtitleGen = 0
         // v1.0.5 — VAD threshold for this session (Settings, default 600).
+        // v1.0.8 — hysteresis: the low (end) threshold is 40% of the
+        // start threshold; the watchdog re-reads both every 10 s.
         vadThreshold = try { Prefs.vadThreshold(this).toDouble() } catch (_: Exception) { 600.0 }
+        vadEndThreshold = vadThreshold * 0.4
+        speechSliceSamples = 0
+        dubSliceAccumMs = 0L
         rotateAtMs = System.currentTimeMillis() + KEY_ROTATE_MS
         lastOutputAtMs = 0L
         startedAtMs = System.currentTimeMillis()
@@ -629,6 +668,9 @@ class DubbingService : Service() {
                         comboFailures.remove(comboKey())
                         Log.i(TAG, "Gemini Live connected (key ${keyIndex % keys.size + 1}, model=$model)")
                         setStatus("Đã nối, đang nghe…")
+                        // v1.0.8 — fresh delay pairing after (re)connect:
+                        // slices pushed while disconnected are stale.
+                        try { tracker?.clearSlices() } catch (_: Exception) { }
                         flushPendingAudio()
                     }
 
@@ -636,13 +678,21 @@ class DubbingService : Service() {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
-                        // v1.0.7 — FIFO pairing: every Live audio chunk
-                        // is a dub-chunk candidate; the tracker pairs
-                        // only chunks arriving >= 800 ms after the
-                        // previous dub audio (a new dubbed segment) with
-                        // the oldest burst marker.
-                        try { tracker?.noteDubChunk() } catch (e: Exception) {
-                            Log.w(TAG, "noteDubChunk failed", e)
+                        // v1.0.8 — slice FIFO (replaces the v1.0.7
+                        // noteDubChunk silence gate): Live audio is
+                        // 24 kHz 16-bit mono (48 000 bytes/s), so
+                        // ms = bytes/48. Every 500 ms of dubbed audio
+                        // pairs with the oldest speech slice; the
+                        // tracker collects the sample and applies the
+                        // median at the next sentence boundary.
+                        try {
+                            dubSliceAccumMs += pcm24k.size / 48
+                            while (dubSliceAccumMs >= 500L) {
+                                dubSliceAccumMs -= 500L
+                                tracker?.onDubSlice()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "onDubSlice failed", e)
                         }
                         try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
                             Log.w(TAG, "playAudio failed", e)
@@ -1041,15 +1091,20 @@ class DubbingService : Service() {
             vad = VadDetector(
                 // v1.0.5 — threshold from Settings (default 600, ALDA's
                 // value) instead of the hard-coded 250.
-                energyThreshold = vadThreshold,
+                // v1.0.8 — this is the START threshold; the VAD derives
+                // the hysteresis END threshold (40%) itself.
+                startThreshold = vadThreshold,
                 listener = object : VadDetector.Listener {
                 override fun onSpeechStart(preRollAndHead: ShortArray) {
-                    // v1.0.7 — FIFO pairing: push a burst marker for
-                    // this speech start; the segment cutter adds one
-                    // more every 4 s if speech keeps running.
+                    // v1.0.8 — slice FIFO + per-sentence median: a new
+                    // sentence starts, so first close the previous one
+                    // (flush its slice samples into the delay), then
+                    // push a slice marker for this sentence's start.
                     inSpeech = true
                     currentSegmentStartMs = System.currentTimeMillis()
-                    try { tracker?.noteBurstStart(currentSegmentStartMs) } catch (e: Exception) { }
+                    speechSliceSamples = 0
+                    try { tracker?.noteSentenceBoundary() } catch (e: Exception) { }
+                    try { tracker?.pushSpeechSlice(currentSegmentStartMs) } catch (e: Exception) { }
                     try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
                     utteranceBytes.reset()
                     val bytes = shortsToBytes(preRollAndHead)
@@ -1071,16 +1126,27 @@ class DubbingService : Service() {
                 override fun onSpeechChunk(samples: ShortArray) {
                     val bytes = shortsToBytes(samples)
                     utteranceBytes.write(bytes)
+                    // v1.0.8 — slice FIFO: every 500 ms of in-speech
+                    // audio pushes a slice marker (20 ms frames =
+                    // 320 samples each, so 8000 samples = 500 ms).
+                    speechSliceSamples += samples.size
+                    while (speechSliceSamples >= 8000) {
+                        speechSliceSamples -= 8000
+                        try { tracker?.pushSpeechSlice() } catch (_: Exception) { }
+                    }
                     if (liveConnected) {
-                        // v1.0.5 — second noise gate: inside an utterance
-                        // the VAD also forwards quiet frames (music/noise
-                        // between words) until 700 ms of silence ends it.
-                        // A chunk below the VAD threshold is noise, not
-                        // speech: do NOT send it to Live, or the model
-                        // invents words for it. (It still goes into
-                        // utteranceBytes for the Groq path — Whisper
+                        // v1.0.8 — hysteresis send gate: inside an
+                        // utterance the VAD forwards frames down to the
+                        // LOW end threshold (40% of the start threshold).
+                        // A chunk below the START threshold but above the
+                        // END threshold is still speech (a quiet syllable),
+                        // NOT noise: it must go to Live, or the model
+                        // hears a stream full of holes and the dub
+                        // stutters (the 20:37 report). Only chunks below
+                        // the END threshold are withheld. (They still go
+                        // into utteranceBytes for the Groq path — Whisper
                         // tolerates noise far better than Live does.)
-                        if (rmsOf(samples) >= vadThreshold) {
+                        if (rmsOf(samples) >= vadEndThreshold) {
                             try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
                                 Log.w(TAG, "sendAudio failed", e)
                             }
@@ -1091,12 +1157,14 @@ class DubbingService : Service() {
                 }
 
                 override fun onSpeechEnd() {
-                    // v1.0.7 — only the segment-cutter state ends here.
-                    // utteranceBytes (Groq) and the Live stream are NOT
-                    // cut by the 4 s forced markers, and the tracker has
-                    // no endUtterance any more: the next onSpeechStart
-                    // pushes the next burst marker.
+                    // v1.0.8 — this sentence ended: flush the median of
+                    // its slice samples into the delay (once per
+                    // sentence). utteranceBytes (Groq) and the Live
+                    // stream are NOT cut by the 4 s forced markers, and
+                    // the next onSpeechStart pushes the next slice.
                     inSpeech = false
+                    speechSliceSamples = 0
+                    try { tracker?.noteSentenceBoundary() } catch (e: Exception) { }
                     setStatus(if (useGroqOnly) "Đang dịch bằng Groq…" else "Đang dịch…")
                     if (liveConnected) {
                         try { liveClient?.endTurn() } catch (e: Exception) {

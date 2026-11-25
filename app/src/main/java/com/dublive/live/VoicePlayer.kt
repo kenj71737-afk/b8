@@ -24,10 +24,16 @@ import kotlin.math.roundToInt
  *    re-captured (that echo loop made the old app hear its own voice).
  *  - TextToSpeech fallback (Vietnamese) when the model returns text only.
  *    Reading speeds up to catch up: lag > 2 s -> 1.2x, lag > 4 s -> 1.35x.
+ *
+ * v1.0.8 — two separate start callbacks, because the delay tracker
+ * pairs them differently: the first Live chunk of a turn
+ * ([onSpeechStarted], once per turn via the flag) and a TTS read
+ * starting ([onTtsStarted], once per utterance).
  */
 class VoicePlayer(
     context: Context,
-    private val onSpeechStarted: () -> Unit
+    private val onSpeechStarted: () -> Unit,
+    private val onTtsStarted: () -> Unit = {}
 ) {
     companion object {
         private const val TAG = "DubLive-Voice"
@@ -130,10 +136,11 @@ class VoicePlayer(
                         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                             override fun onStart(utteranceId: String?) {
                                 lastDubAudioAtMs = System.currentTimeMillis()
-                                if (!speechStartedSignalled) {
-                                    speechStartedSignalled = true
-                                    try { onSpeechStarted() } catch (_: Exception) { }
-                                }
+                                // v1.0.8 — a TTS read started: its own
+                                // callback (one sample per read for the
+                                // tracker). No flag guard: onStart fires
+                                // once per utterance.
+                                try { onTtsStarted() } catch (_: Exception) { }
                             }
 
                             override fun onDone(utteranceId: String?) {}

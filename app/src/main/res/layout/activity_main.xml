@@ -123,6 +123,9 @@
         android:paddingLeft="8dp"
         android:paddingRight="8dp"
         android:paddingBottom="4dp">
+
+        <Button
+            android:id="@+id/liveErrorsButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="@string/view_live_errors" />

@@ -17,6 +17,7 @@
     <string name="settings_source_lang">Ngôn ngữ nguồn</string>
     <string name="settings_whole_sentence">Dịch nguyên câu hoàn chỉnh (chờ hết câu)</string>
     <string name="settings_voice">Giọng đọc tiếng Việt</string>
+    <string name="settings_voice_note">Model dịch trực tiếp giữ giọng gốc của nhân vật; chọn giọng ở đây chỉ có tác dụng ở chế độ dự phòng Groq/TTS.</string>
     <string name="settings_max_delay">Trễ hình tối đa (giây)</string>
     <string name="settings_test_key">Kiểm tra key Gemini</string>
     <string name="settings_save">Lưu cài đặt</string>

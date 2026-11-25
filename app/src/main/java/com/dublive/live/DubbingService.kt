@@ -177,12 +177,11 @@ class DubbingService : Service() {
                     // v1.0.2: the old watchdog only ran after output had
                     // started (lastOutputAtMs > 0), so a session that NEVER
                     // connected — dead model, bad key — sat silent forever.
-                    // Retry with the other model/key; after MAX_RECONNECTS
-                    // fall back to Groq instead of staying silent.
-                    if (reconnects < MAX_RECONNECTS) {
+                    // v1.0.3: advance through the (model, key) order; when
+                    // every combination is exhausted, fall back to Groq.
+                    if (reconnects < MAX_RECONNECTS && advanceAttempt()) {
                         reconnects++
-                        Log.w(TAG, "Live never connected/output in 25s, retrying ($reconnects/$MAX_RECONNECTS)")
-                        advanceModelOrKey()
+                        Log.w(TAG, "Live never connected/output in 25s, retrying ($reconnects/$MAX_RECONNECTS) with ${GeminiLiveClient.shortModelName(currentLiveModel())} key ${keyIndex + 1}")
                         reconnectLive()
                     } else {
                         Log.w(TAG, "Live never produced output, Groq fallback")
@@ -503,40 +502,53 @@ class DubbingService : Service() {
     }
 
     /**
-     * v1.0.2: ANY Live error now triggers a recovery instead of one Toast
-     * and silence. Order: (1) if the error smells like a dead model
-     * (1008 / 404 / "not found") and the fallback model has not been
-     * tried yet, retry with the fallback model; (2) otherwise rotate to
-     * the other key (if any) and reconnect; (3) after MAX_RECONNECTS
-     * total retries, switch to Groq — even without a Groq key the user
-     * gets a clear persistent error instead of silence.
+     * v1.0.3: ANY Live error advances to the NEXT (model, key) combination
+     * in a fixed order — translate-preview key 1 -> key 2 -> native-audio
+     * key 1 -> key 2 -> native-audio-preview key 1 -> key 2 — and every
+     * failure names the model that failed in the persistent status line.
+     * A dead model and a dead key look the same from here, so the order
+     * tries the other key on the same model first (a key error is the
+     * common case for a model that is known to work). After the last
+     * combination, switch to Groq instead of looping forever.
      */
     private fun handleLiveError(message: String) {
         if (!capturing || useGroqOnly || reconnectPending) return
         reconnectPending = true
-        setStatus("Lỗi Live: ${shortError(message)}")
-        val modelDead = message.contains("1008") ||
-            message.contains("404") ||
-            message.contains("not found", ignoreCase = true) ||
-            message.contains("NOT_FOUND", ignoreCase = true)
-        if (modelDead && modelIndex == 0) {
-            Log.w(TAG, "Model $message looks dead, trying fallback model")
-            modelIndex = 1
+        val failedModel = GeminiLiveClient.shortModelName(currentLiveModel())
+        setStatus("Lỗi Live [$failedModel]: ${shortError(message)}")
+        Log.w(TAG, "Live error on $failedModel: $message")
+        if (reconnects < MAX_RECONNECTS && advanceAttempt()) {
             reconnects++
-            scheduleReconnect(500L)
-            return
-        }
-        if (reconnects < MAX_RECONNECTS) {
-            reconnects++
-            // Rotate key as well as model: a dead key and a dead model
-            // look the same from here, so try the other combination.
-            val keys = Prefs.geminiKeys(this)
-            if (keys.size > 1) keyIndex = (keyIndex + 1) % keys.size
-            Log.w(TAG, "Live error, reconnecting ($reconnects/$MAX_RECONNECTS): $message")
+            val nextModel = GeminiLiveClient.shortModelName(currentLiveModel())
+            Log.w(TAG, "Live error, retrying ($reconnects/$MAX_RECONNECTS) with $nextModel key ${keyIndex + 1}")
             scheduleReconnect(1000L)
         } else {
             reconnectPending = false
             switchToGroq("Gemini Live lỗi ($message), chuyển sang dự phòng Groq")
+        }
+    }
+
+    /** Model the current connection attempt uses. */
+    private fun currentLiveModel(): String =
+        GeminiLiveClient.LIVE_MODELS[modelIndex % GeminiLiveClient.LIVE_MODELS.size]
+
+    /**
+     * Move to the next (model, key) combination in the fixed attempt
+     * order: same model with the next key first, then the next model
+     * with the first key. Returns false when every combination has
+     * already been tried.
+     */
+    private fun advanceAttempt(): Boolean {
+        val keyCount = Prefs.geminiKeys(this).size.coerceAtLeast(1)
+        return if (keyIndex + 1 < keyCount) {
+            keyIndex++
+            true
+        } else if (modelIndex + 1 < GeminiLiveClient.LIVE_MODELS.size) {
+            keyIndex = 0
+            modelIndex++
+            true
+        } else {
+            false
         }
     }
 
@@ -545,19 +557,6 @@ class DubbingService : Service() {
             reconnectPending = false
             if (capturing && !useGroqOnly && !stopped) reconnectLive()
         }, delayMs)
-    }
-
-    /** Try the next model/key combination (used by the watchdog). */
-    private fun advanceModelOrKey() {
-        val keys = Prefs.geminiKeys(this)
-        if (modelIndex == 0) {
-            modelIndex = 1
-        } else if (keys.size > 1) {
-            modelIndex = 0
-            keyIndex = (keyIndex + 1) % keys.size
-        } else {
-            modelIndex = 0
-        }
     }
 
     private fun shortError(message: String): String {

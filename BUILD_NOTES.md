@@ -1,3 +1,201 @@
+# DubLive v1.0.3 — SỬA "GEMINI LIVE LỖI": SAI GIAO THỨC LIVE (DÙNG ĐÚNG BẢN ALDA)
+
+Build xong 25/11/2026 ~18:4x VN. APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.3.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.3.apk`)
+- Kích thước: ~9,1 MB. MD5: (ghi sau khi tải artifact).
+- aapt2: package `com.dublive.live`, versionCode 4, versionName 1.0.3,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: (ghi sau khi build xong), commit (ghi sau khi đẩy)
+  trên nhánh `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (bản Debug; bản Release unsigned trong cùng artifact
+  thì không cài được nên không giao).
+
+## Chẩn đoán user xác nhận trên v1.0.2 (25/11 18:40, ảnh chụp màn hình)
+
+- Trạng thái "Đang nghe câu nói…", Mức tiếng 77, Trễ hình 5,6 s, video
+  NetShort "hồng diện sát" đang phát 00:02/03:30, Toast "Gemini Live lỗi
+  và chưa có key Groq dự phòng".
+- User nhắn thêm: "Chưa nhập key grod" (chưa nhập key Groq).
+- Kết luận: thu tiếng + VAD + trễ hình đều tốt, chỉ có Gemini Live lỗi.
+  Groq fallback không có vì chưa có key Groq — v1.0.3 PHẢI chạy được
+  bằng Live translate-preview, không trông chờ vào Groq.
+
+## 3 điểm sai giao thức đã sửa (đối chiếu ALDA FIX43 + script web v1.9.1)
+
+ALDA FIX43 (`ALADWebSocketManager.kt`) và script web v1.9.1 chạy được
+bằng đúng key của user; DubLive v1.0.2 gọi sai cả 3 điểm so với bản đó:
+
+1. **Model sai:** v1.0.2 dùng `gemini-2.5-flash-native-audio-latest`
+   (chưa từng kiểm chứng với key này) → đổi model chính thành
+   `gemini-3.5-live-translate-preview` (speech-to-speech, dịch trực tiếp).
+   2 model native-audio giữ lại làm dự phòng CUỐI CÙNG, mỗi model có
+   setup riêng của nó.
+2. **Setup sai:** v1.0.2 gửi key snake_case (`generation_config`,
+   `system_instruction`, ...) mà server lặng lẽ bỏ qua, gửi kèm
+   `speech_config`/`voice_config` (model translate-preview từ chối setup
+   có voiceConfig — ALDA FIX17) và KHÔNG có `translationConfig`.
+   Sửa: key camelCase đúng như ALDA (`generationConfig`,
+   `systemInstruction`, `inputAudioTranscription`,
+   `outputAudioTranscription`); translate-preview gửi
+   `translationConfig {targetLanguageCode: "vi", echoTargetLanguage: true}`
+   + `sessionResumption {handle: null}` và KHÔNG gửi voice config;
+   model native-audio gửi `speechConfig` + voice đã chọn và KHÔNG gửi
+   translationConfig. Lời dặn hệ thống cho translate-preview lấy theo
+   mẫu ALDA (phiên dịch đồng thời, chỉ dịch câu có nghĩa, tiếng kêu/
+   nhạc/ồn thì im hẳn không bịa, giữ đúng thời lượng câu gốc, phong
+   cách lồng tiếng TVB tiếng Việt).
+3. **Gửi audio sai:** v1.0.2 gửi `realtime_input.media_chunks` →
+   đổi sang `realtimeInput.audio {mimeType: "audio/pcm;rate=16000",
+   data: base64}` đúng mẫu ALDA/script web. Bỏ gửi `audio_stream_end`
+   sau mỗi câu (`endTurn()` giờ là no-op, ALDA stream liên tục, model
+   tự ngắt câu).
+
+## Thứ tự thử lại + kiểm tra key (v1.0.3)
+
+- Thứ tự thử cố định: translate-preview key 1 → key 2 →
+  native-audio-latest key 1 → key 2 → native-audio-preview key 1 → key 2.
+  Mỗi lần thử lỗi đều ghi rõ model nào lỗi vào dòng Trạng thái
+  (vd "Lỗi Live [3.5-translate]: …"). Hết mọi tổ hợp mới chuyển Groq.
+- Nút "Kiểm tra key" thử cả 3 model theo đúng thứ tự trên, báo
+  "Live nối được (model gemini-3.5-live-translate-preview)" khi
+  translate-preview nối được; nếu cả 3 đều lỗi mới dùng models-list
+  để phân biệt key hỏng với model chết.
+- Settings ghi rõ: model dịch trực tiếp giữ giọng gốc của nhân vật;
+  ô chọn giọng chỉ có tác dụng ở chế độ dự phòng Groq/TTS.
+- Giữ nguyên toàn bộ sửa v1.0.2: đệm audio 10 s, watchdog chạy cả khi
+  chưa có output, mọi lỗi đều retry/fallback + hiện trạng thái lâu,
+  VAD 250, tiếng gốc 50%, dòng Trạng thái + thanh mức tiếng.
+
+## Checklist thử lại cho user (v1.0.3)
+
+1. Gỡ v1.0.2, cài v1.0.3.
+2. Cài đặt → bấm "Kiểm tra key Gemini" — phải báo "Live nối được
+   (model gemini-3.5-live-translate-preview)". Nếu báo lỗi khác thì
+   chụp lại dòng đó.
+3. Mở video (vd NetShort), bấm Play cho chạy có tiếng.
+4. Bấm "Bắt đầu lồng tiếng" (hoặc "Lồng tiếng bằng mic") → cấp quyền
+   Micro → chọn "Chia sẻ toàn bộ màn hình".
+5. Trạng thái phải chạy "Đang nối…" → "Đã nối, đang nghe…" → "Đang nghe
+   câu nói…" → "Đang dịch…" rồi phụ đề + giọng Việt. Mức tiếng phải
+   nhảy > 0 khi video phát tiếng.
+6. Báo lại: (a) Kiểm tra key báo gì, (b) trạng thái dừng ở đâu (nếu lỗi
+   thì chụp dòng trạng thái — trong đó có tên model lỗi), (c) có phụ đề/
+   giọng Việt không.
+
+---
+
+# DubLive v1.0.2 — SỬA IM LẶNG HOÀN TOÀN: MODEL LIVE ĐÃ CHẾT (1008)
+
+Build xong 25/11/2026 ~18:19 VN (giờ UTC 11:19). APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.2.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.2.apk`)
+- Kích thước: 9.448.138 byte (~9,1 MB). MD5: 7ae2f07227da0b3d9d4df47eebd9e963.
+- aapt2: package `com.dublive.live`, versionCode 3, versionName 1.0.2,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **45602896371** (completed/success, build đậu ngay
+  lần đầu, 0 lần build lỗi), commit `7f563b1404de9b50e3322ead1d6af3af65096bd9`
+  trên nhánh `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15015747590, bản Debug; bản Release unsigned trong
+  cùng artifact thì không cài được nên không giao).
+
+## Chẩn đoán user xác nhận (25/11 18:12)
+
+- Bấm CẢ 2 nút "Bắt đầu lồng tiếng" và "Lồng tiếng bằng mic" đều không có dịch.
+- Video CÓ tiếng, HUD có hiện trễ hình.
+- Bấm "Kiểm tra key" báo key còn dùng được.
+- Kết luận: cả 2 đường thu tiếng đều không ra bản dịch, video có tiếng, HUD
+  chạy, key text API còn tốt — đúng hướng model Live
+  `gemini-2.0-flash-live-001` đã chết (1008 / not found). Không phải do thu
+  tiếng hay do key. Vì vậy v1.0.2 tập trung sửa model + mọi đường im lặng.
+
+## Nguyên nhân gốc + đã sửa (đủ 7 mục brief)
+
+1. **Model Live đã chết** — `GeminiLiveClient` dùng `gemini-2.0-flash-live-001`
+   trên endpoint v1alpha: server trả 1008 / "not found" với key AI Studio
+   (xác nhận bằng tìm kiếm web 25/11/2026). Sửa: DEFAULT_MODEL =
+   `gemini-2.5-flash-native-audio-latest`, endpoint v1beta
+   (`.../v1beta.GenerativeService.BidiGenerateContent`), model dự phòng thứ 2
+   `gemini-2.5-flash-native-audio-preview-12-2025`: nếu setup model 1 bị từ
+   chối (1008/404/not found) thì tự thử model 2 trước khi báo lỗi.
+   `GroqFallback` dịch text đổi `gemini-2.0-flash` → `gemini-2.5-flash`.
+2. **Nút "Kiểm tra key" nói dối** — trước đây chỉ GET v1beta/models, key đúng
+   là qua dù model Live đã chết. Sửa: nút này giờ mở WebSocket Live thật
+   với model mới, chờ setupComplete trong 10s, báo "Live nối được (model …)"
+   hoặc báo rõ lỗi (HTTP / 1008 / model not found); nếu model 1 bị từ chối
+   thì thử model dự phòng 1 lần; chỉ khi socket không mở được mới dùng
+   models-list làm bước phụ để phân biệt key hỏng (401) với model chết.
+3. **Audio bị vứt khi chưa nối** — VAD chỉ gửi audio `if (liveConnected)`,
+   nên mọi câu nói trong lúc Live đang nối/đổi key đều mất. Sửa: đệm tối đa
+   ~10 giây audio (hàng đợi chunk, bỏ phần cũ nhất khi đầy) và gửi hết ngay
+   khi onConnected.
+4. **Watchdog không bao giờ chạy khi chưa có output** — điều kiện
+   `lastOutputAtMs > 0` nên phiên chưa từng dịch được thì im mãi. Sửa:
+   watchdog chạy cả khi chưa có output: sau 25s từ lần nối mà liveConnected
+   vẫn false hoặc chưa có output thì nối lại (đổi model/key), tối đa 5 lần,
+   hết 5 lần thì tự chuyển sang Groq fallback (kể cả chưa có key Groq thì
+   cũng broadcast lỗi rõ ràng, không im).
+5. **onError chỉ xử lý 401/403/quota** — mọi lỗi khác (1008, model not
+   found, WebSocket failure, EOF, 404) chỉ Toast một lần rồi im. Sửa: BẤT KỲ
+   lỗi Live nào cũng kích hoạt nối lại (đổi key/model, chống lặp bằng cờ
+   reconnectPending) rồi fallback, và ghi lỗi vào dòng Trạng thái hiển thị
+   lâu trên màn hình chính, không chỉ Toast.
+6. **Tiếng gốc 15% làm VAD điếc** — MainActivity giảm tiếng gốc xuống 15%
+   ngay khi bắt đầu, mà AudioPlaybackCapture thu tiếng SAU khi giảm âm lượng
+   nên RMS tụt dưới ngưỡng VAD 420 và VAD không bao giờ kích hoạt. Sửa:
+   mặc định tiếng gốc 50% (Prefs), hạ ngưỡng VAD 420 → 250, và chỉ giảm
+   tiếng gốc xuống mức user chọn SAU khi giọng dịch đầu tiên đã phát
+   (applyDuckOnce; cả 2 activity đều giữ tiếng gốc 100% lúc bắt đầu).
+7. **Không có cách nào biết app có nghe thấy tiếng không** — thêm chẩn đoán
+   trong app: (a) dòng Trạng thái trên màn hình chính, cập nhật liên tục qua
+   broadcast TYPE_STATUS ("Đang nối Gemini Live…", "Đã nối, đang nghe…",
+   "Đang nghe câu nói…", "Đang dịch…", "Lỗi Live: …", "Đang dùng dự phòng
+   Groq", "Không nghe thấy tiếng — kiểm tra video có phát tiếng không");
+   (b) thanh mức tiếng: service gửi RMS mỗi 500ms (TYPE_LEVEL 0–1000),
+   MainActivity hiện thanh + số RMS; (c) lỗi cuối cùng ở lại trên màn hình
+   (TextView), không chỉ Toast.
+8. (Thêm khi sửa) **Xử lý message server còn thiếu** — `handleServerMessage`
+   giờ đọc `error` trong message (gọi onError với code/message), đọc
+   `inputTranscription` (log + callback debug), không crash khi JSON thiếu
+   trường; `onFailure` kèm mã HTTP. Sửa luôn một lỗi suýt gây lỗi biên dịch:
+   lúc thay block field trong DubbingService đã làm mất khai báo
+   `utteranceBytes`/`pendingText`/`audioPlayedThisTurn` — đã thêm lại và
+   kiểm tra tĩnh toàn bộ 12 file .kt cân ngoặc, đủ R.id/R.string, XML hợp lệ.
+
+## Hướng dẫn user thử lại (đúng thứ tự)
+
+1. Gỡ v1.0.1 rồi cài `DubLive-v1.0.2.apk` (cài đè cũng được, gỡ sạch rồi cài
+   mới là chắc nhất).
+2. Mở app → Cài đặt → bấm **"Kiểm tra key Gemini"** — lần này phải báo
+   **"Live nối được (model gemini-2.5-flash-native-audio-latest)"**. Nếu báo
+   lỗi khác thì chụp lại dòng lỗi đó gửi mình (đó chính là lý do im lặng
+   trước đây). Bấm Lưu.
+3. Mở video (web phim / YouTube / file) → bấm Play cho video chạy có tiếng.
+4. Bấm "Bắt đầu lồng tiếng" (hoặc "Lồng tiếng bằng mic") → cấp quyền Micro
+   → chọn "Chia sẻ toàn bộ màn hình" như trước.
+5. Nhìn dòng **Trạng thái** và **thanh Mức tiếng** trên màn hình chính:
+   - Mức tiếng phải nhảy > 0 khi video đang phát tiếng. Nếu mức tiếng = 0
+     thì app chưa thu được tiếng video (video chưa phát tiếng / chọn sai
+     phạm vi chia sẻ).
+   - Trạng thái phải chạy: "Đang nối…" → "Đã nối, đang nghe…" → "Đang nghe
+     câu nói…" → "Đang dịch…" rồi phụ đề Việt hiện + giọng Việt đọc.
+   - Nếu Trạng thái dừng ở "Lỗi Live: …" thì chụp lại dòng đó gửi mình.
+6. Báo lại 3 việc: (a) Kiểm tra key Live báo gì, (b) mức tiếng có nhảy
+   không (số lớn nhất thấy được), (c) có phụ đề/giọng Việt không.
+
+## Giới hạn còn lại
+
+- Chưa chạy kiểm chứng trên máy thật (máy test đích: iQOO Z9 Turbo /
+  OriginOS 6 / Android 16 của user) — các sửa trên mới được kiểm chứng ở
+  mức biên dịch + đóng gói thành công.
+- Nếu cả 2 model Live đều bị Google đổi tên trong tương lai, app sẽ tự
+  chuyển sang Groq (cần key Groq trong Cài đặt) và báo rõ trên dòng
+  Trạng thái; khi đó sửa tên model trong `GeminiLiveClient.kt`
+  (`DEFAULT_MODEL` / `FALLBACK_MODEL`).
+- Chế độ mic nghe tiếng loa ngoài nên chất lượng phụ thuộc loa + tiếng ồn
+  xung quanh; tiếng gốc 50% mặc định vẫn chạy theo giờ thực.
+
+---
 # DubLive v1.0.1 — SỬA CRASH KHI CẤP QUYỀN GHI MÀN HÌNH (Android 16)
 
 Build xong 25/11/2026 ~18:03 VN (giờ UTC 11:03). APK Debug, cài được.

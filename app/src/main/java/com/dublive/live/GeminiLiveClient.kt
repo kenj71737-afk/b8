@@ -40,14 +40,37 @@ class GeminiLiveClient(
     companion object {
         private const val TAG = "DubLive-Gemini"
         /**
-         * v1.0.2: the old model "gemini-2.0-flash-live-001" on the v1alpha
-         * endpoint is DEAD — the server answers 1008 / "not found" for AI
-         * Studio keys (verified by web search 25/11/2026). The live model
-         * that works now is the native-audio 2.5 Flash model on v1beta.
+         * v1.0.3: the model that PROVABLY works with this user's key is
+         * "gemini-3.5-live-translate-preview" — the speech-to-speech
+         * translation model ALDA FIX43 and the web-dub script v1.9.1 use
+         * with the same key. v1.0.2's "gemini-2.5-flash-native-audio-latest"
+         * was never verified against this key: the user reported
+         * "Gemini live lỗi" with no translation at all, while the key test
+         * passed (it only proves the key can list models). The native-audio
+         * 2.5 models stay as LAST-RESORT fallbacks, each with its own
+         * (different) setup — they do not accept translationConfig, and the
+         * translate model does not accept a voice config at all.
+         *
+         * Attempt order (service): translate-preview key 1 -> key 2 ->
+         * native-audio-latest key 1 -> key 2 -> native-audio-preview
+         * key 1 -> key 2. Each failure names the model in the status line.
          */
-        const val DEFAULT_MODEL = "gemini-2.5-flash-native-audio-latest"
-        const val FALLBACK_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
-        val LIVE_MODELS = listOf(DEFAULT_MODEL, FALLBACK_MODEL)
+        const val TRANSLATE_MODEL = "gemini-3.5-live-translate-preview"
+        const val DEFAULT_MODEL = TRANSLATE_MODEL
+        const val NATIVE_MODEL = "gemini-2.5-flash-native-audio-latest"
+        const val NATIVE_FALLBACK_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+        val LIVE_MODELS = listOf(TRANSLATE_MODEL, NATIVE_MODEL, NATIVE_FALLBACK_MODEL)
+
+        /** True for the speech-to-speech translation model. */
+        fun isTranslateModel(model: String) = model == TRANSLATE_MODEL
+
+        /** Short label for status lines, e.g. "3.5-translate". */
+        fun shortModelName(model: String) = when (model) {
+            TRANSLATE_MODEL -> "3.5-translate"
+            NATIVE_MODEL -> "2.5-native"
+            NATIVE_FALLBACK_MODEL -> "2.5-native-preview"
+            else -> model
+        }
         private const val ENDPOINT =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     }
@@ -65,6 +88,7 @@ class GeminiLiveClient(
 
     fun connect(model: String = DEFAULT_MODEL) {
         currentModel = model
+        val isTranslate = isTranslateModel(model)
         val langHint = when (sourceLang) {
             "zh-CN" -> "Tiếng Trung giản thể"
             "yue" -> "tiếng Quảng Đông"
@@ -74,35 +98,81 @@ class GeminiLiveClient(
             else -> "ngôn ngữ gốc của video (tự nhận diện)"
         }
         val modeHint = if (wholeSentence) {
-            "Chờ nghe hết một câu hoàn chỉnh rồi mới dịch cả câu, dịch đúng ngữ cảnh hơn."
+            "Begin output only after the speaker finishes the sentence, then translate the WHOLE sentence at once — never translate a half-finished sentence or a lone fragment. A complete sentence carries the full meaning; a fragment loses it."
         } else {
-            "Dịch theo từng cụm ngắn ngay khi nghe rõ cụm đó, không chờ hết câu, để ra giọng nhanh nhất."
+            "Begin output as soon as each short meaningful phrase is understood; do not wait for the full sentence or paragraph. Keep phrases short, preserve meaning and speaker intent, avoid explanations and repetition, and maintain source order with minimal pauses."
         }
-        val instruction = "Bạn là phiên dịch viên lồng tiếng phim. Nghe $langHint trong video và " +
-            "nói lại bằng tiếng Việt tự nhiên, giọng lồng tiếng truyền hình ấm áp, rõ ràng, " +
-            "khớp đúng lúc nhân vật mở miệng và nói hết trong đúng thời lượng câu gốc. $modeHint " +
-            "Chỉ dịch câu có nghĩa. Nhân vật chỉ kêu, rên, cười, ho, ậm ừ hoặc nhạc không lời " +
-            "thì im lặng hoàn toàn, tuyệt đối không bịa thêm lời. Nghe không rõ chữ thì im, không đoán."
+        // v1.0.3 — TWO setups, one per model family. The translate-preview
+        // model is a speech-to-speech translator: it takes translationConfig
+        // (target "vi", echo on) and NO voice config — it preserves the
+        // original speaker's voice, and sending a voice_config gets the
+        // setup rejected (ALDA FIX17). The native-audio models are
+        // voice-to-voice: they take speechConfig with a prebuilt voice and
+        // NO translationConfig. Wire keys are camelCase exactly as in ALDA
+        // (generationConfig, systemInstruction, ...): v1.0.2 sent
+        // snake_case keys that the server silently ignores, so its setup never took effect.
+        val instruction = if (isTranslate) {
+            "You are a real-time simultaneous interpreter. " +
+                (if (sourceLang == "auto") "" else "The speech you hear is in $langHint. ") +
+                "Translate speech into concise, natural spoken Vietnamese. " +
+                "Deliver it like a classic Vietnamese TVB drama dub: warm, expressive and clear, " +
+                "with steady natural drama — never flat, never rushed, never shouting — and with " +
+                "natural Vietnamese address terms (anh/em/chi/co/chu...) matching the characters' " +
+                "relationship, never stiff textbook Vietnamese. Keep the speaker's own tone and " +
+                "emotion. Do not imitate any real dubbing actor's voice; this is a delivery " +
+                "style, not a copy of a person. Every translated line must take about the same " +
+                "time to say as the original line it replaces, so the Vietnamese voice finishes " +
+                "when the character's mouth stops moving. " +
+                "Translate only meaningful speech. Completely ignore non-verbal sounds — " +
+                "cries of pain, groans, moans, gasps, sighs, laughter, coughing, sneezing, " +
+                "hiccups, and filler sounds such as uh, um, hmm, ah and oh — and stay " +
+                "silent for them: do not speak, do not turn them into words. A lone cry " +
+                "or groan is not a sentence and needs no translation. " +
+                "If you hear only music, background noise, sound effects, mumbling, or " +
+                "sounds you cannot clearly understand as words, stay completely silent — " +
+                "never invent words for sounds you cannot understand. Do not guess. " +
+                modeHint
+        } else {
+            "Bạn là phiên dịch viên lồng tiếng phim. Nghe $langHint trong video và " +
+                "nói lại bằng tiếng Việt tự nhiên, giọng lồng tiếng truyền hình ấm áp, rõ ràng, " +
+                "khớp đúng lúc nhân vật mở miệng và nói hết trong đúng thời lượng câu gốc. " +
+                (if (wholeSentence) "Chờ nghe hết một câu hoàn chỉnh rồi mới dịch cả câu, dịch đúng ngữ cảnh hơn."
+                else "Dịch theo từng cụm ngắn ngay khi nghe rõ cụm đó, không chờ hết câu, để ra giọng nhanh nhất.") +
+                " Chỉ dịch câu có nghĩa. Nhân vật chỉ kêu, rên, cười, ho, ậm ừ hoặc nhạc không lời " +
+                "thì im lặng hoàn toàn, tuyệt đối không bịa thêm lời. Nghe không rõ chữ thì im, không đoán."
+        }
         val setup = JSONObject().apply {
             put("setup", JSONObject().apply {
                 put("model", "models/$model")
-                put("generation_config", JSONObject().apply {
-                    put("response_modalities", org.json.JSONArray().put("AUDIO"))
-                    put("speech_config", JSONObject().apply {
-                        put("voice_config", JSONObject().apply {
-                            put("prebuilt_voice_config", JSONObject().apply {
-                                put("voice_name", voiceName)
+                put("generationConfig", JSONObject().apply {
+                    put("responseModalities", org.json.JSONArray().put("AUDIO"))
+                    if (isTranslate) {
+                        put("translationConfig", JSONObject().apply {
+                            put("targetLanguageCode", "vi")
+                            put("echoTargetLanguage", true)
+                        })
+                    } else {
+                        put("speechConfig", JSONObject().apply {
+                            put("voiceConfig", JSONObject().apply {
+                                put("prebuiltVoiceConfig", JSONObject().apply {
+                                    put("voiceName", voiceName)
+                                })
                             })
                         })
-                    })
+                    }
                 })
-                put("system_instruction", JSONObject().apply {
+                put("systemInstruction", JSONObject().apply {
                     put("parts", org.json.JSONArray().put(
                         JSONObject().put("text", instruction)
                     ))
                 })
-                put("input_audio_transcription", JSONObject())
-                put("output_audio_transcription", JSONObject())
+                put("inputAudioTranscription", JSONObject())
+                put("outputAudioTranscription", JSONObject())
+                if (isTranslate) {
+                    put("sessionResumption", JSONObject().apply {
+                        put("handle", JSONObject.NULL)
+                    })
+                }
             })
         }
         val request = Request.Builder().url("$ENDPOINT?key=$apiKey").build()
@@ -149,19 +219,22 @@ class GeminiLiveClient(
         }
     }
 
-    /** Stream 16 kHz mono PCM to the model. */
+    /**
+     * Stream 16 kHz mono PCM to the model.
+     * v1.0.3: the wire shape is realtimeInput.audio (ALDA / web script).
+     * v1.0.2 sent the audio in a chunk-list field under a snake_case key
+     * and the server never delivered the audio to the model.
+     */
     fun sendAudio(pcm16: ByteArray) {
         val socket = socket ?: return
         if (!connected) return
         try {
             val payload = JSONObject().apply {
-                put("realtime_input", JSONObject().apply {
-                    put("media_chunks", org.json.JSONArray().put(
-                        JSONObject().apply {
-                            put("mime_type", "audio/pcm;rate=16000")
-                            put("data", Base64.encodeToString(pcm16, Base64.NO_WRAP))
-                        }
-                    ))
+                put("realtimeInput", JSONObject().apply {
+                    put("audio", JSONObject().apply {
+                        put("mimeType", "audio/pcm;rate=16000")
+                        put("data", Base64.encodeToString(pcm16, Base64.NO_WRAP))
+                    })
                 })
             }
             socket.send(payload.toString())
@@ -170,19 +243,14 @@ class GeminiLiveClient(
         }
     }
 
-    /** Signal end of the current utterance so the model can flush a translation. */
+    /**
+     * v1.0.3: intentionally a no-op. ALDA streams audio continuously and
+     * never sends an end-of-stream marker — the translate model segments
+     * speech itself. v1.0.2 sent such a marker after every utterance. Kept as
+     * a no-op so existing callers (DubbingService.onSpeechEnd) keep working.
+     */
     fun endTurn() {
-        val socket = socket ?: return
-        if (!connected) return
-        try {
-            socket.send(JSONObject().apply {
-                put("realtime_input", JSONObject().apply {
-                    put("audio_stream_end", true)
-                })
-            }.toString())
-        } catch (e: Exception) {
-            Log.w(TAG, "endTurn failed", e)
-        }
+        // Continuous streaming: no turn cuts.
     }
 
     fun close() {

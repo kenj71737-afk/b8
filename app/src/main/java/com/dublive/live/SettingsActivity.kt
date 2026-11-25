@@ -114,15 +114,16 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     /**
-     * v1.0.2: the old test only did GET v1beta/models — a key passes that
-     * even when the Live model itself is dead, so the user thought the key
-     * was fine while dubbing stayed silent (exactly what happened with
-     * gemini-2.0-flash-live-001, HTTP 1008 / not found). The real test
-     * opens a Live WebSocket with the current model and waits for
-     * setupComplete (max 10 s). If the primary model is rejected, it
-     * tries the fallback model once. Only if the socket cannot open at
-     * all does it fall back to the models-list check, to tell a bad key
-     * (401) apart from a dead model.
+     * v1.0.3: tests the models in the same order the service tries them —
+     * gemini-3.5-live-translate-preview first (the model ALDA uses with
+     * this key), then the two native-audio fallbacks. Each attempt opens
+     * a real Live WebSocket and waits for setupComplete (max 10 s), and
+     * reports exactly which model failed with what error. v1.0.2 only
+     * tried the two native-audio models, so it could report "Live nối
+     * được" while the dub still failed — the service now uses the
+     * translate model first, so the test must check it first. Only if
+     * every model fails does the models-list call run, to tell a bad key
+     * (401) apart from dead models.
      */
     private fun testKey() {
         val key = key1Input.text.toString().trim()
@@ -139,24 +140,30 @@ class SettingsActivity : AppCompatActivity() {
                 uiHandler.post { testKeyResult.text = msg }
             }
         }
-        testLiveModel(key, GeminiLiveClient.DEFAULT_MODEL, finish) { modelError ->
-            // Primary model rejected — try the fallback model once.
-            testLiveModel(key, GeminiLiveClient.FALLBACK_MODEL, finish) { fallbackError ->
-                // Both Live models failed. Distinguish a bad key from a
-                // dead model with the models-list call as a secondary check.
+        val errors = mutableListOf<String>()
+        fun tryNext(index: Int) {
+            if (index >= GeminiLiveClient.LIVE_MODELS.size) {
+                // Every Live model failed. Distinguish a bad key from
+                // dead models with the models-list call as a secondary check.
                 checkModelsList(key) { listOk, listMsg ->
                     if (listOk) {
                         finish(
-                            getString(R.string.key_live_bad, "cả 2 model Live đều bị từ chối " +
-                                "($modelError; $fallbackError). Key vẫn liệt kê được model, " +
+                            getString(R.string.key_live_bad, "cả 3 model Live đều bị từ chối " +
+                                "(${errors.joinToString("; ")}). Key vẫn liệt kê được model, " +
                                 "nghĩa là key tốt nhưng model Live đã đổi tên — cập nhật app.")
                         )
                     } else {
                         finish(getString(R.string.key_live_bad, listMsg))
                     }
                 }
+                return
+            }
+            testLiveModel(key, GeminiLiveClient.LIVE_MODELS[index], finish) { modelError ->
+                errors.add(modelError)
+                tryNext(index + 1)
             }
         }
+        tryNext(0)
     }
 
     /** Open one Live session with [model]; calls [onResult] with the

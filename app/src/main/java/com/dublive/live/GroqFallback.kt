@@ -94,8 +94,7 @@ class GroqFallback(
             else -> "ngôn ngữ gốc"
         }
         val prompt = "Dịch đoạn $langHint sau sang tiếng Việt tự nhiên, giọng lồng tiếng " +
-            "truyền hình, chỉ trả về bản dịch, không giải thích thêm:
-$sourceText"
+            "truyền hình, chỉ trả về bản dịch, không giải thích thêm: " + sourceText
         val json = JSONObject().apply {
             put("contents", org.json.JSONArray().put(
                 JSONObject().apply {

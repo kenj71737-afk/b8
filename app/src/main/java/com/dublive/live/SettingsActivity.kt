@@ -1,6 +1,8 @@
 package com.dublive.live
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
@@ -17,6 +19,7 @@ import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Settings: Gemini keys (typed by the user, stored only on the device),
@@ -110,6 +113,17 @@ class SettingsActivity : AppCompatActivity() {
         finish()
     }
 
+    /**
+     * v1.0.2: the old test only did GET v1beta/models — a key passes that
+     * even when the Live model itself is dead, so the user thought the key
+     * was fine while dubbing stayed silent (exactly what happened with
+     * gemini-2.0-flash-live-001, HTTP 1008 / not found). The real test
+     * opens a Live WebSocket with the current model and waits for
+     * setupComplete (max 10 s). If the primary model is rejected, it
+     * tries the fallback model once. Only if the socket cannot open at
+     * all does it fall back to the models-list check, to tell a bad key
+     * (401) apart from a dead model.
+     */
     private fun testKey() {
         val key = key1Input.text.toString().trim()
             .ifEmpty { key2Input.text.toString().trim() }
@@ -117,25 +131,101 @@ class SettingsActivity : AppCompatActivity() {
             testKeyResult.text = getString(R.string.need_key_first)
             return
         }
-        testKeyResult.text = "Đang kiểm tra…"
+        testKeyResult.text = getString(R.string.key_testing_live)
+        val done = AtomicBoolean(false)
+        val uiHandler = Handler(Looper.getMainLooper())
+        val finish: (String) -> Unit = { msg ->
+            if (done.compareAndSet(false, true)) {
+                uiHandler.post { testKeyResult.text = msg }
+            }
+        }
+        testLiveModel(key, GeminiLiveClient.DEFAULT_MODEL, finish) { modelError ->
+            // Primary model rejected — try the fallback model once.
+            testLiveModel(key, GeminiLiveClient.FALLBACK_MODEL, finish) { fallbackError ->
+                // Both Live models failed. Distinguish a bad key from a
+                // dead model with the models-list call as a secondary check.
+                checkModelsList(key) { listOk, listMsg ->
+                    if (listOk) {
+                        finish(
+                            getString(R.string.key_live_bad, "cả 2 model Live đều bị từ chối " +
+                                "($modelError; $fallbackError). Key vẫn liệt kê được model, " +
+                                "nghĩa là key tốt nhưng model Live đã đổi tên — cập nhật app.")
+                        )
+                    } else {
+                        finish(getString(R.string.key_live_bad, listMsg))
+                    }
+                }
+            }
+        }
+    }
+
+    /** Open one Live session with [model]; calls [onResult] with the
+     * success text on setupComplete, or [onErrorText] with the error. */
+    private fun testLiveModel(
+        key: String,
+        model: String,
+        onResult: (String) -> Unit,
+        onErrorText: (String) -> Unit
+    ) {
+        val finished = AtomicBoolean(false)
+        val uiHandler = Handler(Looper.getMainLooper())
+        val fail: (String) -> Unit = { msg ->
+            if (finished.compareAndSet(false, true)) onErrorText(msg)
+        }
+        val clientRef = arrayOfNulls<GeminiLiveClient>(1)
+        uiHandler.postDelayed({
+            try { clientRef[0]?.close() } catch (_: Exception) { }
+            fail("hết 10s chờ setupComplete ($model)")
+        }, 10_000L)
+        try {
+            val client = GeminiLiveClient(
+                apiKey = key,
+                voiceName = Prefs.voiceName(this),
+                sourceLang = Prefs.sourceLang(this),
+                wholeSentence = false,
+                listener = object : GeminiLiveClient.Listener {
+                    override fun onConnected() {
+                        try { clientRef[0]?.close() } catch (_: Exception) { }
+                        if (finished.compareAndSet(false, true)) {
+                            onResult(getString(R.string.key_live_ok, model))
+                        }
+                    }
+
+                    override fun onAudioChunk(pcm24k: ByteArray) {}
+                    override fun onTranslatedText(text: String, isFinal: Boolean) {}
+                    override fun onTurnComplete() {}
+                    override fun onError(message: String) {
+                        try { clientRef[0]?.close() } catch (_: Exception) { }
+                        fail("$model: $message")
+                    }
+
+                    override fun onClosed() {
+                        fail("$model: kết nối Live tự đóng trước khi setup xong")
+                    }
+                }
+            )
+            clientRef[0] = client
+            client.connect(model)
+        } catch (e: Exception) {
+            fail("$model: ${e.message}")
+        }
+    }
+
+    /** Secondary check: can this key list models at all? */
+    private fun checkModelsList(key: String, cb: (Boolean, String) -> Unit) {
         val req = Request.Builder()
             .url("https://generativelanguage.googleapis.com/v1beta/models?key=$key&pageSize=1")
             .get()
             .build()
         http.newCall(req).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                runOnUiThread { testKeyResult.text = "${getString(R.string.key_bad)}: ${e.message}" }
+                cb(false, "không gọi được API Gemini: ${e.message}")
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
-                    runOnUiThread {
-                        testKeyResult.text = if (it.isSuccessful) {
-                            getString(R.string.key_ok)
-                        } else {
-                            "${getString(R.string.key_bad)} (HTTP ${it.code})"
-                        }
-                    }
+                    if (it.isSuccessful) cb(true, "")
+                    else cb(false, "key lỗi (HTTP ${it.code})")
                 }
             }
         })

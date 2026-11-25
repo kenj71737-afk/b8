@@ -73,7 +73,12 @@ object Prefs {
     }
 
     fun originalVolume(context: Context): Float {
-        val pct = prefs(context).getInt(KEY_ORIGINAL_VOLUME, 15)
+        // v1.0.2: default 50%, not 15%. AudioPlaybackCapture records the
+        // sound AFTER the WebView volume is ducked, so 15% starved the VAD
+        // (RMS fell below threshold and no utterance ever fired). The app
+        // now only ducks to the user's level after the first dubbed speech
+        // has actually played (see DubbingService duck logic).
+        val pct = prefs(context).getInt(KEY_ORIGINAL_VOLUME, 50)
         return (pct.coerceIn(0, 100) / 100f)
     }
 

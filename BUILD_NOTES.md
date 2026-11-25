@@ -1,3 +1,127 @@
+# DubLive v1.0.1 — SỬA CRASH KHI CẤP QUYỀN GHI MÀN HÌNH (Android 16)
+
+Build xong 25/11/2026 ~18:03 VN (giờ UTC 11:03). APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.1.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.1.apk`)
+- Kích thước: 9.437.426 byte (~9,1 MB). MD5: 46442a4ade70146091019f82676a4208.
+- aapt2: package `com.dublive.live`, versionCode 2, versionName 1.0.1,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+- Actions run thành công: **45600269889** (completed/success, lần build đầu
+  tiên đã đậu, không cần build lại), commit `007a71f9a56854c53db66819e3bee186385bb636`
+  trên nhánh `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15014364330, bản Debug; bản Release unsigned trong
+  cùng artifact thì không cài được nên không giao).
+
+## Máy đích (đính chính: Android 16, không phải 15)
+
+- **iQOO Z9 Turbo (bản pin dài), OriginOS 6, Android 16** (ảnh thứ 2 user gửi
+  ghi rõ "Android 16"), Snapdragon 8s Gen 3, RAM 12 GB + 12 GB, bộ nhớ
+  256 GB, pin 6400 mAh. Máy mạnh — crash không phải do máy yếu.
+- Android 16 siết foreground service / MediaProjection và partial screen
+  sharing chặt hơn cả Android 15. Code v1.0.1 kiểm chứng theo đúng luật
+  Android 16 (xin quyền trước, startForegroundService bọc try/catch +
+  retry, service startForeground rồi mới getMediaProjection, fallback mic,
+  dặn chọn toàn màn hình).
+- Lưu ý: app vẫn giữ targetSdk 34 / compileSdk 34 (không nâng lên 36, vì
+  cần compileSdk 36 + AGP mới, rủi ro build). Trên Android 16 app chạy ở
+  chế độ tương thích, nhưng mọi điểm siết của Android 16 nêu trên đều đã
+  xử lý trong code.
+
+## Crash v1.0.0 — diễn biến từ video user gửi (12,6 s, 17:53)
+
+Màn hình chính DubLive (chưa mở video nào) → bấm "Bắt đầu lồng tiếng" →
+hộp hệ thống "Ghi hoặc chia sẻ màn hình với DubLive", phạm vi mặc định
+"Chia sẻ một ứng dụng" → bấm Tiếp tục → bảng chọn app → user chọn chính
+DubLive → màn hình về Home, app biến mất, không có thông báo lỗi.
+
+## Nguyên nhân đã sửa (đủ 6 mục, cộng thêm 2 mục phát hiện khi sửa)
+
+1. **RECORD_AUDIO chưa bao giờ được xin runtime** — v1.0.0 chỉ khai báo
+   trong Manifest, không hề `requestPermissions`. AudioPlaybackCapture bắt
+   buộc phải có RECORD_AUDIO đã cấp, nếu không `AudioRecord.build` /
+   `startRecording` ném `SecurityException`. Sửa: `MainActivity` và
+   `LocalPlayerActivity` xin RECORD_AUDIO (+ POST_NOTIFICATIONS trên
+   Android 13+) TRƯỚC khi mở hộp ghi màn hình, chỉ khi đã cấp mới mở hộp.
+   Nếu user từ chối: Toast báo rõ + tự thử chế độ mic (service kiểm tra
+   lại quyền, báo thiếu quyền rồi dừng sạch, không crash).
+2. **`startForegroundService` không có try/catch** — trong callback của
+   hộp hệ thống, Android 16 có thể chạy callback lúc activity chưa resume
+   hẳn nên lệnh này ném `ForegroundServiceStartNotAllowedException` /
+   `SecurityException` và crash toàn app. Sửa: bọc try/catch + **thử lại
+   1 lần sau 600 ms** (lúc đó activity đã resume), vẫn lỗi thì Toast +
+   chuyển sang chế độ mic. Áp dụng cho cả `MainActivity` và
+   `LocalPlayerActivity`.
+3. **Service bọc từng bước khởi động riêng** (`DubbingService.startDub` /
+   `startCapture`): `startForeground`, `getMediaProjection`,
+   `AudioPlaybackCaptureConfiguration`, `AudioRecord.Builder.build`,
+   `record.startRecording` — mỗi bước một try/catch riêng. Bước nào lỗi
+   cũng không để service chết: playback lỗi → fallback MIC (báo
+   `TYPE_FALLBACK`), mic cũng lỗi → broadcast lỗi + `stopDub()` sạch.
+   `getMediaProjection` trả null hoặc ném `SecurityException` với token
+   single-app đều xử lý. Thêm `MediaProjection.Callback`: hệ thống/
+   OriginOS dừng chia sẻ giữa chừng → tự chuyển sang mic thay vì chết
+   theo token. Thêm cờ `stopped` để luồng chuyển mic không khởi động lại
+   capture sau khi service đã dừng.
+4. **Bẫy "Chia sẻ một ứng dụng"** — Android 16 mặc định phạm vi này, user
+   chọn chính DubLive thì projection chỉ bắt DubLive, không có tiếng phim
+   (và đó đúng là thao tác trong video crash). Không có API ép toàn màn
+   hình nên thêm hộp `AlertDialog` TRƯỚC khi mở hộp hệ thống: "Ở màn hình
+   tiếp theo, bấm Tiếp tục rồi chọn 'Chia sẻ toàn bộ màn hình'. Đừng chọn
+   'Chia sẻ một ứng dụng'". Chỉ hiện 1 lần, ghi nhớ bằng
+   `Prefs.shareTipShown`.
+5. **Chế độ mic dự phòng** — nút mới "Lồng tiếng bằng mic (không cần ghi
+   màn hình)" trên màn hình chính và trên màn hình file local, chạy
+   `DubbingService` với `ACTION_START_MIC` (không cần token
+   MediaProjection, capture MIC trực tiếp). Ghi rõ trong app: chế độ mic
+   nghe tiếng loa ngoài, để loa đủ to, tránh chỗ ồn.
+6. **Các chỗ khác dễ crash khi service khởi động** — `VoicePlayer` init
+   (`TextToSpeech`, `AudioTrack`) và `GeminiLiveClient.connect` /
+   `sendAudio` / `endTurn` đều bọc try/catch, lỗi thì broadcast lỗi chứ
+   không chết service. `getParcelableExtra` dùng bản type-safe trên
+   Android 13+. `Prefs.geminiKeys` và quyền RECORD_AUDIO được kiểm tra
+   trong service sau `startForeground` (bắt buộc phải startForeground
+   trước, nếu không hệ thống kill app vì `startForegroundService` không
+   kèm `startForeground`); thiếu key/quyền thì broadcast cả `TYPE_ERROR`
+   lẫn `STATE_STOPPED` rồi `stopSelf()` sạch (phát hiện thêm khi sửa:
+   không broadcast `STATE_STOPPED` thì nút Bắt đầu trên MainActivity bị
+   kẹt ở `dubbing=true`).
+7. (Thêm) **`LocalPlayerActivity` sửa y hệt MainActivity** — file này có
+   cùng đường crash (projection callback không bọc, không xin quyền).
+8. (Thêm) **`stopDub()` / `onDestroy()` bọc try/catch toàn bộ** —
+   `stopForeground` / `join` / `unregisterCallback` đều có thể ném khi
+   service chưa foreground hẳn trên Android 16.
+
+## Hướng dẫn user thử lại (đúng thứ tự)
+
+1. Gỡ bản v1.0.0 rồi cài `DubLive-v1.0.1.apk` (cùng package nên cài đè
+   cũng được, nhưng gỡ sạch rồi cài mới là chắc nhất).
+2. Mở app → Cài đặt → kiểm tra key Gemini còn đó không (nếu mất thì nhập
+   lại) → quay ra màn hình chính.
+3. Bấm "Bắt đầu lồng tiếng" → **cấp quyền Micro** (và Thông báo nếu máy
+   hỏi) khi hộp quyền hiện.
+4. Hộp hướng dẫn hiện: đọc rồi bấm "Đã hiểu, tiếp tục".
+5. Hộp hệ thống "Ghi hoặc chia sẻ màn hình": bấm vào "Phạm vi ghi hoặc
+   chia sẻ" → chọn **"Chia sẻ toàn bộ màn hình"** (KHÔNG chọn "Chia sẻ
+   một ứng dụng", KHÔNG chọn app DubLive) → bấm Tiếp tục.
+6. App phải ở lại màn hình DubLive, HUD hiện "Trễ hình: …", không thoát
+   về Home. Mở video rồi bấm Play, xem phụ đề/giọng có chạy không.
+7. Nếu bước 5 vẫn thoát app: mở lại app, bấm **"Lồng tiếng bằng mic
+   (không cần ghi màn hình)"** thay cho "Bắt đầu lồng tiếng", để loa đủ
+   to — đây là đường thoát khi OriginOS chặn ghi màn hình. Báo lại kết
+   quả từng bước (nhất là bước 3 và 5) để sửa tiếp nếu cần.
+
+## Giới hạn còn lại
+
+- Chưa chạy kiểm chứng trên máy thật (máy test đích là iQOO Z9 Turbo /
+  OriginOS 6 / Android 16 của user) — các sửa trên mới được kiểm chứng ở
+  mức biên dịch + đóng gói thành công.
+- Chế độ mic nghe tiếng loa ngoài nên chất lượng phụ thuộc loa + tiếng ồn
+  xung quanh; tiếng gốc 15% vẫn chạy theo giờ thực.
+- Lỗi tải artifact lúc đầu: dùng nhầm lệnh `gh.py download` (không auth,
+  401) — lệnh đúng là `gh.py download-artifact <id> <file>`.
+
+---
+
 # DubLive v1.0.0 — BUILD NOTES
 
 Build xong 25/11/2026 ~10:41 VN. APK Debug, cài được.

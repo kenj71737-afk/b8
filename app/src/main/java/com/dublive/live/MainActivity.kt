@@ -60,6 +60,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var urlInput: EditText
     private lateinit var subtitleView: TextView
     private lateinit var hudView: TextView
+    private lateinit var statusView: TextView
+    private lateinit var levelBar: android.widget.ProgressBar
+    private lateinit var levelValue: TextView
     private lateinit var delayToggleButton: Button
     private var delayOn = true
     private var dubbing = false
@@ -129,16 +132,36 @@ class MainActivity : AppCompatActivity() {
                         dubbing = false
                         subtitleView.visibility = View.GONE
                         hudView.visibility = View.GONE
+                        levelBar.progress = 0
+                        levelValue.text = "0"
                         setOriginalVolume(1.0f)
                     }
                 }
+                DubbingService.TYPE_STATUS -> {
+                    // Persistent status line: the last error/status stays
+                    // on screen (v1.0.1 only Toasted errors, so the user
+                    // saw nothing after the Toast vanished).
+                    val msg = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
+                    if (msg.isNotBlank()) statusView.text = "Trạng thái: $msg"
+                }
+                DubbingService.TYPE_LEVEL -> {
+                    val level = intent.getIntExtra(DubbingService.EXTRA_LEVEL, 0)
+                    levelBar.progress = level
+                    levelValue.text = level.toString()
+                }
                 DubbingService.TYPE_ERROR -> {
                     val msg = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
-                    if (msg.isNotBlank()) Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    if (msg.isNotBlank()) {
+                        statusView.text = "Lỗi: $msg"
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    }
                 }
                 DubbingService.TYPE_FALLBACK -> {
                     val msg = intent.getStringExtra(DubbingService.EXTRA_MESSAGE).orEmpty()
-                    if (msg.isNotBlank()) Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    if (msg.isNotBlank()) {
+                        statusView.text = "Trạng thái: $msg"
+                        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                    }
                 }
                 DubbingService.TYPE_DUCK -> {
                     intent.getStringExtra(DubbingService.EXTRA_MESSAGE)?.toFloatOrNull()?.let {
@@ -156,6 +179,9 @@ class MainActivity : AppCompatActivity() {
         urlInput = findViewById(R.id.urlInput)
         subtitleView = findViewById(R.id.subtitleView)
         hudView = findViewById(R.id.hudView)
+        statusView = findViewById(R.id.statusView)
+        levelBar = findViewById(R.id.levelBar)
+        levelValue = findViewById(R.id.levelValue)
         delayToggleButton = findViewById(R.id.delayToggleButton)
 
         webView.settings.javaScriptEnabled = true
@@ -288,7 +314,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         dubbing = true
-        setOriginalVolume(Prefs.originalVolume(this))
+        statusView.text = "Trạng thái: Đang nối Gemini Live…"
+        levelBar.progress = 0
+        levelValue.text = "0"
+        // v1.0.2: keep the original at FULL volume at start. The old code
+        // ducked it to 15% here, which starved the VAD (the capture
+        // records the ducked sound). The service ducks it only after the
+        // first dubbed speech actually plays.
+        setOriginalVolume(1.0f)
         hudView.visibility = View.VISIBLE
     }
 
@@ -336,7 +369,11 @@ class MainActivity : AppCompatActivity() {
         try {
             startForegroundService(intent)
             dubbing = true
-            setOriginalVolume(Prefs.originalVolume(this))
+            statusView.text = "Trạng thái: Đang nối Gemini Live…"
+            levelBar.progress = 0
+            levelValue.text = "0"
+            // v1.0.2: full volume at start (see startMicService).
+            setOriginalVolume(1.0f)
             hudView.visibility = View.VISIBLE
         } catch (e: Exception) {
             Log.w(TAG, "startForegroundService (projection) failed, retry=$isRetry", e)

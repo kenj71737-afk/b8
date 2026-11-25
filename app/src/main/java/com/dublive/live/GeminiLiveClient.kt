@@ -33,13 +33,23 @@ class GeminiLiveClient(
         fun onTurnComplete()
         fun onError(message: String)
         fun onClosed()
+        /** Source-language transcript (debug only; the service logs it). */
+        fun onInputText(text: String) {}
     }
 
     companion object {
         private const val TAG = "DubLive-Gemini"
-        const val DEFAULT_MODEL = "gemini-2.0-flash-live-001"
+        /**
+         * v1.0.2: the old model "gemini-2.0-flash-live-001" on the v1alpha
+         * endpoint is DEAD — the server answers 1008 / "not found" for AI
+         * Studio keys (verified by web search 25/11/2026). The live model
+         * that works now is the native-audio 2.5 Flash model on v1beta.
+         */
+        const val DEFAULT_MODEL = "gemini-2.5-flash-native-audio-latest"
+        const val FALLBACK_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+        val LIVE_MODELS = listOf(DEFAULT_MODEL, FALLBACK_MODEL)
         private const val ENDPOINT =
-            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     }
 
     private val http = OkHttpClient.Builder()
@@ -49,8 +59,12 @@ class GeminiLiveClient(
     private var socket: WebSocket? = null
     @Volatile var connected = false
         private set
+    /** Model used by the current (or last) connection attempt. */
+    @Volatile var currentModel: String = DEFAULT_MODEL
+        private set
 
     fun connect(model: String = DEFAULT_MODEL) {
+        currentModel = model
         val langHint = when (sourceLang) {
             "zh-CN" -> "Tiếng Trung giản thể"
             "yue" -> "tiếng Quảng Đông"
@@ -113,8 +127,14 @@ class GeminiLiveClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 connected = false
-                Log.w(TAG, "Live socket failed: ${t.message}")
-                try { listener.onError(t.message ?: "WebSocket failure") } catch (_: Exception) { }
+                val code = response?.code
+                val msg = if (code != null) {
+                    "WebSocket failure (HTTP $code): ${t.message}"
+                } else {
+                    t.message ?: "WebSocket failure"
+                }
+                Log.w(TAG, "Live socket failed: $msg")
+                try { listener.onError(msg) } catch (_: Exception) { }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -174,11 +194,35 @@ class GeminiLiveClient(
     private fun handleServerMessage(text: String) {
         try {
             val root = JSONObject(text)
+            // The server can reject the session inside a message instead of
+            // closing the socket, e.g. {"error": {"code": 404, "message":
+            // "models/... is not found"}}. v1.0.1 ignored this and stayed
+            // silent forever; surface it as an error so the service can
+            // retry with the fallback model / other key.
+            if (root.has("error")) {
+                val err = root.optJSONObject("error")
+                val code = err?.optInt("code", 0) ?: 0
+                val msg = err?.optString("message").orEmpty()
+                    .ifEmpty { root.optString("error") }
+                val detail = if (code != 0) "Lỗi server Live ($code): $msg" else "Lỗi server Live: $msg"
+                Log.w(TAG, detail)
+                try { listener.onError(detail) } catch (_: Exception) { }
+                return
+            }
             if (root.has("setupComplete")) {
                 listener.onConnected()
                 return
             }
             val content = root.optJSONObject("serverContent") ?: return
+            // Source-language transcript: debug only, logged, not shown.
+            val inTx = content.optJSONObject("inputTranscription")
+            if (inTx != null) {
+                val t = inTx.optString("text")
+                if (t.isNotEmpty()) {
+                    Log.i(TAG, "inputTranscription: $t")
+                    try { listener.onInputText(t) } catch (_: Exception) { }
+                }
+            }
             val turn = content.optJSONObject("modelTurn")
             if (turn != null) {
                 val parts = turn.optJSONArray("parts") ?: org.json.JSONArray()

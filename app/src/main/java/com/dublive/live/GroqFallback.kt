@@ -105,7 +105,7 @@ class GroqFallback(
             ))
         }
         val req = Request.Builder()
-            .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$geminiKey")
+            .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$geminiKey")
             .post(json.toString().toRequestBody("application/json".toMediaType()))
             .build()
         http.newCall(req).enqueue(object : Callback {

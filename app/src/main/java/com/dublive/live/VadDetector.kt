@@ -24,7 +24,12 @@ class VadDetector(
     private val frameSamples = sampleRate / 50 // 20 ms frames
     private val speechFramesNeeded = 8 // 8 x 20 ms = 160 ms >= 150 ms
     private val silenceFramesToEnd = 35 // 35 x 20 ms = 700 ms
-    private val energyThreshold = 420.0 // RMS threshold, tuned for system audio
+    private val energyThreshold = 250.0 // RMS threshold, tuned for system audio
+
+    /** RMS of the most recent 20 ms frame (0 when silent). Read by the
+     * service's level ticker so the UI can show a live input-level meter. */
+    @Volatile var lastRms: Double = 0.0
+        private set
 
     private val preRoll = ArrayDeque<Short>()
     private val preRollMax = sampleRate / 2 // 500 ms
@@ -59,7 +64,9 @@ class VadDetector(
     }
 
     private fun processFrame(frame: ShortArray) {
-        val loud = rms(frame) > energyThreshold
+        val frameRms = rms(frame)
+        lastRms = frameRms
+        val loud = frameRms > energyThreshold
         if (!inSpeech) {
             if (loud) {
                 loudFrames++

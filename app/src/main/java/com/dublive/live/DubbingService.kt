@@ -79,6 +79,11 @@ class DubbingService : Service() {
         const val TYPE_ERROR = "error"
         const val TYPE_FALLBACK = "fallback"
         const val TYPE_DUCK = "duck"
+        /** Persistent status line for the main screen (never Toast-only). */
+        const val TYPE_STATUS = "status"
+        /** Live input level, 0..1000, sent every 500 ms while capturing. */
+        const val TYPE_LEVEL = "level"
+        const val EXTRA_LEVEL = "level"
         const val STATE_RUNNING = "running"
         const val STATE_STOPPED = "stopped"
 
@@ -88,7 +93,11 @@ class DubbingService : Service() {
         private const val SAMPLE_RATE = 16000
         private const val KEY_ROTATE_MS = 5 * 60 * 1000L
         private const val SILENCE_LIMIT_MS = 60_000L
+        /** No translated output at all this long after (re)connect -> retry. */
+        private const val NO_OUTPUT_LIMIT_MS = 25_000L
         private const val MAX_RECONNECTS = 5
+        /** Pre-connect audio buffer cap: ~10 s of 16 kHz 16-bit mono. */
+        private const val PRECONNECT_MAX_BYTES = 320_000
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -107,15 +116,46 @@ class DubbingService : Service() {
     private var vad: VadDetector? = null
 
     private var keyIndex = 0
+    private var modelIndex = 0
     private var rotateAtMs = 0L
     private var lastOutputAtMs = 0L
+    private var startedAtMs = 0L
+    private var lastLiveAttemptAtMs = 0L
     private var reconnects = 0
     private var useGroqOnly = false
     private var liveConnected = false
+    private var reconnectPending = false
+    private var closingForReconnect = false
+    private var duckApplied = false
+    private var lastStatus = ""
+    private var lastHeardAtMs = 0L
 
     private val utteranceBytes = ByteArrayOutputStream()
     private val pendingText = StringBuilder()
     private var audioPlayedThisTurn = false
+
+    /** Audio spoken before Live is connected: kept (max ~10 s) and flushed
+     * the moment onConnected arrives, instead of being thrown away. */
+    private val pendingChunks = ArrayDeque<ByteArray>()
+    private var pendingBytes = 0
+
+    private val levelTicker = object : Runnable {
+        override fun run() {
+            if (!capturing) return
+            val rms = try { vad?.lastRms ?: 0.0 } catch (_: Exception) { 0.0 }
+            if (rms > 50.0) lastHeardAtMs = System.currentTimeMillis()
+            val level = ((rms / 2000.0) * 1000.0).toInt().coerceIn(0, 1000)
+            broadcast(TYPE_LEVEL, level = level)
+            // Silence diagnosis: capturing but nothing heard for a while.
+            val now = System.currentTimeMillis()
+            if (lastOutputAtMs == 0L && lastHeardAtMs > 0L &&
+                now - lastHeardAtMs > 15_000L
+            ) {
+                setStatus("Không nghe thấy tiếng — kiểm tra video có phát tiếng không")
+            }
+            mainHandler.postDelayed(this, 500L)
+        }
+    }
 
     private val watchdog = object : Runnable {
         override fun run() {
@@ -130,6 +170,23 @@ class DubbingService : Service() {
                     } else {
                         Log.w(TAG, "Live silent after $MAX_RECONNECTS reconnects, Groq fallback")
                         switchToGroq("Gemini Live im lặng quá lâu, chuyển sang dự phòng Groq")
+                    }
+                } else if (lastOutputAtMs == 0L && !liveConnected &&
+                    now - lastLiveAttemptAtMs > NO_OUTPUT_LIMIT_MS
+                ) {
+                    // v1.0.2: the old watchdog only ran after output had
+                    // started (lastOutputAtMs > 0), so a session that NEVER
+                    // connected — dead model, bad key — sat silent forever.
+                    // Retry with the other model/key; after MAX_RECONNECTS
+                    // fall back to Groq instead of staying silent.
+                    if (reconnects < MAX_RECONNECTS) {
+                        reconnects++
+                        Log.w(TAG, "Live never connected/output in 25s, retrying ($reconnects/$MAX_RECONNECTS)")
+                        advanceModelOrKey()
+                        reconnectLive()
+                    } else {
+                        Log.w(TAG, "Live never produced output, Groq fallback")
+                        switchToGroq("Gemini Live không nối được, chuyển sang dự phòng Groq")
                     }
                 } else if (now >= rotateAtMs) {
                     rotateKey()
@@ -257,8 +314,19 @@ class DubbingService : Service() {
         }
         useGroqOnly = false
         reconnects = 0
+        modelIndex = 0
+        reconnectPending = false
+        closingForReconnect = false
+        duckApplied = false
         rotateAtMs = System.currentTimeMillis() + KEY_ROTATE_MS
         lastOutputAtMs = 0L
+        startedAtMs = System.currentTimeMillis()
+        lastLiveAttemptAtMs = 0L
+        lastHeardAtMs = 0L
+        lastStatus = ""
+        synchronized(pendingChunks) { pendingChunks.clear() }
+        pendingBytes = 0
+        setStatus("Đang nối Gemini Live…")
 
         if (!micOnly && resultData != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
@@ -309,8 +377,13 @@ class DubbingService : Service() {
             switchToGroq("Gemini Live lỗi kết nối (${e.message}), chuyển sang dự phòng Groq")
         }
         broadcast(TYPE_STATE, state = STATE_RUNNING)
-        broadcast(TYPE_DUCK, message = Prefs.originalVolume(this).toString())
+        // v1.0.2: do NOT duck the original audio here. AudioPlaybackCapture
+        // records the sound after ducking, so ducking to 15% at start
+        // starved the VAD and nothing was ever heard. The original stays
+        // at full volume until the first dubbed speech actually plays
+        // (see applyDuckOnce), and only then drops to the user's level.
         mainHandler.postDelayed(watchdog, 10_000L)
+        mainHandler.postDelayed(levelTicker, 500L)
     }
 
     /** Stop the old (projection) capture thread, then restart it on the mic. */
@@ -339,8 +412,13 @@ class DubbingService : Service() {
         val keys = Prefs.geminiKeys(this)
         if (keys.isEmpty()) return
         val key = keys[keyIndex % keys.size]
+        val model = GeminiLiveClient.LIVE_MODELS[modelIndex % GeminiLiveClient.LIVE_MODELS.size]
         try { liveClient?.close() } catch (_: Exception) { }
         liveConnected = false
+        reconnectPending = false
+        lastLiveAttemptAtMs = System.currentTimeMillis()
+        setStatus("Đang nối Gemini Live… ($model)")
+        Log.i(TAG, "Connecting Live: model=$model key=${keyIndex % keys.size + 1}")
         val client = try {
             GeminiLiveClient(
                 apiKey = key,
@@ -351,12 +429,16 @@ class DubbingService : Service() {
                     override fun onConnected() {
                         liveConnected = true
                         reconnects = 0
-                        Log.i(TAG, "Gemini Live connected (key ${keyIndex % keys.size + 1})")
+                        reconnectPending = false
+                        Log.i(TAG, "Gemini Live connected (key ${keyIndex % keys.size + 1}, model=$model)")
+                        setStatus("Đã nối, đang nghe…")
+                        flushPendingAudio()
                     }
 
                     override fun onAudioChunk(pcm24k: ByteArray) {
                         lastOutputAtMs = System.currentTimeMillis()
                         audioPlayedThisTurn = true
+                        applyDuckOnce()
                         try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
                             Log.w(TAG, "playAudio failed", e)
                         }
@@ -375,6 +457,7 @@ class DubbingService : Service() {
                             broadcast(TYPE_SUBTITLE, text = "")
                         } else if (!audioPlayedThisTurn) {
                             // Model returned text but no audio: read it with TTS.
+                            applyDuckOnce()
                             try {
                                 voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
                             } catch (e: Exception) {
@@ -385,35 +468,143 @@ class DubbingService : Service() {
                         try { voicePlayer?.resetTurnFlag() } catch (_: Exception) { }
                     }
 
+                    override fun onInputText(text: String) {
+                        Log.i(TAG, "Heard (source): $text")
+                    }
+
                     override fun onError(message: String) {
                         Log.w(TAG, "Live error: $message")
-                        if (message.contains("401", ignoreCase = true) ||
-                            message.contains("403", ignoreCase = true) ||
-                            message.contains("quota", ignoreCase = true) ||
-                            message.contains("API key", ignoreCase = true)
-                        ) {
-                            switchToGroq("Key Gemini lỗi ($message), chuyển sang dự phòng Groq")
-                        } else if (capturing && !useGroqOnly) {
-                            broadcast(TYPE_ERROR, message = "Gemini Live lỗi: $message")
-                        }
+                        if (capturing && !useGroqOnly) handleLiveError(message)
                     }
 
                     override fun onClosed() {
                         liveConnected = false
+                        // A close that WE triggered for a reconnect is
+                        // expected; a close from the server is a failure.
+                        if (closingForReconnect) return
+                        if (capturing && !useGroqOnly && !reconnectPending) {
+                            handleLiveError("Gemini Live tự ngắt kết nối")
+                        }
                     }
                 }
             )
         } catch (e: Exception) {
             Log.e(TAG, "GeminiLiveClient creation failed", e)
-            switchToGroq("Gemini Live lỗi (${e.message}), chuyển sang dự phòng Groq")
+            handleLiveError("Gemini Live lỗi (${e.message})")
             return
         }
         liveClient = client
         try {
-            client.connect()
+            client.connect(model)
         } catch (e: Exception) {
             Log.e(TAG, "GeminiLiveClient.connect failed", e)
-            switchToGroq("Gemini Live lỗi kết nối (${e.message}), chuyển sang dự phòng Groq")
+            handleLiveError("Gemini Live lỗi kết nối (${e.message})")
+        }
+    }
+
+    /**
+     * v1.0.2: ANY Live error now triggers a recovery instead of one Toast
+     * and silence. Order: (1) if the error smells like a dead model
+     * (1008 / 404 / "not found") and the fallback model has not been
+     * tried yet, retry with the fallback model; (2) otherwise rotate to
+     * the other key (if any) and reconnect; (3) after MAX_RECONNECTS
+     * total retries, switch to Groq — even without a Groq key the user
+     * gets a clear persistent error instead of silence.
+     */
+    private fun handleLiveError(message: String) {
+        if (!capturing || useGroqOnly || reconnectPending) return
+        reconnectPending = true
+        setStatus("Lỗi Live: ${shortError(message)}")
+        val modelDead = message.contains("1008") ||
+            message.contains("404") ||
+            message.contains("not found", ignoreCase = true) ||
+            message.contains("NOT_FOUND", ignoreCase = true)
+        if (modelDead && modelIndex == 0) {
+            Log.w(TAG, "Model $message looks dead, trying fallback model")
+            modelIndex = 1
+            reconnects++
+            scheduleReconnect(500L)
+            return
+        }
+        if (reconnects < MAX_RECONNECTS) {
+            reconnects++
+            // Rotate key as well as model: a dead key and a dead model
+            // look the same from here, so try the other combination.
+            val keys = Prefs.geminiKeys(this)
+            if (keys.size > 1) keyIndex = (keyIndex + 1) % keys.size
+            Log.w(TAG, "Live error, reconnecting ($reconnects/$MAX_RECONNECTS): $message")
+            scheduleReconnect(1000L)
+        } else {
+            reconnectPending = false
+            switchToGroq("Gemini Live lỗi ($message), chuyển sang dự phòng Groq")
+        }
+    }
+
+    private fun scheduleReconnect(delayMs: Long) {
+        mainHandler.postDelayed({
+            reconnectPending = false
+            if (capturing && !useGroqOnly && !stopped) reconnectLive()
+        }, delayMs)
+    }
+
+    /** Try the next model/key combination (used by the watchdog). */
+    private fun advanceModelOrKey() {
+        val keys = Prefs.geminiKeys(this)
+        if (modelIndex == 0) {
+            modelIndex = 1
+        } else if (keys.size > 1) {
+            modelIndex = 0
+            keyIndex = (keyIndex + 1) % keys.size
+        } else {
+            modelIndex = 0
+        }
+    }
+
+    private fun shortError(message: String): String {
+        val m = message.trim()
+        return if (m.length > 90) m.substring(0, 90) + "…" else m
+    }
+
+    /** Keep the last status line and push it to the UI (persistent). */
+    private fun setStatus(text: String) {
+        if (text == lastStatus) return
+        lastStatus = text
+        broadcast(TYPE_STATUS, message = text)
+    }
+
+    /** Drop the original volume only once dubbed speech really plays. */
+    private fun applyDuckOnce() {
+        if (duckApplied) return
+        duckApplied = true
+        broadcast(TYPE_DUCK, message = Prefs.originalVolume(this).toString())
+    }
+
+    /** Queue audio spoken while Live is still connecting (max ~10 s). */
+    private fun bufferAudio(bytes: ByteArray) {
+        synchronized(pendingChunks) {
+            pendingChunks.addLast(bytes)
+            pendingBytes += bytes.size
+            while (pendingBytes > PRECONNECT_MAX_BYTES && pendingChunks.isNotEmpty()) {
+                pendingBytes -= pendingChunks.removeFirst().size
+            }
+        }
+    }
+
+    /** Send all buffered pre-connect audio now that Live is connected. */
+    private fun flushPendingAudio() {
+        val chunks: List<ByteArray>
+        synchronized(pendingChunks) {
+            chunks = pendingChunks.toList()
+            pendingChunks.clear()
+            pendingBytes = 0
+        }
+        if (chunks.isEmpty()) return
+        Log.i(TAG, "Flushing ${chunks.size} buffered audio chunks to Live")
+        for (bytes in chunks) {
+            try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
+                Log.w(TAG, "flush sendAudio failed", e)
+                break
+            }
         }
     }
 
@@ -431,7 +622,9 @@ class DubbingService : Service() {
 
     private fun reconnectLive() {
         if (!capturing || useGroqOnly) return
+        closingForReconnect = true
         try { liveClient?.close() } catch (_: Exception) { }
+        closingForReconnect = false
         try { connectLive() } catch (e: Exception) {
             Log.e(TAG, "reconnectLive failed", e)
         }
@@ -443,7 +636,10 @@ class DubbingService : Service() {
         try { liveClient?.close() } catch (_: Exception) { }
         broadcast(TYPE_FALLBACK, message = reason)
         if (Prefs.groqKey(this).isEmpty()) {
+            setStatus("Lỗi: $reason — chưa có key Groq dự phòng, kiểm tra key Gemini trong Cài đặt")
             broadcast(TYPE_ERROR, message = "Không có key Groq dự phòng — kiểm tra key Gemini trong Cài đặt")
+        } else {
+            setStatus("Đang dùng dự phòng Groq")
         }
     }
 
@@ -525,10 +721,17 @@ class DubbingService : Service() {
                     utteranceBytes.reset()
                     val bytes = shortsToBytes(preRollAndHead)
                     utteranceBytes.write(bytes)
+                    setStatus("Đang nghe câu nói…")
                     if (liveConnected) {
+                        flushPendingAudio()
                         try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
                             Log.w(TAG, "sendAudio failed", e)
                         }
+                    } else {
+                        // v1.0.2: never throw away speech just because Live
+                        // is still connecting — buffer it (max ~10 s) and
+                        // flush it the moment onConnected arrives.
+                        bufferAudio(bytes)
                     }
                 }
 
@@ -539,13 +742,18 @@ class DubbingService : Service() {
                         try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
                             Log.w(TAG, "sendAudio failed", e)
                         }
+                    } else {
+                        bufferAudio(bytes)
                     }
                 }
 
                 override fun onSpeechEnd() {
                     try { tracker?.endUtterance() } catch (_: Exception) { }
-                    try { liveClient?.endTurn() } catch (e: Exception) {
-                        Log.w(TAG, "endTurn failed", e)
+                    setStatus("Đang dịch…")
+                    if (liveConnected) {
+                        try { liveClient?.endTurn() } catch (e: Exception) {
+                            Log.w(TAG, "endTurn failed", e)
+                        }
                     }
                     if (useGroqOnly) {
                         val pcm = utteranceBytes.toByteArray()
@@ -672,6 +880,7 @@ class DubbingService : Service() {
         stopped = true
         capturing = false
         try { mainHandler.removeCallbacks(watchdog) } catch (_: Exception) { }
+        try { mainHandler.removeCallbacks(levelTicker) } catch (_: Exception) { }
         try { captureThread?.join(1000) } catch (_: Exception) { }
         captureThread = null
         try { liveClient?.close() } catch (_: Exception) { }
@@ -682,19 +891,25 @@ class DubbingService : Service() {
         vad = null
         try { voicePlayer?.release() } catch (_: Exception) { }
         voicePlayer = null
+        synchronized(pendingChunks) { pendingChunks.clear() }
+        pendingBytes = 0
+        duckApplied = false
+        reconnectPending = false
         try {
             projectionCallback?.let { mediaProjection?.unregisterCallback(it) }
         } catch (_: Exception) { }
         projectionCallback = null
         try { mediaProjection?.stop() } catch (_: Exception) { }
         mediaProjection = null
+        try { setStatus("Đã dừng lồng tiếng") } catch (_: Exception) { }
         try { broadcast(TYPE_STATE, state = STATE_STOPPED) } catch (_: Exception) { }
         stopForegroundSafely()
         try { stopSelf() } catch (_: Exception) { }
     }
 
     private fun broadcast(type: String, text: String? = null, delayMs: Long? = null,
-                          state: String? = null, message: String? = null) {
+                          state: String? = null, message: String? = null,
+                          level: Int? = null) {
         try {
             val intent = Intent(ACTION_DUB_EVENT).setPackage(packageName)
             intent.putExtra(EXTRA_TYPE, type)
@@ -702,6 +917,7 @@ class DubbingService : Service() {
             if (delayMs != null) intent.putExtra(EXTRA_DELAY_MS, delayMs)
             if (state != null) intent.putExtra(EXTRA_STATE, state)
             if (message != null) intent.putExtra(EXTRA_MESSAGE, message)
+            if (level != null) intent.putExtra(EXTRA_LEVEL, level)
             sendBroadcast(intent)
         } catch (e: Exception) {
             Log.w(TAG, "broadcast failed", e)

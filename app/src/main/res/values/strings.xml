@@ -39,4 +39,9 @@
     <string name="start_failed">Không mở được ghi màn hình, đã chuyển sang chế độ mic.</string>
     <string name="projection_failed">Không ghi được màn hình, đã chuyển sang chế độ mic.</string>
     <string name="service_failed">Không mở được dịch vụ lồng tiếng, đã chuyển sang chế độ mic.</string>
+    <string name="status_idle">Trạng thái: chưa lồng tiếng</string>
+    <string name="level_label">Mức tiếng:</string>
+    <string name="key_live_ok">Live nối được (model %1$s) — key và model Live đều tốt</string>
+    <string name="key_live_bad">Live không nối được: %1$s</string>
+    <string name="key_testing_live">Đang kiểm tra Live (mở nối thử tới Gemini Live)…</string>
 </resources>

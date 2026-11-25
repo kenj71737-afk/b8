@@ -247,7 +247,9 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
             }
         }
         dubbing = true
-        player?.volume = Prefs.originalVolume(this)
+        // v1.0.2: full volume at start; the service ducks only after the
+        // first dubbed speech actually plays (ducking early starves VAD).
+        player?.volume = 1.0f
         hudView.visibility = View.VISIBLE
     }
 
@@ -283,7 +285,8 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         try {
             startForegroundService(intent)
             dubbing = true
-            player?.volume = Prefs.originalVolume(this)
+            // v1.0.2: full volume at start (see startMicService).
+            player?.volume = 1.0f
             hudView.visibility = View.VISIBLE
         } catch (e: Exception) {
             Log.w(TAG, "startForegroundService (projection) failed, retry=$isRetry", e)

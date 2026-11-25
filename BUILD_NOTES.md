@@ -67,6 +67,40 @@ bằng đúng key của user; DubLive v1.0.2 gọi sai cả 3 điểm so với b
   chưa có output, mọi lỗi đều retry/fallback + hiện trạng thái lâu,
   VAD 250, tiếng gốc 50%, dòng Trạng thái + thanh mức tiếng.
 
+## Đường dự phòng Groq cũng sửa trong v1.0.3 (thêm sau build đầu)
+
+- Ảnh mới của user: màn hình hiện "Lỗi: Dịch text HTTP 404", Mức tiếng
+  111, Trễ hình 7,6 s, video NetShort đang phát. Phân tích: user đã Dừng
+  rồi Bắt đầu lại nên key Groq mới đã có tác dụng, Whisper đã nghe +
+  chuyển thành text thành công — lỗi KHÔNG ở Whisper, cũng không phải
+  do key Groq cũ. Lỗi nằm ở bước DỊCH TEXT trong GroqFallback.translate:
+  URL generateContent với model gemini-2.5-flash trả HTTP 404 — model
+  này không tìm thấy với key này (giống kiểu model Live 2.0 chết 1008).
+- Sửa bước dịch: dịch bằng CHÍNH GROQ trước (key Groq đã có, Whisper
+  vừa chạy tốt): POST api.groq.com/openai/v1/chat/completions, thử lần
+  lượt "openai/gpt-oss-120b" rồi "llama-3.3-70b-versatile", đọc
+  choices[0].message.content. Chỉ khi cả 2 đều lỗi mới fallback sang
+  Gemini text, thử lần lượt "gemini-2.5-flash", "gemini-2.0-flash",
+  "gemini-1.5-flash" (mỗi model lỗi thì thử model sau, không dừng ở 404
+  đầu tiên). Mọi lỗi từng bước đều broadcast lên dòng Trạng thái với
+  tên bước + mã HTTP + model đã thử.
+- Whisper: GIỮ "whisper-large-v3" làm chính (ảnh chứng minh bước này đã
+  chạy qua được), thêm fallback "whisper-large-v3-turbo" nếu Whisper trả
+  400/404 model. Turbo là model transcription Groq khuyên dùng hiện tại
+  (docs Groq: production, đa ngôn ngữ).
+- Key Groq cũ: GroqFallback từng được tạo một lần trong startDub với key
+  lúc bắt đầu phiên — nhập key trong Cài đặt khi dịch vụ đang chạy thì
+  object cũ vẫn giữ key rỗng. Sửa: switchToGroq() tạo lại GroqFallback
+  với key TƯƠI, và trước mỗi lần transcribeAndTranslate service gọi
+  updateKeys() đọc lại key hiện tại. Nhập key Groq xong vẫn nên Dừng
+  hẳn rồi Bắt đầu lại cho chắc, nhưng bản này đã tự đọc key mới.
+- Trạng thái Groq: khi ở chế độ Groq, dòng trạng thái hiện "Đang nghe
+  bằng Groq…" / "Đang dịch bằng Groq…"; lỗi từng bước (Whisper HTTP /
+  dịch HTTP / text rỗng / bị lọc) đều hiện lên dòng Trạng thái, không im.
+- Lưu ý build: run 45607134772 cho commit 7e165f77 (chỉ có sửa Live)
+  đã success, nhưng bản đó chưa có sửa Groq nên KHÔNG giao; APK giao
+  là từ commit mới (có cả sửa Live + Groq) — xem run/commit ở đầu mục.
+
 ## Checklist thử lại cho user (v1.0.3)
 
 1. Gỡ v1.0.2, cài v1.0.3.
@@ -82,6 +116,10 @@ bằng đúng key của user; DubLive v1.0.2 gọi sai cả 3 điểm so với b
 6. Báo lại: (a) Kiểm tra key báo gì, (b) trạng thái dừng ở đâu (nếu lỗi
    thì chụp dòng trạng thái — trong đó có tên model lỗi), (c) có phụ đề/
    giọng Việt không.
+7. Nếu Live lỗi và app chuyển sang Groq: trạng thái phải hiện "Đang dịch
+   bằng Groq…" rồi phụ đề Việt phải hiện. Nhập key Groq xong thì Dừng
+   lồng tiếng hẳn rồi Bắt đầu lại (bản 1.0.3 đã tự đọc key mới, nhưng
+   dừng/bắt đầu lại vẫn là cách chắc nhất).
 
 ---
 

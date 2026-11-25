@@ -633,10 +633,25 @@ class DubbingService : Service() {
         if (useGroqOnly) return
         useGroqOnly = true
         try { liveClient?.close() } catch (_: Exception) { }
+        // v1.0.3: the Groq pipeline object was built once in startDub with
+        // the key as it was then. If the user typed the Groq key while the
+        // service was already running, the old object still holds an empty
+        // key and every utterance fails with "chưa có key Groq" even though
+        // Settings already has the key. Rebuild it here with the CURRENT
+        // key (and Gemini key) so the fallback works right away.
+        try {
+            groq = GroqFallback(
+                Prefs.groqKey(this),
+                Prefs.geminiKeys(this).firstOrNull().orEmpty(),
+                Prefs.sourceLang(this)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "GroqFallback rebuild failed", e)
+        }
         broadcast(TYPE_FALLBACK, message = reason)
         if (Prefs.groqKey(this).isEmpty()) {
-            setStatus("Lỗi: $reason — chưa có key Groq dự phòng, kiểm tra key Gemini trong Cài đặt")
-            broadcast(TYPE_ERROR, message = "Không có key Groq dự phòng — kiểm tra key Gemini trong Cài đặt")
+            setStatus("Lỗi: $reason — chưa có key Groq. Nhập key Groq trong Cài đặt, Dừng lồng tiếng hẳn rồi Bắt đầu lại.")
+            broadcast(TYPE_ERROR, message = "Chưa có key Groq dự phòng — nhập key trong Cài đặt rồi Dừng lồng tiếng hẳn và Bắt đầu lại")
         } else {
             setStatus("Đang dùng dự phòng Groq")
         }
@@ -720,7 +735,7 @@ class DubbingService : Service() {
                     utteranceBytes.reset()
                     val bytes = shortsToBytes(preRollAndHead)
                     utteranceBytes.write(bytes)
-                    setStatus("Đang nghe câu nói…")
+                    setStatus(if (useGroqOnly) "Đang nghe bằng Groq…" else "Đang nghe câu nói…")
                     if (liveConnected) {
                         flushPendingAudio()
                         try { liveClient?.sendAudio(bytes) } catch (e: Exception) {
@@ -748,7 +763,7 @@ class DubbingService : Service() {
 
                 override fun onSpeechEnd() {
                     try { tracker?.endUtterance() } catch (_: Exception) { }
-                    setStatus("Đang dịch…")
+                    setStatus(if (useGroqOnly) "Đang dịch bằng Groq…" else "Đang dịch…")
                     if (liveConnected) {
                         try { liveClient?.endTurn() } catch (e: Exception) {
                             Log.w(TAG, "endTurn failed", e)
@@ -756,26 +771,56 @@ class DubbingService : Service() {
                     }
                     if (useGroqOnly) {
                         val pcm = utteranceBytes.toByteArray()
-                        if (pcm.size > 3200) { // ignore blips shorter than ~100 ms
-                            try {
-                                groq?.transcribeAndTranslate(pcm, object : GroqFallback.Listener {
-                                    override fun onTranslated(text: String) {
-                                        lastOutputAtMs = System.currentTimeMillis()
-                                        broadcast(TYPE_SUBTITLE, text = text)
-                                        try {
-                                            voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
-                                        } catch (e: Exception) {
-                                            Log.w(TAG, "speakText failed", e)
-                                        }
+                        if (pcm.isEmpty()) {
+                            Log.w(TAG, "Groq: empty utterance, nothing to transcribe")
+                            return
+                        }
+                        if (pcm.size <= 3200) {
+                            // Blip shorter than ~100 ms: ignore, no error.
+                            return
+                        }
+                        val groqClient = groq
+                        if (groqClient == null) {
+                            setStatus("Lỗi Groq: chưa khởi tạo được bộ dự phòng")
+                            broadcast(TYPE_ERROR, message = "Lỗi Groq: chưa khởi tạo được bộ dự phòng")
+                            return
+                        }
+                        // v1.0.3: refresh keys right before the call — a Groq
+                        // key typed mid-session takes effect immediately.
+                        try {
+                            groqClient.updateKeys(
+                                Prefs.groqKey(this@DubbingService),
+                                Prefs.geminiKeys(this@DubbingService).firstOrNull().orEmpty()
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Groq updateKeys failed", e)
+                        }
+                        try {
+                            groqClient.transcribeAndTranslate(pcm, object : GroqFallback.Listener {
+                                override fun onTranslated(text: String) {
+                                    lastOutputAtMs = System.currentTimeMillis()
+                                    setStatus("Đang dùng dự phòng Groq")
+                                    broadcast(TYPE_SUBTITLE, text = text)
+                                    try {
+                                        voicePlayer?.speakText(text, tracker?.currentDelayMs ?: 0L)
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "speakText failed", e)
                                     }
+                                }
 
-                                    override fun onError(message: String) {
-                                        broadcast(TYPE_ERROR, message = message)
-                                    }
-                                })
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Groq fallback call failed", e)
-                            }
+                                override fun onError(message: String) {
+                                    setStatus("Lỗi Groq: $message")
+                                    broadcast(TYPE_ERROR, message = message)
+                                }
+
+                                override fun onProgress(message: String) {
+                                    setStatus(message)
+                                }
+                            })
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Groq fallback call failed", e)
+                            setStatus("Lỗi Groq: ${e.message}")
+                            broadcast(TYPE_ERROR, message = "Lỗi Groq: ${e.message}")
                         }
                     }
                 }

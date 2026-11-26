@@ -158,6 +158,14 @@ class DubDelayTracker(
      * hold all follow. Starts at the Settings base-delay seed. */
     private var delayMs: Long = initialDelayMs.coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
 
+    /** v1.0.16 — the base seed (the delay the tracker starts at).
+     * decayIfStale drifts D back toward it when no sample arrives
+     * for a while. A manual nudge (adjustManual) is NOT remembered
+     * as the base: after a long pause D returns to the seed and the
+     * live sampling re-establishes the true value once speech
+     * resumes. */
+    private val baseDelayMs: Long = delayMs
+
     /** Hold computed at the latest burst start (for the subtitle
      * delay: the subtitle shows when the voice STARTS PLAYING, i.e.
      * arrival + hold, not at arrival). */
@@ -457,14 +465,31 @@ class DubDelayTracker(
         if (!firstAudioSeeded && firstAudioSentAtMs > 0L) {
             firstAudioSeeded = true
             val elapsed = (nowMs - firstAudioSentAtMs).coerceIn(0L, 18000L)
-            latencyEma.seed(elapsed)
-            val newDelay = (elapsed + 2000L).coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
-            if (newDelay != delayMs) {
-                delayMs = newDelay
-                onDelayChanged(delayMs)
+            // v1.0.16 — only trust the seed when the first output is
+            // plausibly fast (<= 8 s). A slow first output (cold
+            // start, or a reconnect gap measured against
+            // pre-reconnect speech — the 06:48 screenshot: ~10.5 s
+            // elapsed -> D 12.5 s, then frozen because no later
+            // sample ever arrived to pull it down) is connection
+            // setup, not translation latency. A skipped seed leaves
+            // D at the base seed and the normal sampling takes over;
+            // the seed never runs twice either way.
+            if (elapsed <= 8000L) {
+                latencyEma.seed(elapsed)
+                // The seed IS a latency measurement: stamp it so the
+                // diagnostics show it as the last sample and the
+                // stale-decay has a clock even if no later sample is
+                // ever fed (video pauses right after the first dub).
+                lastSampleMs = elapsed
+                lastSampleAtMs = nowMs
+                val newDelay = (elapsed + 2000L).coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
+                if (newDelay != delayMs) {
+                    delayMs = newDelay
+                    onDelayChanged(delayMs)
+                }
+                hold = (newDelay - elapsed).coerceAtLeast(0L)
+                lastHoldMs = hold
             }
-            hold = (newDelay - elapsed).coerceAtLeast(0L)
-            lastHoldMs = hold
         }
         // v1.0.14 — dub burst: a chunk arriving ≥500 ms after the
         // previous one starts a new turn's dub. It anchors exactly
@@ -579,6 +604,13 @@ class DubDelayTracker(
             if (countedCorrection && (!marker.done || marker.countedMs <= 0L)) {
                 continue
             }
+            // v1.0.16 — a turn marker older than the valid sample
+            // range (20 s, same rule as slice samples) is stale:
+            // pairing it with a late turnComplete/burst (e.g. after
+            // a reconnect) would fabricate a huge latency — the
+            // 06:48 screenshot's D 12.5 s with 0/60 s turn pairs.
+            // Skip it, never feed it.
+            if (nowMs - marker.wallMs > MAX_SAMPLE_MS) continue
             var implied = nowMs - marker.wallMs
             if (countedCorrection) implied -= marker.countedMs
             val residual = kotlin.math.abs(implied - lagEst)
@@ -849,6 +881,36 @@ class DubDelayTracker(
     @Synchronized
     fun adjustManual(deltaMs: Long) {
         delayMs = (delayMs + deltaMs).coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
+        onDelayChanged(delayMs)
+    }
+
+    /**
+     * v1.0.16 — D decay when starved of samples. D only moves when a
+     * sample arrives (flushWindowIfDue runs from onDubAudioArrival),
+     * so a video that stops mid-session can freeze D at an extreme
+     * value forever (the 06:48 screenshot: D 12.5 s, last sample 6 s
+     * ago, video paused, no more dub arriving — and the v1.0.14
+     * creep only runs inside LatencyEma.sample(), i.e. when a new
+     * median arrives). When no sample has arrived for > [STALL_MS]
+     * (10 s), drift D back toward [baseDelayMs] by 1 s per call.
+     * The service calls this from the 10 s watchdog tick, so D falls
+     * ~1 s every 10 s of silence. No-op before the first sample
+     * (lastSampleAtMs == 0) and when D is already at the base. A
+     * manual nudge is NOT the decay target (see baseDelayMs): after
+     * a long pause D returns to the seed and live sampling
+     * re-establishes the true value once speech resumes.
+     */
+    @Synchronized
+    fun decayIfStale(nowMs: Long) {
+        if (lastSampleAtMs == 0L) return
+        if (nowMs - lastSampleAtMs <= STALL_MS) return
+        if (delayMs == baseDelayMs) return
+        val step = 1000L
+        delayMs = if (delayMs > baseDelayMs) {
+            maxOf(baseDelayMs, delayMs - step)
+        } else {
+            minOf(baseDelayMs, delayMs + step)
+        }
         onDelayChanged(delayMs)
     }
 

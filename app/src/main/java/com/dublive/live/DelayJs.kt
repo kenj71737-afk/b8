@@ -3,6 +3,24 @@ package com.dublive.live
 /**
  * Video-delay engine injected into the WebView.
  *
+ * v1.0.16 — TOUCH PASSTHROUGH + AUTO-RESUME (the 06:48 YouTube
+ * report: "Bấm vào là dừng lại không chạy đuoc video", video stuck
+ * at 0:03/3:19). Read the code + the built APK before fixing: the
+ * canvas ALREADY had pointer-events:none in source AND in the
+ * v1.0.15 dex (verified by strings on classes3.dex), no other DOM
+ * overlay exists, and no code ever pauses the video — so the canvas
+ * was NOT swallowing the tap by hit-testing. The real stop was the
+ * TapJs silence probe (see TapJs.kt): a silent intro misread as a
+ * dead tap fires the capture-dialog cascade, the activity pauses,
+ * and YouTube pauses the video on visibilitychange. Two defences
+ * here anyway: (a) the canvas is hidden + suppressed while a touch
+ * is active, so taps/drags (play/pause, seek) always reach
+ * YouTube's native controls even if an OEM WebView hit-tests a
+ * fixed overlay oddly; pointer-events:none is re-asserted every
+ * time the canvas is shown; (b) DubLiveResumeVideo /
+ * DubLiveIsVideoPlaying let MainActivity resume the video after
+ * the capture dialog returns (see launchProjection).
+ *
  * WHY: the dubbed Vietnamese voice always arrives 2-5 s after the picture,
  * so the picture must wait for the voice or the lips never match.
  *
@@ -90,6 +108,36 @@ object DelayJs {
   var delayFailedNotified = false;
   var active = false;
   var seekWired = new WeakSet();
+  // v1.0.16 — touch passthrough: while a touch is active the canvas
+  // stays hidden so taps/drags always reach the page's own controls
+  // (play/pause, seek bar). performance.now() timestamp until which
+  // tick() must not show the canvas.
+  var touchActiveUntil = 0;
+
+  // v1.0.16 — let the app resume the video after the system capture
+  // dialog returns (the dialog pauses the activity and YouTube pauses
+  // the video on visibilitychange; see MainActivity.launchProjection)
+  // and ask whether it is playing (to resume only when it was).
+  window.DubLiveIsVideoPlaying = function () {
+    try { return !!(best && !best.paused && best.currentTime > 0); } catch (e) { return false; }
+  };
+  window.DubLiveResumeVideo = function () {
+    try { if (best && best.paused) best.play(); } catch (e) {}
+  };
+  // v1.0.16 — hide the canvas the moment a touch starts (and keep it
+  // hidden ~700 ms, covering the tap + the start of a seek drag), so
+  // the gesture lands on the page's controls, never on the overlay.
+  // The canvas already has pointer-events:none (verified in the
+  // v1.0.15 dex); this is defence in depth for OEM WebViews whose
+  // hit-testing treats a fixed overlay oddly.
+  document.addEventListener('touchstart', function () {
+    touchActiveUntil = performance.now() + 700;
+    hideCanvas();
+  }, { passive: true });
+  document.addEventListener('pointerdown', function () {
+    touchActiveUntil = performance.now() + 700;
+    hideCanvas();
+  }, { passive: true });
 
   // v1.0.13 — ONE canvas, fixed over the viewport, max z-index
   // (same as the userscript): immune to parent overflow/transform
@@ -192,6 +240,13 @@ object DelayJs {
       requestAnimationFrame(tick);
       return;
     }
+    // v1.0.16 — a touch is active (tap / seek drag): keep the canvas
+    // hidden so the gesture reaches the page's controls.
+    if (now < touchActiveUntil) {
+      hideCanvas();
+      requestAnimationFrame(tick);
+      return;
+    }
     // Snapshot at most every 30 ms (~30 fps): one frame per tick at
     // 60-144 Hz is pure churn and is what janked the old engine.
     if (now - lastSnapshot >= 30) {
@@ -236,6 +291,9 @@ object DelayJs {
       var scale = Math.min(r.width / Math.max(1, vw), r.height / Math.max(1, vh));
       var cw = Math.max(2, vw * scale), ch = Math.max(2, vh * scale);
       var cx = Math.max(0, r.left + (r.width - cw) / 2), cy = Math.max(0, r.top + (r.height - ch) / 2);
+      // v1.0.16 — re-assert pointer-events:none every time the canvas
+      // is shown, so no later style write can ever make it eat taps.
+      canvas.style.pointerEvents = 'none';
       canvas.style.display = 'block';
       canvas.style.left = cx + 'px'; canvas.style.top = cy + 'px';
       canvas.style.width = Math.min(cw, window.innerWidth) + 'px';

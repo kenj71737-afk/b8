@@ -134,6 +134,11 @@ class MainActivity : AppCompatActivity() {
     /** v1.0.11 — the tap died and the projection dialog is out: the
      * result is a tap -> capture fallback, not a fresh start. */
     private var fallbackPending = false
+    /** v1.0.16 — the video was playing when the system capture dialog
+     * was launched: the dialog pauses the activity and YouTube pauses
+     * the video on visibilitychange, so resume it when the dialog
+     * returns (granted or denied) — see launchProjection. */
+    private var wasPlayingBeforeProjection = false
     /** v1.0.11 — last audio-route label from the service, shown on the
      * status line next to the status text. */
     private var lastAudioRouteLabel = ""
@@ -216,6 +221,10 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Cần cho phép ghi màn hình để lấy tiếng hệ thống", Toast.LENGTH_LONG).show()
             }
         }
+        // v1.0.16 — the capture dialog paused the activity and
+        // YouTube paused the video: resume it if it was playing
+        // before the dialog (granted or denied).
+        resumeVideoAfterProjection()
     }
 
     /**
@@ -1144,6 +1153,28 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun launchProjection() {
+        // v1.0.16 — remember whether the video was playing BEFORE the
+        // system capture dialog appears: the dialog pauses the
+        // activity and YouTube pauses the video on visibilitychange,
+        // so MainActivity resumes it when the dialog returns (see
+        // projectionLauncher). The check is async (JS bridge), so the
+        // intent launches from the callback; on any failure assume
+        // not playing and launch anyway — never block the fallback
+        // on this bookkeeping.
+        try {
+            webView.evaluateJavascript(
+                "(function(){try{return (window.DubLiveIsVideoPlaying && window.DubLiveIsVideoPlaying()) ? '1' : '0';}catch(e){return '0';}})()"
+            ) { result ->
+                wasPlayingBeforeProjection = (result == "\"1\"" || result == "1")
+                launchProjectionIntent()
+            }
+        } catch (_: Exception) {
+            wasPlayingBeforeProjection = false
+            launchProjectionIntent()
+        }
+    }
+
+    private fun launchProjectionIntent() {
         try {
             val mgr = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projectionLauncher.launch(mgr.createScreenCaptureIntent())
@@ -1151,6 +1182,22 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "Could not launch screen-capture intent", e)
             Toast.makeText(this, R.string.start_failed, Toast.LENGTH_LONG).show()
             startMicService()
+        }
+    }
+
+    /** v1.0.16 — resume the video if it was playing before the
+     * capture dialog (see launchProjection). Called from the
+     * projection result handler, granted or denied: in both cases
+     * the dialog paused the activity and YouTube paused the video,
+     * and the user did not ask for a pause. */
+    private fun resumeVideoAfterProjection() {
+        if (!wasPlayingBeforeProjection) return
+        wasPlayingBeforeProjection = false
+        try {
+            webView.evaluateJavascript(
+                "window.DubLiveResumeVideo && window.DubLiveResumeVideo()", null
+            )
+        } catch (_: Exception) {
         }
     }
 

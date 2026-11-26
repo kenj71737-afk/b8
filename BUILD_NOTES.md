@@ -1,3 +1,114 @@
+# DubLive v1.0.15 — "MỞ BẰNG DUBLIVE" (SHARE TARGET)
+
+User yêu cầu 26/11/2026 05:20: "Làm thêm chức năng mở APK khác trong ứng dụng,
+để khi xem APK khác lồng tiếng được khớp với hình. Đừng làm kiểu mở ứng dụng
+khác xem rồi ghi và chia sẻ màn hình để dublive dịch."
+APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.15.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.15.apk`)
+- Kích thước: 9.530.994 bytes (9,1 MB). MD5: b52efe1678aded79c94a938c96c1418d.
+- aapt2: package `com.dublive.live`, versionCode 16, versionName 1.0.15,
+  minSdk 26, targetSdk 34, launcher `MainActivity`, label `DubLive`.
+  Intent-filter đã vào manifest của APK (aapt2 dump xmltree):
+  MainActivity launchMode=1 (singleTop); ACTION_SEND + DEFAULT +
+  text/plain; ACTION_SEND + DEFAULT + video/*; ACTION_VIEW + DEFAULT +
+  BROWSABLE + scheme http/https. Dex có `handleSharedIntent`,
+  `extractFirstWebUrl`, `openSharedVideoFile`, chuỗi `share_hint`,
+  `share_deep_link`; hotfix v1.0.11–14 còn nguyên.
+- Actions run **45719195890** (job "Build APK" completed/success; job
+  "Create GitHub Release" FAIL — bình thường ở run trigger bằng tag,
+  không cần tới, chỉ lấy artifact), commit
+  `bf4eb9569be971aa368cec0dba07afe3fda54a05` trên nhánh `dublive-v1`
+  (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
+  `alad-apks` (id 15071626663, bản Debug). Build 1 lần là đậu.
+- Build vẫn phải vòng qua tag như v1.0.14 (PR #1 còn dirty nên push
+  nhánh không trigger run): tag `v1.0.15-dublive` trỏ tới commit trên
+  (workflow trigger `push: tags: v*`). Tag vẫn còn trên repo.
+
+## Vì sao làm share target thay vì nhúng app khác
+
+Android KHÔNG cho nhúng màn hình/activity của app khác vào trong app
+mình (không có API embedding cho app thường; chỉ app kia tự cho phép
+mới được, app phim không cho). Không làm virtualization
+(VirtualApp/parallel-space), không dùng ActivityView hay API ẩn. Cách
+đúng để đạt mục tiêu của user (xem video của app khác mà lồng tiếng
+KHỚP HÌNH) là đưa VIDEO vào trong trình phát của chính DubLive, nơi
+canvas trễ hình + tap + đo trễ đã chạy được — thay vì app kia phát
+ngoài rồi DubLive ghi màn hình (đường đó không trễ được hình, user đã
+cấm).
+
+## Tính năng mới
+
+1. **Chia sẻ link (text/plain):** ở app khác (app phim, YouTube,
+   Chrome…) bấm Chia sẻ → DubLive. DubLive trích URL http(s) đầu tiên
+   trong đoạn text chia sẻ (kể cả khi URL nằm giữa đoạn mô tả) rồi mở
+   trong WebView của mình — đúng đường web phim/YouTube đã có tap +
+   canvas trễ hình + đo trễ. Hiện gợi ý bấm "Bắt đầu lồng tiếng".
+2. **Chia sẻ file video (video/*):** mở bằng LocalPlayerActivity /
+   ExoPlayer trong DubLive (đường file local đã có tap GAME + đồng bộ).
+3. **Mở link bằng DubLive (ACTION_VIEW http/https):** "Mở bằng DubLive"
+   hiện trong hộp chọn mở link — chỉ khi user chọn tường minh, không tự
+   chiếm link mặc định.
+4. **Link không mở được thì báo rõ, không màn trắng/im lặng:** text
+   chia sẻ không có URL http(s), hoặc link là deep link (hongguo://,
+   intent://, snssdk://, market://…), hoặc bấm link app trong trang
+   (shouldOverrideUrlLoading chỉ cho http/https qua) → Toast + dòng
+   trạng thái "Link này mở bằng app gốc, DubLive không mở được — thử mở
+   bản web của trang đó rồi dán link vào thanh địa chỉ".
+5. **Dòng hướng dẫn trong app** (dưới thanh địa chỉ): "Xem app phim khác
+   mà vẫn khớp hình: trong app đó bấm Chia sẻ → DubLive (hoặc dán link
+   video vào đây). DubLive chỉ lồng tiếng khớp hình khi video phát trong
+   DubLive; xem bằng app khác rồi ghi màn hình thì hình không trễ được."
+6. MainActivity launchMode singleTop + onNewIntent: đang mở DubLive mà
+   chia sẻ thêm thì không tạo activity thứ hai.
+
+## Hồng Quả (红果免费短剧) — test case bắt buộc của bản này
+
+User hỏi 26/11 05:20 (kèm ảnh màn hình đăng nhập app Hồng Quả — đăng nhập
+một chạm qua Douyin, ủy quyền avatar/nickname + số điện thoại; user hiện
+CHƯA đăng nhập Hồng Quả): "Này chia sẻ được không".
+Tìm hiểu bằng web search + fetch trang thật (không có tài khoản Hồng Quả,
+không chạy được app trên VM — kết quả dưới đây là từ nguồn công khai, CHƯA
+kiểm chứng trên máy thật, cần user thử):
+- Link chia sẻ của Hồng Quả là link web `https://www.hongguo.com/share/…`
+  (nút 分享 → 复制链接; client bên thứ ba xác nhận "复制别人的分享链接后
+  自动识别播放"). DubLive trích URL này bằng regex rồi mở trong WebView.
+- Có bản web thật: `hongguoduanju.com/detail?series_id=<id>` và
+  `hongguoduanju.com/player/<series_id>`. Fetch trang player
+  `hongguoduanju.com/player/7708671412071828504` KHÔNG cần đăng nhập:
+  trang chứa link mp4 trực tiếp
+  `https://hongguoduanju.com/video/public/7708671417901927449/360p.mp4`
+  + danh sách tập 1–82. Không có tường đăng nhập ở bản web.
+- Không cần đăng nhập để xem tập công khai ("免费, 不登录也能刷剧" —
+  xem miễn phí không cần đăng nhập; màn đăng nhập user thấy chỉ là app
+  mời đăng nhập, không phải điều kiện phát).
+- TRIỂN VỌNG TAP TỐT HƠN NETSHORT: mp4 của bản web CÙNG GỐC với trang
+  (hongguoduanju.com) nên MediaElementSource + canvas drawImage KHÔNG bị
+  chặn CORS/taint — tap có thể sống và hình trễ được, khác NetShort
+  (CDN khác gốc, không CORS → tap chết → fallback capture, hình không
+  trễ). Lưu ý: có nguồn nói track tập phim qua API của app bị mã hóa —
+  đó là đường API trong app, không phải mp4 của bản web; nếu WebView
+  của user rốt cuộc vẫn dùng stream mã hóa/MSE thì tap sẽ chết và
+  DubLive tự fallback capture (chỉ dịch tiếng, hình không trễ) — ghi rõ
+  kết quả thật vào đây sau khi user thử.
+- Link chia sẻ hongguo.com/share/… là trang trung gian redirect về bản
+  web (nguồn người dùng: dán link vào trình duyệt, chờ nhảy xong thì
+  thanh địa chỉ hiện domain web thật). WebView của DubLive tự theo
+  redirect này.
+- Nếu link chia sẻ ra deep link (hongguo://) hoặc trang bắt mở app:
+  DubLive báo rõ bằng Toast + trạng thái (mục 4 ở trên), không màn
+  trắng. Gợi ý user: mở bản web hongguoduanju.com rồi dán link vào
+  thanh địa chỉ.
+
+## Giới hạn còn biết
+
+- Chỉ nhận link/file ĐƯỢC CHIA SẺ sang DubLive; không nhúng được app
+  khác (Android cấm), không tự lấy video đang phát trong app khác.
+- Chưa kiểm chứng trên máy thật: (a) chia sẻ từ Hồng Quả / Chrome /
+  YouTube sang DubLive; (b) tap trên bản web Hồng Quả sống hay fallback;
+  (c) chia sẻ file video mở bằng ExoPlayer. Cần user thử theo checklist
+  dưới rồi báo lại.
+
 # DubLive v1.0.14 — ĐO TRỄ THEO RANH GIỚI LƯỢT NÓI (chữa D đứng im)
 
 User thử v1.0.13 lúc 05:08 ngày 26/11/2026 trên cswold video 8053 ep-2:

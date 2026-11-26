@@ -3,7 +3,7 @@
 User yêu cầu bỏ v1.0.15 và v1.0.16, lấy v1.0.14 làm nền để tiếp tục hoàn thiện.
 - Bỏ v1.0.15 (share target "Mở bằng DubLive") và v1.0.16 (sửa probe im lặng / watchdog spam nối lại Live / D vọt 12,5 s).
 - Nền hiện tại = đúng tree của commit v1.0.14 `a93d10eeb87332f3834eeea693c5dbf1ee99c253` (versionCode 15, versionName 1.0.14; APK đã giao 06:07 ngày 26/11, MD5 4794193374ac0b62bc2ea0b613b5aeaf).
-- Commit revert: REVERT_SHA_PLACEHOLDER (parent = 168a5a9f39c713656f842bc7dcf93d2a709bb671; tree = tree v1.0.14 + BUILD_NOTES.md này).
+- Commit revert: `5b3f7327898991bcf9af35d1c8557ef7ee54d199` (parent = 168a5a9f39c713656f842bc7dcf93d2a709bb671; tree = tree v1.0.14 + BUILD_NOTES.md này).
 - Lý do: quyết định của user, KHÔNG phải lỗi build — v1.0.16 build 1 lần là đậu (Actions run 45725958344). Code v1.0.15/16 vẫn còn nguyên trong lịch sử nhánh `dublive-v1` (commit `bf4eb956` v1.0.15, `168a5a9f` v1.0.16) nên khôi phục lại được bất cứ lúc nào nếu cần.
 - APK v1.0.15/v1.0.16 trong thư mục goal được GIỮ nguyên làm lịch sử, không xóa. Không trigger build mới; PR #1 vẫn KHÔNG merge.
 

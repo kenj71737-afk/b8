@@ -1,3 +1,123 @@
+# DubLive — REVERT VỀ v1.0.14 (26/11/2026 ~10:45)
+
+User yêu cầu bỏ v1.0.15 và v1.0.16, lấy v1.0.14 làm nền để tiếp tục hoàn thiện.
+- Bỏ v1.0.15 (share target "Mở bằng DubLive") và v1.0.16 (sửa probe im lặng / watchdog spam nối lại Live / D vọt 12,5 s).
+- Nền hiện tại = đúng tree của commit v1.0.14 `a93d10eeb87332f3834eeea693c5dbf1ee99c253` (versionCode 15, versionName 1.0.14; APK đã giao 06:07 ngày 26/11, MD5 4794193374ac0b62bc2ea0b613b5aeaf).
+- Commit revert: REVERT_SHA_PLACEHOLDER (parent = 168a5a9f39c713656f842bc7dcf93d2a709bb671; tree = tree v1.0.14 + BUILD_NOTES.md này).
+- Lý do: quyết định của user, KHÔNG phải lỗi build — v1.0.16 build 1 lần là đậu (Actions run 45725958344). Code v1.0.15/16 vẫn còn nguyên trong lịch sử nhánh `dublive-v1` (commit `bf4eb956` v1.0.15, `168a5a9f` v1.0.16) nên khôi phục lại được bất cứ lúc nào nếu cần.
+- APK v1.0.15/v1.0.16 trong thư mục goal được GIỮ nguyên làm lịch sử, không xóa. Không trigger build mới; PR #1 vẫn KHÔNG merge.
+
+# DubLive v1.0.16 — SỬA VIDEO YOUTUBE BẤM KHÔNG CHẠY + WATCHDOG SPAM + D 12,5 S
+
+User thử v1.0.15 lúc 06:48 ngày 26/11/2026: chia sẻ video YouTube
+"The Hidden Binary Tool – FREE Indicator" (3:19) từ app khác sang
+DubLive (URL đã vào thanh địa chỉ — share target CHẠY ĐƯỢC), nhưng
+báo: "Bấm vào là dừng lại không chạy đuoc video". Ảnh kèm cho thấy
+video dừng ở 0:03/3:19, hộp "Nhật ký lỗi Live" có 8 lỗi y hệt nhau
+cách nhau 10 s ("Im lặng 60s sau khi đã có output — nối lại Live"),
+và dòng chẩn đoán "D 12,5 s · mẫu cuối 0,7 s (6 s trước) · 5 mẫu/60 s ·
+cặp mốc 0/60 s · chờ 0 lát · hold 2,0 s · VAD: nghỉ".
+APK Debug, cài được.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.16.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.16.apk`)
+- Kích thước: 9.533.026 bytes (9,1 MB). MD5: 73330e0611b43f74bedcc8bc34fb7956.
+- aapt2: package `com.dublive.live`, versionCode 17, versionName 1.0.16.
+  Dex xác nhận: `DubLiveResumeVideo`, `DubLiveIsVideoPlaying`,
+  `probePlayedMs`, `decayIfStale`, `silenceReconnects`,
+  `lastSilenceReconnectAtMs`, `pointer-events:none`, log watchdog mới
+  "Live silent 60s while speech flows"; chuỗi spam cũ "Im lặng 60s sau
+  khi đã có output" đã BIẾN MẤT (0 lần), chuỗi leo thang Groq "Im lặng
+  60s, đã hết" còn nguyên. JS TapJs + DelayJs trích ra chạy `node
+  --check` OK.
+- Actions run **45725958344** (job "Build APK" completed/success; job
+  "Create GitHub Release" FAIL — bình thường ở run trigger bằng tag,
+  không cần tới, chỉ lấy artifact), commit
+  `168a5a9f39c713656f842bc7dcf93d2a709bb671` trên nhánh `dublive-v1`
+  (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge), artifact
+  `alad-apks` (id 15074597690, bản Debug). Build 1 lần là đậu.
+- Build vòng qua tag như v1.0.14/v1.0.15 (PR #1 còn dirty nên push
+  nhánh không trigger run): tag `v1.0.16-dublive` trỏ tới commit trên
+  (workflow trigger `push: tags: v*`). Tag vẫn còn trên repo.
+  Lưu ý: tải artifact phải dùng `gh.py download-artifact <id>` (lệnh
+  `download` thường với archive URL trả 401 vì không gắn auth).
+
+## Nguyên nhân tìm được (đọc code + dex, không đoán mò)
+
+1. **Video bấm không chạy — KHÔNG phải canvas chặn chạm.** Giả thuyết
+   ban đầu sai: canvas trễ hình ĐÃ có `pointer-events:none` trong cả
+   source (DelayJs.kt:98) lẫn dex của APK v1.0.15 (kiểm chứng bằng
+   strings trên classes3.dex); không có `.pause()` nào trong code,
+   không có touch listener nào chặn, overlay Android đều nhỏ và
+   không ăn chạm. Cơ chế thật: **probe im lặng 2,2 s của TapJs bắn
+   nhầm trong lúc intro video còn im tiếng** → kết luận tap chết →
+   chuỗi dialog ghi màn hình bật lên → activity pause → YouTube tự
+   pause video khi `document.visibilitychange` → video kẹt ở 0:03.
+   Sau khi dialog bị từ chối/hủy, fallback sang mic và video vẫn
+   đứng yên (YouTube không tự phát lại).
+2. **Watchdog spam nối lại mỗi 10 s:** `reconnectLive()` không reset
+   `lastOutputAtMs`, và `onConnected` reset `reconnects = 0` mỗi lần
+   nối lại → điều kiện "im lặng 60 s" vẫn đúng ở tick 10 s tiếp theo
+   → nối lại vô hạn (8 lỗi y hệt trong hộp thoại). Video đang DỪNG
+   nên không có thoại → không có giọng dịch là bình thường, không
+   phải key chết.
+3. **D = 12,5 s khi gần như không có thoại:** seed first-audio đo
+   (giọng dịch đầu tiên) − (thoại đầu tiên gửi đi) = ~10,5 s (khởi
+   động lạnh / khoảng trống sau lần nối lại đầu tiên) → seed đặt D =
+   10,5 + 2,0 = 12,5 s; sau đó video dừng, không có mẫu mới nào về,
+   mà D chỉ cử động khi có mẫu mới (flush chỉ chạy khi dub về) nên D
+   kẹt vĩnh viễn ở 12,5 s. Marker lượt nói cũ (>20 s) cũng có thể
+   ghép nhầm với burst đến muộn sau lần nối lại.
+
+## Cách sửa (giữ nguyên toàn bộ v1.0.11–v1.0.15)
+
+1. **TapJs — probe tính theo THỜI GIAN PHÁT THẬT, không theo đồng hồ
+   tường:** không arm probe khi video đang pause; mỗi lần bắn chỉ
+   cộng thời gian `currentTime` thực sự trôi (≥1 s); chỉ kết luận tap
+   chết sau ~8 s phát thật mà không có block tiếng nào — video bị
+   CORS/DRM chặn thì im mãi mãi, intro im tiếng thì không. Fallback
+   NetShort (tap chặn thật) vẫn chạy vì sau 8 s phát vẫn im thì probe
+   vẫn fail như cũ.
+2. **DelayJs + MainActivity — chạm + tự phát lại:** canvas ẩn hẳn
+   trong lúc chạm đang diễn ra (touchstart/pointerdown → ẩn + cấm
+   hiện lại ~700 ms, phủ cả tap lẫn kéo thanh tiến trình) và
+   `pointer-events:none` được khẳng định lại mỗi lần canvas hiện;
+   thêm `window.DubLiveResumeVideo` / `DubLiveIsVideoPlaying`;
+   MainActivity ghi nhớ video có đang phát trước khi dialog ghi màn
+   hình hiện không, và phát lại video khi dialog trả về (cả khi được
+   cấp phép lẫn khi bị từ chối).
+3. **DubbingService — watchdog chỉ nối lại khi thoại đang chảy:**
+   nhánh "im lặng 60 s" chỉ chạy khi `now − lastHeardAtMs ≤ 15 s`
+   (đang có tiếng vào Live mà không có giọng ra); tối đa 1 lần nối
+   lại vì im lặng mỗi 60 s (`lastSilenceReconnectAtMs`, đồng hồ im
+   lặng khởi động lại từ lần nối lại); bộ đếm `silenceReconnects`
+   theo phiên (không bị `onConnected` reset như `reconnects`) nên
+   leo thang Groq sau 12 lần vẫn chạy; lần nối lại vì im lặng KHÔNG
+   ghi vào "Nhật ký lỗi Live" nữa (chỉ Log), chỉ lần leo thang Groq
+   mới ghi; bộ đếm reset khi có output và khi startDub. Thêm nữa:
+   `reconnectLive()` reset `firstAudioSentAtMs` để seed lần sau
+   không đo khoảng trống trước lần nối lại.
+4. **DubDelayTracker — D không kẹt ở đỉnh cũ:** seed first-audio chỉ
+   tin khi elapsed ≤ 8 s (chậm hơn = thời gian setup kết nối, không
+   phải trễ dịch; seed vẫn đánh dấu đã chạy, D giữ nguyên giá trị
+   gốc và đo mẫu thường tiếp quản); seed cũng stamp
+   `lastSampleMs/lastSampleAtMs` để decay có đồng hồ ngay cả khi
+   không có mẫu nào sau đó; `selectMarker` bỏ qua marker thoại cũ
+   hơn 20 s (cùng luật với mẫu lát); thêm `decayIfStale(nowMs)` —
+   khi >10 s không có mẫu mới, D trôi về giá trị gốc (base delay)
+   1 s mỗi lần gọi, watchdog gọi mỗi 10 s trong lúc đang ghi. Nút
+   "Trễ −1s/+1s" của user KHÔNG được nhớ làm gốc: sau khoảng dừng
+   dài D về seed rồi đo mẫu sống sẽ lập lại giá trị thật khi thoại
+   trở lại.
+
+## Chưa kiểm chứng trên máy thật
+
+- Chia sẻ video YouTube sang DubLive: bấm vào video phải play/pause
+  được, kéo thanh tiến trình được.
+- Để video dừng 2 phút: log Live KHÔNG spam nối lại.
+- Xem 3–5 phút: D cử động bình thường, không vọt lên ~12 s vô lý.
+- Hongguo (v1.0.15) vẫn chưa có kết quả thử trên máy thật: tap sống
+  ("Âm thanh: phương tiện") hay fallback.
+
 # DubLive v1.0.15 — "MỞ BẰNG DUBLIVE" (SHARE TARGET)
 
 User yêu cầu 26/11/2026 05:20: "Làm thêm chức năng mở APK khác trong ứng dụng,

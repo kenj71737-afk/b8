@@ -27,16 +27,6 @@
             android:text="@string/open" />
     </LinearLayout>
 
-    <!-- v1.0.15 — "Mở bằng DubLive": share from another film app so the
-         video plays inside DubLive, where picture and dub can stay in sync. -->
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingLeft="8dp"
-        android:paddingRight="8dp"
-        android:text="@string/share_hint"
-        android:textSize="12sp" />
-
     <LinearLayout
         android:id="@+id/dubRow"
         android:layout_width="match_parent"

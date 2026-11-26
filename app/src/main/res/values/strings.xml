@@ -65,8 +65,4 @@
     <string name="key_live_ok">Live nối được (model %1$s) — key và model Live đều tốt</string>
     <string name="key_live_bad">Live không nối được: %1$s</string>
     <string name="key_testing_live">Đang kiểm tra Live (mở nối thử tới Gemini Live)…</string>
-    <string name="share_hint">Xem app phim khác mà vẫn khớp hình: trong app đó bấm Chia sẻ → DubLive (hoặc dán link video vào đây). DubLive chỉ lồng tiếng khớp hình khi video phát trong DubLive; xem bằng app khác rồi ghi màn hình thì hình không trễ được.</string>
-    <string name="share_opened">Đã mở link được chia sẻ — bấm Bắt đầu lồng tiếng để dịch</string>
-    <string name="share_no_url">Link này không mở được trong DubLive, thử dán link video vào thanh địa chỉ</string>
-    <string name="share_deep_link">Link này mở bằng app gốc, DubLive không mở được — thử mở bản web của trang đó rồi dán link vào thanh địa chỉ</string>
 </resources>

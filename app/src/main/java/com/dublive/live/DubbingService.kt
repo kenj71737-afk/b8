@@ -296,14 +296,6 @@ class DubbingService : Service() {
     private var startedAtMs = 0L
     private var lastLiveAttemptAtMs = 0L
     private var reconnects = 0
-    /** v1.0.16 — silence-reconnect bookkeeping (see the watchdog).
-     * [lastSilenceReconnectAtMs]: the last reconnect done because
-     * Live went quiet while speech was flowing. [silenceReconnects]:
-     * how many such reconnects this session (session-wide — unlike
-     * [reconnects], which onConnected resets to 0 on every connect
-     * and therefore never caps the loop). */
-    private var lastSilenceReconnectAtMs = 0L
-    private var silenceReconnects = 0
     private var useGroqOnly = false
     private var liveConnected = false
     private var reconnectPending = false
@@ -501,45 +493,16 @@ class DubbingService : Service() {
             }
             if (!useGroqOnly) {
                 if (lastOutputAtMs > 0 && now - lastOutputAtMs > SILENCE_LIMIT_MS) {
-                    // v1.0.16 — reconnect for silence ONLY while speech
-                    // is actually flowing into Live (loud audio heard
-                    // recently) but no dub comes back. A paused video
-                    // / quiet scene is silent by design: the old code
-                    // reconnected anyway, and because reconnectLive()
-                    // never reset lastOutputAtMs (and onConnected
-                    // resets `reconnects` to 0 on every connect), it
-                    // reconnected every 10 s forever — the 06:48
-                    // screenshot: 8 identical "Im lặng 60s — nối lại
-                    // Live" entries 10 s apart. Two guards now:
-                    // (1) the speech-flowing gate below, and (2) at
-                    // most one silence-reconnect per 60 s (the
-                    // silence clock restarts at the reconnect). A
-                    // silence-reconnect is also NOT a "Live error"
-                    // any more (no recordLiveError): only the final
-                    // Groq escalation is recorded. The budget is
-                    // session-wide (silenceReconnects, never reset by
-                    // a connect) so the Groq escalation still fires.
-                    val speechFlowing = now - lastHeardAtMs <= 15_000L
-                    if (speechFlowing &&
-                        now - lastSilenceReconnectAtMs >= SILENCE_LIMIT_MS
-                    ) {
-                        lastSilenceReconnectAtMs = now
-                        // Restart the 60 s silence clock from this
-                        // reconnect, so the next check is 60 s after
-                        // it, not 10 s.
-                        lastOutputAtMs = now
-                        if (silenceReconnects < MAX_RECONNECTS) {
-                            silenceReconnects++
-                            Log.w(TAG, "Live silent 60s while speech flows, reconnecting ($silenceReconnects/$MAX_RECONNECTS)")
-                            reconnectLive()
-                        } else {
-                            Log.w(TAG, "Live silent after $MAX_RECONNECTS silence reconnects, Groq fallback")
-                            recordLiveError("Im lặng 60s, đã hết $MAX_RECONNECTS lần nối lại — chuyển Groq")
-                            switchToGroq("Gemini Live im lặng quá lâu, chuyển sang dự phòng Groq")
-                        }
+                    if (reconnects < MAX_RECONNECTS) {
+                        reconnects++
+                        recordLiveError("Im lặng 60s sau khi đã có output — nối lại Live")
+                        Log.w(TAG, "Silent for 60s, reconnecting ($reconnects/$MAX_RECONNECTS)")
+                        reconnectLive()
+                    } else {
+                        Log.w(TAG, "Live silent after $MAX_RECONNECTS reconnects, Groq fallback")
+                        recordLiveError("Im lặng 60s, đã hết $MAX_RECONNECTS lần nối lại — chuyển Groq")
+                        switchToGroq("Gemini Live im lặng quá lâu, chuyển sang dự phòng Groq")
                     }
-                    // else: no speech flowing — silence is normal,
-                    // do nothing, log nothing.
                 } else if (lastOutputAtMs == 0L && !liveConnected &&
                     now - lastLiveAttemptAtMs > NO_OUTPUT_LIMIT_MS
                 ) {
@@ -560,13 +523,6 @@ class DubbingService : Service() {
                 } else if (now >= rotateAtMs) {
                     rotateKey()
                 }
-            }
-            // v1.0.16 — D decay when starved of samples: with no dub
-            // arriving (video paused), the tracker never gets a
-            // sample and D freezes at its last extreme value (the
-            // 06:48 screenshot: D 12.5 s). Drift D back toward the
-            // base seed while capturing (see DubDelayTracker).
-            try { tracker?.decayIfStale(now) } catch (_: Exception) {
             }
             mainHandler.postDelayed(this, 10_000L)
         }
@@ -910,8 +866,6 @@ class DubbingService : Service() {
         vadEndThreshold = vadThreshold * 0.4
         rotateAtMs = System.currentTimeMillis() + KEY_ROTATE_MS
         lastOutputAtMs = 0L
-        lastSilenceReconnectAtMs = 0L
-        silenceReconnects = 0 // v1.0.16 — fresh session, fresh silence budget.
         startedAtMs = System.currentTimeMillis()
         lastLiveAttemptAtMs = 0L
         lastHeardAtMs = 0L
@@ -1052,7 +1006,6 @@ class DubbingService : Service() {
                     override fun onAudioChunk(pcm24k: ByteArray) {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
-                        silenceReconnects = 0 // v1.0.16 — output arrived: the silence budget resets.
                         audioPlayedThisTurn = true
                         // v1.0.14 — continuous slice measurement +
                         // ALDA voice hold (FIX32/FIX33). The hold
@@ -1096,7 +1049,6 @@ class DubbingService : Service() {
                     override fun onTranslatedText(text: String, isFinal: Boolean) {
                         if (!isCurrent()) return
                         lastOutputAtMs = System.currentTimeMillis()
-                        silenceReconnects = 0 // v1.0.16 — output arrived: the silence budget resets.
                         pendingText.append(text)
                         showSubtitle(pendingText.toString())
                     }
@@ -1426,14 +1378,6 @@ class DubbingService : Service() {
 
     private fun reconnectLive() {
         if (!capturing || useGroqOnly) return
-        // v1.0.16 — reset the first-audio stamp: the tracker's
-        // first-audio seed measures (first dub chunk) − (first speech
-        // sent). After a reconnect the next dub chunk can arrive
-        // seconds after the PRE-reconnect speech, and the seed would
-        // read that gap as translation latency (the 06:48 screenshot:
-        // D 12.5 s). Resetting makes the next speech start re-stamp
-        // the clock; if the seed already ran, this is a no-op.
-        firstAudioSentAtMs = 0L
         // v1.0.4: no closingForReconnect flag — close() is async and the
         // flag was racy (see liveGeneration). The old socket's late
         // onClosed is dropped by the generation guard in connectLive().
@@ -1785,7 +1729,6 @@ class DubbingService : Service() {
                             groqClient.transcribeAndTranslate(pcm, object : GroqFallback.Listener {
                                 override fun onTranslated(text: String) {
                                     lastOutputAtMs = System.currentTimeMillis()
-                                    silenceReconnects = 0 // v1.0.16 — output arrived: the silence budget resets.
                                     setStatus("Đang dùng dự phòng Groq")
                                     // v1.0.9 — same hold as the Live
                                     // voice: subtitle + TTS start at

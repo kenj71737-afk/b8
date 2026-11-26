@@ -11,8 +11,8 @@ android {
         applicationId = "com.dublive.live"
         minSdk = 26
         targetSdk = 34
-        versionCode = 17
-        versionName = "1.0.16"
+        versionCode = 15
+        versionName = "1.0.14"
     }
 
     buildTypes {

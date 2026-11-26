@@ -42,14 +42,6 @@ package com.dublive.live
  * without a gesture delivers no audio and would be a false positive);
  * it is deferred until a gesture resumes the context.
  *
- * v1.0.16 — the probe budget is PLAYING time, not wall time. The
- * old single 2.2 s window failed any video whose intro is silent
- * (the 06:48 YouTube report: video stuck at 0:03, tap misread as
- * dead, capture-dialog cascade paused the activity and YouTube
- * paused the video). Now the probe only fails after ~8 s of actual
- * playback (currentTime advancing) with zero audible blocks, and
- * never arms while the video is paused.
- *
  * DUCK: DubLiveTapSetDuck(vol) drives the gain AFTER the DelayNode,
  * so the ducked original audio stays in step with the held dub voice.
  * D: DubLiveTapSetDelay(seconds) drives the DelayNode live (same D as
@@ -197,8 +189,7 @@ object TapJs {
       source.connect(tap); tap.connect(silent); silent.connect(ctx.destination);
       var st = { v: v, ctx: ctx, source: source, delay: delay, gain: gain, tap: tap,
                  silent: silent, nonSilentBlocks: 0, failed: false, checkTimer: null,
-                 aliveNotified: false, bypassed: false,
-                 probePlayedMs: 0, probeStartTime: 0 };
+                 aliveNotified: false, bypassed: false };
       v.__dubLiveTapState = st;
       window.__dubLiveTapStates.push(st);
       tap.onaudioprocess = function (ev) {
@@ -235,39 +226,19 @@ object TapJs {
         // demoted video is muted / gain-0 by design, so its silence
         // must never trip the capture fallback.
         if (st.v !== window.__dubLiveTapBest) return;
-        // v1.0.16 — do not arm while paused: a paused video produces
-        // no blocks by design. The 'play'/'playing' listeners re-arm
-        // when playback starts.
-        if (st.v.paused) return;
-        st.probeStartTime = st.v.currentTime || 0;
         st.checkTimer = setTimeout(function () {
           st.checkTimer = null;
           if (st.failed || st.bypassed) return;
           if (st.v !== window.__dubLiveTapBest) return;
           if (ctx.state === 'suspended') return; // re-arm on next resume
-          if (st.nonSilentBlocks > 0) {
+          if (st.nonSilentBlocks === 0) {
+            st.failed = true;
+            try { source.disconnect(); source.connect(ctx.destination); } catch (e) {}
+            try { delay.disconnect(); gain.disconnect(); tap.disconnect(); silent.disconnect(); } catch (e) {}
+            try { if (window.DubLiveAudio) DubLiveAudio.onTapFailed('Trang chặn âm thanh WebAudio (CORS/DRM)'); } catch (e) {}
+          } else {
             notify('Đã nhận âm thanh trong trang.');
-            return;
           }
-          // v1.0.16 — only time the video REALLY played counts
-          // against the probe. The old code failed the tap after a
-          // single 2.2 s window of silence — a silent intro (the
-          // 06:48 YouTube case: video stuck at 0:03) was misread as
-          // a dead tap, fired the capture-dialog cascade, the
-          // activity paused and YouTube paused the video. Fail only
-          // after ~8 s of actual playback with zero audible blocks:
-          // a CORS/DRM-blocked graph stays silent forever, a
-          // silent intro does not. A paused video (or one whose
-          // clock did not advance) just re-arms.
-          var played = 0;
-          try { played = Math.max(0, (st.v.currentTime || 0) - (st.probeStartTime || 0)) * 1000; } catch (e) {}
-          if (st.v.paused || played < 1000) { startCheck(); return; }
-          st.probePlayedMs += played;
-          if (st.probePlayedMs < 8000) { startCheck(); return; }
-          st.failed = true;
-          try { source.disconnect(); source.connect(ctx.destination); } catch (e) {}
-          try { delay.disconnect(); gain.disconnect(); tap.disconnect(); silent.disconnect(); } catch (e) {}
-          try { if (window.DubLiveAudio) DubLiveAudio.onTapFailed('Trang chặn âm thanh WebAudio (CORS/DRM)'); } catch (e) {}
         }, 2200);
       };
       st.startCheck = startCheck;

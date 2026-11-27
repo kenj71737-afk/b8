@@ -1113,7 +1113,7 @@ class DubDelayTracker(
             pairingLog.addLast(
                 PairingRecord(
                     dubCumMs = anchorDubMs + pairedDubMs,
-                    sourceWallMs = wall,
+                    sourceWallMs = wall.toLong(),
                     burstSeq = burstSeq
                 )
             )

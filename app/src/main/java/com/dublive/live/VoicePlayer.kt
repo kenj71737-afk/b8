@@ -84,8 +84,10 @@ class VoicePlayer(
      * burst's first frame actually sounded, pipeline ms =
      * play − (arrival + hold), true when the value is the
      * queue-based fallback instead of a getTimestamp measurement).
+     * v1.0.18 — fifth value: the backlog (ms) already queued ahead
+     * of the burst's first frame at write time.
      */
-    private val onBurstPlayed: (Long, Long, Long, Boolean) -> Unit = { _, _, _, _ -> }
+    private val onBurstPlayed: (Long, Long, Long, Boolean, Long) -> Unit = { _, _, _, _, _ -> }
 ) {
     companion object {
         private const val TAG = "DubLive-Voice"
@@ -199,7 +201,12 @@ class VoicePlayer(
         val firstFrame: Long,
         val queuedAtWallMs: Long,
         val predictedPlayWallMs: Long?,
-        val predictedEstimated: Boolean
+        val predictedEstimated: Boolean,
+        /** v1.0.18 — audio already queued ahead of this burst's
+         * first frame at write time (ms), for the diagnostics. */
+        val backlogMs: Long,
+        val arrivalWallMs: Long,
+        val holdMs: Long
     )
     private var chunksAdded = 0L
     private var chunksTaken = 0L
@@ -213,6 +220,10 @@ class VoicePlayer(
     /** Hardware latency assumed by the fallback estimate (no
      * getTimestamp available). */
     private val FALLBACK_HW_MS = 30L
+    /** v1.0.18 — max bytes per AudioTrack.write() call (50 ms of
+     * 24 kHz mono 16-bit audio): the playhead poll runs between
+     * slices, so it is never starved longer than ~50 ms. */
+    private val SLICE_BYTES = 2400
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -281,10 +292,22 @@ class VoicePlayer(
             val minBuf = AudioTrack.getMinBufferSize(
                 24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             )
+            // v1.0.18 — the buffer was minBuf*4 (64 KB = 1365 ms of
+            // audio at minBuf 16 KB: the 1438 ms pipeline spike on
+            // the 27/11 device photos matches 1365 + ~70 ms
+            // hardware/poll). Now max(minBuf, min(minBuf*2, 12000 B))
+            // — cap 250 ms, never below the framework minimum.
+            // At minBuf 16 KB the buffer stays 16 KB (341 ms, the
+            // framework floor); at 4 KB it is 8 KB (170 ms).
+            val bufBytes = if (minBuf > 0) {
+                maxOf(minBuf, minOf(minBuf * 2, 12000))
+            } else {
+                4096
+            }
             AudioTrack.Builder()
                 .setAudioAttributes(attrs)
                 .setAudioFormat(format)
-                .setBufferSizeInBytes((if (minBuf > 0) minBuf else 4096) * 4)
+                .setBufferSizeInBytes(bufBytes)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
         } catch (e: Exception) {
@@ -385,10 +408,49 @@ class VoicePlayer(
                     }
                     val track = audioTrack
                     val firstFrame = totalFramesWritten
-                    try { track?.write(chunk, 0, chunk.size) } catch (_: Exception) { }
-                    totalFramesWritten += (chunk.size / 2).toLong()
+                    // v1.0.18 — the backlog ahead of this chunk's
+                    // first frame, read from the playhead BEFORE
+                    // writing (the tracker shows it as "chờ Z ms"
+                    // so a big pipeline can be told apart: backlog
+                    // vs hardware). Null playhead = unknown.
+                    val backlogMs = try {
+                        val head = readPlayhead()
+                        if (head != null) {
+                            maxOf(0L, ((firstFrame - head.first) * 1000L) / 24000L)
+                        } else {
+                            0L
+                        }
+                    } catch (_: Exception) {
+                        0L
+                    }
+                    // v1.0.18 — write in <=2400 B (50 ms) slices
+                    // with confirmPlayStart() between slices. The
+                    // old code wrote a whole chunk in ONE blocking
+                    // write() while confirmPlayStart() only ran at
+                    // the top of the loop — the playhead poll was
+                    // STARVED for the whole blocking write and the
+                    // observed play wall was late by the block
+                    // duration (the 1438 ms spike). A slice blocks
+                    // at most ~50 ms, so the poll is never starved
+                    // longer than that.
+                    var writtenBytes = 0
+                    if (track != null) {
+                        var off = 0
+                        while (off < chunk.size) {
+                            val n = minOf(SLICE_BYTES, chunk.size - off)
+                            try {
+                                track.write(chunk, off, n)
+                                writtenBytes += n
+                            } catch (_: Exception) {
+                                break
+                            }
+                            off += n
+                            if (off < chunk.size) confirmPlayStart()
+                        }
+                    }
+                    totalFramesWritten += (writtenBytes / 2).toLong()
                     if (burstStart != null && track != null) {
-                        beginPlayMeasurement(burstStart, firstFrame)
+                        beginPlayMeasurement(burstStart, firstFrame, backlogMs)
                     }
                 } catch (_: InterruptedException) {
                     break
@@ -429,7 +491,7 @@ class VoicePlayer(
      * When getTimestamp is unavailable, the fallback predicts
      * due + audio already queued ahead + 30 ms hardware.
      */
-    private fun beginPlayMeasurement(start: BurstStartInfo, firstFrame: Long) {
+    private fun beginPlayMeasurement(start: BurstStartInfo, firstFrame: Long, backlogMs: Long) {
         val dueWall = start.arrivalWallMs + start.holdMs
         val (predicted, estimated) = try {
             val head = readPlayhead()
@@ -459,7 +521,10 @@ class VoicePlayer(
                 firstFrame = firstFrame,
                 queuedAtWallMs = System.currentTimeMillis(),
                 predictedPlayWallMs = predicted,
-                predictedEstimated = estimated
+                predictedEstimated = estimated,
+                backlogMs = backlogMs,
+                arrivalWallMs = start.arrivalWallMs,
+                holdMs = start.holdMs
             )
         }
     }
@@ -480,7 +545,14 @@ class VoicePlayer(
                 if (pendingConfirm === confirm) pendingConfirm = null
             }
             val pipeline = (nowWall - confirm.dueWallMs).coerceAtLeast(0L)
-            try { onBurstPlayed(confirm.seq, nowWall, pipeline, false) } catch (_: Exception) { }
+            // v1.0.18 — per-burst pipeline log: arrival, hold, due,
+            // backlog ahead at write, play wall, pipeline, estimate
+            // flag. This is the record that proves (or disproves)
+            // the pipeline fix on a real device.
+            Log.i(TAG, "burst seq=%d arrival=%d hold=%d due=%d backlog=%d play=%d pipeline=%d est=%b"
+                .format(confirm.seq, confirm.arrivalWallMs, confirm.holdMs,
+                    confirm.dueWallMs, confirm.backlogMs, nowWall, pipeline, false))
+            try { onBurstPlayed(confirm.seq, nowWall, pipeline, false, confirm.backlogMs) } catch (_: Exception) { }
             return
         }
         if (nowWall - confirm.queuedAtWallMs >= CONFIRM_TIMEOUT_MS) {
@@ -489,7 +561,10 @@ class VoicePlayer(
             }
             val playWall = confirm.predictedPlayWallMs ?: nowWall
             val pipeline = (playWall - confirm.dueWallMs).coerceAtLeast(0L)
-            try { onBurstPlayed(confirm.seq, playWall, pipeline, true) } catch (_: Exception) { }
+            Log.i(TAG, "burst seq=%d arrival=%d hold=%d due=%d backlog=%d play=%d pipeline=%d est=%b (timeout)"
+                .format(confirm.seq, confirm.arrivalWallMs, confirm.holdMs,
+                    confirm.dueWallMs, confirm.backlogMs, playWall, pipeline, true))
+            try { onBurstPlayed(confirm.seq, playWall, pipeline, true, confirm.backlogMs) } catch (_: Exception) { }
         }
     }
 

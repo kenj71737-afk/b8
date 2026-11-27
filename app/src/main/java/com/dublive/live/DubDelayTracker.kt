@@ -142,6 +142,83 @@ package com.dublive.live
  * residual ("khung hình ±X ms"); it never steers D by it — that
  * waits for v1.0.18, once real device numbers exist.
  *
+ * v1.0.18 — TURN-BOUNDARY ANCHORING WAS DEAD (device test of
+ * v1.0.17, 18dj.tv, 27/11 23:07 + 23:13, TWO SEPARATE sessions —
+ * the user turned dubbing OFF then ON between the photos, so every
+ * counter reset: photo 2 has no "bỏ 49 lát" because it is a new
+ * session, not because the bug went away). "cặp mốc 0/60 s" in BOTH
+ * sessions while slice pairing still ran (6–14 samples/60 s), so
+ * "lệch hình —" and "khung hình —" could never show a number.
+ * Three mechanisms, all fixed here (proven by sim1018.py first):
+ *  1. MERGED VAD TURNS (the real cause): a VAD turn ends only
+ *     after ~700 ms of continuous silence, but drama pauses are
+ *     100–400 ms, so VAD turns merge many lines into one long
+ *     marker; a turnComplete then finds no DONE marker and bursts
+ *     sample against a marker that started minutes ago. FIX:
+ *     MARKER SPLITTING — a ≥300 ms silence inside a VAD turn
+ *     closes the current marker and starts a new one (onSpeechMs).
+ *  2. The bootstrap race + the lagEst lock: while no exact anchor
+ *     existed, every turn start re-ran the v5 tail formula, putting
+ *     the anchor ahead of every marker (so every boundary was
+ *     vetoed as "backwards"), and the slice-median lagEst was
+ *     floor-pinned at ~0.6 s, so a true boundary sample ~2.4–3.0 s
+ *     failed the 2 s consistency guard. FIX: the anchor-backwards
+ *     guard only applies once an EXACT anchor exists; the marker is
+ *     picked by the ANCHOR-IMPLIED speech position
+ *     (S = anchor_s + (cumDub − anchor_u) × ratio), never by
+ *     nearness to the slice median; the lag estimate prefers D −
+ *     margin when the slice samples are stale (>10 s) or disagree
+ *     with D − margin by >1 s; the first boundary bootstraps from
+ *     the SEED LAG (first dub arrival − first line start ≈ true
+ *     lag L0), and the seed-lag marker is also the fallback when
+ *     the anchor path finds nothing (a wide anchor net only
+ *     catches stale markers); bursts get a second opinion against
+ *     the D-based lag while D is trusted (|sample − (D − margin)|
+ *     > 1500 ms rejects), because the anchor-implied check is
+ *     tautological and passes bursts 2 s too old.
+ *  3. The pipeline spike (1438 ms, TB 444/656 ms): the AudioTrack
+ *     buffer was minBuf×4 (64 KB = 1365 ms at minBuf 16 KB) and the
+ *     player loop wrote a whole chunk in ONE blocking write while
+ *     confirmPlayStart() only ran at the top of the loop — the
+ *     playhead poll was starved for the whole write. FIX (in
+ *     VoicePlayer): buffer = max(minBuf, min(minBuf×2, 12000 B))
+ *     (cap 250 ms, never below the framework minimum); writes
+ *     sliced to ≤2400 B (50 ms) with confirmPlayStart() between
+ *     slices; the backlog ahead of a burst's first frame is read
+ *     from the playhead before writing and reported ("chờ Z ms").
+ *  4. "Bỏ 49 lát" (session 1): slices piled up unconsumed while
+ *     the anchor raced ahead — fixed by (1)+(2); MAX_SLICES stays
+ *     40. HOLD REFRESH: every ACCEPTED turnComplete now recomputes
+ *     hold = D − latest latency − pipeline (was: hold only updated
+ *     at bursts, ~4/420 s, so the actual line-start error stayed
+ *     ~362 ms); chunks already queued keep their due times. The
+ *     hold is also MONOTONIC (a chunk's due never precedes the
+ *     previous chunk's due). Burst gap 500 → 300 ms. Per-reason
+ *     rejection counters (tc/burst × no-marker / no-audio /
+ *     anchor-back / consistency / fallback) are shown in the
+ *     diagnostics. stop() now resets firstAudioSeeded + the
+ *     LatencyEma + the boundary state (the 2-session reset check).
+ *
+ * SIMULATION (sim1018.py, device world: 18dj.tv drama, lines
+ * 1.5–3.0 s, pauses 100–400 ms, dub 1.46x, true lag 2.4 s):
+ *  speed=2.5, minBuf=4096: pairs/60 s 17 → 21, dropped slices
+ *  0 → 0, boundary-sample |err| median 0 ms, measured pipeline
+ *  TB 52 → 50 ms (max 652 ms), actual line-start |err| median
+ *  steady 22 → 12 ms, fresh-hold 7/393 → 4/474 ms — GATE PASS.
+ *  speed=1.5, minBuf=16384: pairs 15 → 23, boundary err median
+ *  0 ms, pipeline TB 273 → 233 ms (max 890 ms), fresh-hold steady
+ *  184/513 → 233/542 ms — GATE PASS. tc OFF: 60 pairs from bursts
+ *  alone. v6 regression: fresh-hold median 17 → 114 ms (< 300),
+ *  actual line-start steady 1491 → 366 ms, pairs 0 → 3 — PASS.
+ *  Known limit: the measured pipeline is the BURST-FIRST chunk's
+ *  only (the loop is idle at burst starts, so it reads ~50 ms
+ *  while the TRUE pipeline over all chunks is ~660 ms) — the
+ *  tracker under-measures the pipeline, costing ~186 ms of
+ *  in-turn drift (slice-play error); acceptable, recorded, not
+ *  forced. Dropped audio (hold queue, >500 ms overdue) is
+ *  37–43% at speed 2.5 — the voice skips words instead of falling
+ *  behind; a catch-up (time-stretch) is a v1.0.19 question.
+ *
  * All methods are @Synchronized: speech frames arrive on the capture
  * thread, dub chunks on the Live socket thread, turnComplete on the
  * Live thread, manual nudges on the main thread, diagnostics on the
@@ -210,6 +287,32 @@ class DubDelayTracker(
         const val MAX_PAIRING_LOG = 240
         /** v1.0.17 — burst/marker video-time records kept. */
         const val MAX_VIDEO_TIME_RECORDS = 12
+        /** v1.0.18 — a dub chunk ≥300 ms after the previous one
+         * starts a new burst (was 500 ms: the model's
+         * inter-sentence pause is often 200-400 ms). */
+        const val BURST_GAP_MS = 300L
+        /** v1.0.18 — a silence ≥300 ms inside a VAD turn is a line
+         * boundary (marker splitting): drama pauses are 100-400 ms,
+         * far below the VAD's 700 ms tail. */
+        const val SPLIT_SILENCE_MS = 300L
+        /** v1.0.18 — seed-lag marker residual (the seed lag is a
+         * good reference only while the lag is still near L0). */
+        const val SEED_MARKER_RESIDUAL_MS = 3000L
+        /** v1.0.18 — D is a trusted second opinion for this long
+         * after the last accepted boundary sample. */
+        const val D_TRUSTED_WINDOW_MS = 30_000L
+        /** v1.0.18 — recent slice samples are stale after this. */
+        const val LAG_EST_STALE_MS = 10_000L
+        /** v1.0.18 — the slice median must agree with D − margin
+         * within this to be trusted as the lag estimate. */
+        const val LAG_EST_AGREE_MS = 1000L
+        /** v1.0.18 — burst D-based cross-check (while D is
+         * trusted): reject when |sample − (D − margin)| exceeds
+         * this. */
+        const val BURST_D_CHECK_MS = 1500L
+        /** v1.0.18 — seed-lag fallback D-based cross-check (looser:
+         * the fallback IS the recovery). */
+        const val SEED_FB_D_CHECK_MS = 2500L
     }
 
     /** One 500 ms slice of counted speech: its wall span and its
@@ -304,8 +407,46 @@ class DubDelayTracker(
     private var sumCountedMs = 0L
     private var sumTotalDubMs = 0L
     /** When the latest dub chunk arrived (-1 = none / after reset);
-     * a chunk ≥500 ms after it starts a new dub burst. */
+     * a chunk ≥300 ms after it starts a new dub burst. */
     private var lastDubChunkAtMs = -1L
+
+    // ---- v1.0.18 — seed-lag bootstrap + D-trust + counters ----
+    /** Seed lag (first dub arrival − first line start ≈ true lag
+     * L0), set once at the first-audio seed; null = not seeded. */
+    private var seedLagMs: Long? = null
+    /** Wall time of the last loud speech chunk (for marker
+     * splitting: a ≥300 ms gap inside a VAD turn is a line
+     * boundary). */
+    private var lastLoudAtMs = 0L
+    /** Markers created by splitting (diagnostics). */
+    private var splitMarkers = 0
+    /** Last accepted boundary sample + when (for the D-trust
+     * check and the burst cross-check). */
+    private var lastBoundarySampleMs = 0L
+    private var lastBoundaryAtMs = 0L
+    /** Due time of the previous dub chunk (monotonic hold). */
+    private var lastDueMs = 0L
+    /** Last burst's backlog ahead at write time (diagnostics). */
+    private var lastBacklogMs: Long? = null
+    /** Per-reason boundary rejection counters (v1.0.18): recv =
+     * turnCompletes/bursts seen; ok = accepted; noMarker = no
+     * marker within residual; noAudio = turnComplete with no dub
+     * audio; anchorBack = vetoed by the anchor-backwards guard;
+     * consist = consistency/range rejection; fallback = recovered
+     * via the seed-lag marker. */
+    private var tcRecv = 0
+    private var tcNoAudio = 0
+    private var tcNoMarker = 0
+    private var tcAnchorBack = 0
+    private var tcConsistency = 0
+    private var tcOk = 0
+    private var tcFallback = 0
+    private var burstRecv = 0
+    private var burstNoMarker = 0
+    private var burstAnchorBack = 0
+    private var burstConsistency = 0
+    private var burstOk = 0
+    private var burstFallback = 0
 
     // ---- diagnostics ----
     private var lastSampleMs = 0L
@@ -453,16 +594,131 @@ class DubDelayTracker(
         }
     }
 
-    /** Current lag estimate: median of the recent slice samples, or
-     * D − margin when no sample exists yet. Used only to pick which
-     * turn marker a turnComplete/burst belongs to (the turns are ~5 s
-     * apart, so the estimate only needs to be within ~2.5 s). */
-    private fun lagEstimateMs(): Long {
+    /** v1.0.18 — D-based lag: D − dynamic margin. The delay is the
+     * EMA of the accepted boundary/slice samples + margin, so D −
+     * margin is the best available estimate of the current lag
+     * whenever the slice median is untrustworthy. */
+    private fun dBasedLagMs(): Long =
+        maxOf(MIN_SAMPLE_MS, delayMs - dynamicMarginMs())
+
+    /** v1.0.18 — is D a reliable second opinion right now? The last
+     * accepted boundary sample agrees with D − margin within 1 s
+     * and is recent. False during a lag transient (D chasing), so
+     * the D-based checks are skipped and cannot block recovery. */
+    private fun isDTrusted(nowMs: Long): Boolean =
+        lastBoundaryAtMs != 0L && nowMs - lastBoundaryAtMs <= D_TRUSTED_WINDOW_MS &&
+            kotlin.math.abs(lastBoundarySampleMs - dBasedLagMs()) <= 1000L
+
+    /** Current lag estimate: median of the recent slice samples —
+     * but only when the samples are fresh (newest within 10 s) and
+     * agree with D − margin within 1 s. Otherwise D − margin.
+     * v1.0.17 trusted the slice median unconditionally, and the
+     * median is floor-pinned at ~0.6 s exactly when the tracker is
+     * blind (the v1.0.13 failure mode, still visible on the 27/11
+     * device photos: last sample 0.6 s). Used only as the fallback
+     * for the anchor-implied consistency check when no slice covers
+     * the implied speech position. */
+    private fun lagEstimateMs(nowMs: Long): Long {
+        val dBased = dBasedLagMs()
         if (recentSamples.isNotEmpty()) {
-            val sorted = recentSamples.map { it.second }.sorted()
-            return sorted[sorted.size / 2]
+            val newestWall = recentSamples.last().first
+            if (nowMs - newestWall <= LAG_EST_STALE_MS) {
+                val sorted = recentSamples.map { it.second }.sorted()
+                val median = sorted[sorted.size / 2]
+                if (kotlin.math.abs(median - dBased) <= LAG_EST_AGREE_MS) {
+                    return median
+                }
+            }
         }
-        return maxOf(MIN_SAMPLE_MS, delayMs - dynamicMarginMs())
+        return dBased
+    }
+
+    /** v1.0.18 — the speech position the anchor implies for the
+     * current dub position, or null while bootstrapping (no exact
+     * anchor yet). S = anchor_s + (cumDub − anchor_u) × ratio. */
+    private fun impliedSpeechPos(): Long? {
+        if (!everExactAnchor) return null
+        return (anchorSpeechMs + (cumDubMs - anchorDubMs) * ratio()).toLong()
+    }
+
+    /** v1.0.18 — wall time of counted-speech position [audioMs],
+     * interpolated inside the speech slices. Null when no slice
+     * covers it (older than the 20 s queue, or ahead of the newest
+     * speech) — the caller then falls back to the lag estimate. */
+    private fun wallAtSpeech(audioMs: Long): Long? {
+        for (slice in speechSlices) {
+            if (audioMs in slice.startAudioMs..slice.endAudioMs) {
+                val spanAudio = maxOf(1L, slice.endAudioMs - slice.startAudioMs)
+                val spanWall = maxOf(1L, slice.endWallMs - slice.startWallMs)
+                return slice.startWallMs +
+                    (audioMs - slice.startAudioMs) * spanWall / spanAudio
+            }
+        }
+        return null
+    }
+
+    /** v1.0.18 — lag implied by the anchor (wall of [sPos]), or the
+     * lag estimate when no slice covers the implied position. */
+    private fun impliedLagMs(nowMs: Long, sPos: Long?): Long {
+        if (sPos != null) {
+            val w = wallAtSpeech(sPos)
+            if (w != null) return nowMs - w
+        }
+        return lagEstimateMs(nowMs)
+    }
+
+    /** v1.0.18 — marker whose boundary (start for a burst, end for
+     * a turnComplete) is nearest the speech position the anchor
+     * implies for the current dub position. Returns (marker, S) or
+     * (null, null) when no exact anchor exists or no marker is
+     * within MARKER_RESIDUAL_MS. The lagEst-nearest selection is
+     * NOT used any more — it is the floor-pinned trap. */
+    private fun selectByAnchor(nowMs: Long, isTc: Boolean): Pair<TurnMarker?, Long?> {
+        val sPos = impliedSpeechPos() ?: return null to null
+        var best: TurnMarker? = null
+        var bestResidual: Long? = null
+        for (marker in markers) {
+            if (isTc && (!marker.done || marker.countedMs <= 0L)) continue
+            val pos = if (isTc) marker.audioMs + marker.countedMs else marker.audioMs
+            val residual = kotlin.math.abs(pos - sPos)
+            if (bestResidual == null || residual < bestResidual) {
+                best = marker
+                bestResidual = residual
+            }
+        }
+        if (best == null || (bestResidual ?: Long.MAX_VALUE) > MARKER_RESIDUAL_MS) {
+            return null to null
+        }
+        return best to sPos
+    }
+
+    /** v1.0.18 — bootstrap marker from the seed lag (first dub
+     * arrival − first line start ≈ true lag L0, drift-free at
+     * session start). For a turnComplete the boundary is the turn's
+     * END (wall + counted); for a burst it is the turn's START
+     * (wall). Residual ≤ 3000 ms. The monotonic 'oldest marker'
+     * idea does NOT work: the first OBSERVED turnComplete is for
+     * ~line 18, not line 1 (earlier turnCompletes never fired, and
+     * the 12-marker window already dropped the early turns), so the
+     * oldest available marker is ~9 lines too old. */
+    private fun seedMarker(nowMs: Long, isTc: Boolean): TurnMarker? {
+        val seedLag = seedLagMs ?: return null
+        val target = if (isTc) nowMs - TURN_COMPLETE_GAP_MS - seedLag else nowMs - seedLag
+        var best: TurnMarker? = null
+        var bestResidual: Long? = null
+        for (marker in markers) {
+            if (isTc && (!marker.done || marker.countedMs <= 0L)) continue
+            val pos = if (isTc) marker.wallMs + marker.countedMs else marker.wallMs
+            val residual = kotlin.math.abs(pos - target)
+            if (bestResidual == null || residual < bestResidual) {
+                best = marker
+                bestResidual = residual
+            }
+        }
+        if (best == null || (bestResidual ?: Long.MAX_VALUE) > SEED_MARKER_RESIDUAL_MS) {
+            return null
+        }
+        return best
     }
 
     /**
@@ -495,6 +751,7 @@ class DubDelayTracker(
         lastTcSeq = null
         recentSamples.clear()
         lastDubChunkAtMs = -1L
+        lastLoudAtMs = 0L
     }
 
     /**
@@ -509,6 +766,38 @@ class DubDelayTracker(
     fun onSpeechMs(ms: Long, nowMs: Long) {
         if (ms <= 0L) return
         if (windowStartMs == 0L) windowStartMs = nowMs
+        // v1.0.18 — MARKER SPLITTING (the real cause of
+        // "cặp mốc 0" on device): a >=300 ms silence inside a VAD
+        // turn is a line boundary. Drama pauses are 100-400 ms, far
+        // below the VAD's 700 ms tail, so VAD turns merge many lines
+        // into one long marker; a turnComplete then finds no DONE
+        // marker and bursts sample against a marker that started
+        // minutes ago (huge sample, consistency rejects it). Split
+        // the current marker here so boundaries can pair. The split
+        // marker's wall is this chunk's time (the VAD is already
+        // in-speech, so there is no 160 ms detection delay inside a
+        // turn — unlike a turn start). The counted>0 guard skips the
+        // turn-start head chunk (its marker was just created with
+        // counted 0).
+        val lastMarker = markers.lastOrNull()
+        if (lastMarker != null && !lastMarker.done && lastMarker.countedMs > 0L &&
+            lastLoudAtMs > 0L && nowMs - lastLoudAtMs >= SPLIT_SILENCE_MS
+        ) {
+            lastMarker.done = true
+            markerSeq++
+            markers.addLast(
+                TurnMarker(
+                    audioMs = cumSpeechMs,
+                    wallMs = nowMs,
+                    countedMs = 0L,
+                    done = false,
+                    seq = markerSeq
+                )
+            )
+            while (markers.size > MAX_MARKERS) markers.removeFirst()
+            splitMarkers++
+        }
+        lastLoudAtMs = nowMs
         cumSpeechMs += ms
         turnCountedMs += ms
         markers.lastOrNull()?.let { it.countedMs += ms }
@@ -658,6 +947,11 @@ class DubDelayTracker(
             firstAudioSeeded = true
             applyDynamicMargin()
             val elapsed = (nowMs - firstAudioSentAtMs).coerceIn(0L, 18000L)
+            // v1.0.18 — the seed lag (first dub arrival − first
+            // line start ≈ true lag L0) is the bootstrap reference
+            // for the first boundary (see seedMarker): it points at
+            // the right turn while the lag is still near L0.
+            seedLagMs = elapsed
             latencyEma.seed(elapsed)
             val newDelay = (elapsed + dynamicMarginMs())
                 .coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
@@ -668,22 +962,24 @@ class DubDelayTracker(
             hold = (newDelay - elapsed - pipelineMs()).coerceAtLeast(0L)
             lastHoldMs = hold
         }
-        // v1.0.14 — dub burst: a chunk arriving ≥500 ms after the
-        // previous one starts a new turn's dub. It anchors exactly
-        // (see onDubBurst) and gives a boundary sample; the slice
-        // pairing below is still the main measurement.
+        // v1.0.18 — dub burst: a chunk arriving ≥300 ms after the
+        // previous one starts a new turn's dub (was 500 ms: the
+        // model's inter-sentence pause is often 200-400 ms). It
+        // anchors exactly (see onDubBurst) and gives a boundary
+        // sample; the slice pairing below is still the main
+        // measurement.
         val isBurst = lastDubChunkAtMs >= 0L &&
-            nowMs - lastDubChunkAtMs >= 500L
+            nowMs - lastDubChunkAtMs >= BURST_GAP_MS
         val isFirstChunk = lastDubChunkAtMs < 0L
         val burstStartCumDubMs = cumDubMs
         lastDubChunkAtMs = nowMs
         cumDubMs += dubMs
+        var burstMarker: TurnMarker? = null
         if (isBurst) {
             burstSeq++
             val (burstHold, marker) = onDubBurst(nowMs)
             hold = burstHold
-            lastHoldMs = hold
-            recordBurst(burstSeq, nowMs, hold, marker, burstStartCumDubMs)
+            burstMarker = marker
         } else if (isFirstChunk) {
             // v1.0.17 — the session's (or post-reconnect) first
             // chunk is not a burst by the old test, but it still
@@ -692,7 +988,21 @@ class DubDelayTracker(
             // No marker yet — the play still yields the pipeline,
             // just no sync sample.
             burstSeq++
-            recordBurst(burstSeq, nowMs, hold, null, burstStartCumDubMs)
+        }
+        // v1.0.18 — MONOTONIC HOLD: a chunk's due never precedes
+        // the previous chunk's due. A hold drop (a new boundary
+        // sample lowering the hold) would otherwise make the new
+        // sentence due BEFORE the previous sentence's tail, and the
+        // FIFO hold queue then plays it late by the whole
+        // inversion (that is what the sim's ~2 s "true pipeline"
+        // spikes were: hold errors, not audio latency).
+        if (lastDueMs > 0L) {
+            hold = maxOf(hold, lastDueMs - nowMs)
+        }
+        lastDueMs = nowMs + hold
+        lastHoldMs = hold
+        if (isBurst || isFirstChunk) {
+            recordBurst(burstSeq, nowMs, hold, burstMarker, burstStartCumDubMs)
         }
         // Continuous slice pairing (v1.0.10, re-anchored in v6).
         pairDubSlices(dubMs, nowMs)
@@ -758,9 +1068,14 @@ class DubDelayTracker(
      *     current in-turn sync. Diagnostics only.
      */
     @Synchronized
-    fun onBurstPlayed(seq: Long, playWallMs: Long, pipelineMs: Long, estimated: Boolean) {
+    fun onBurstPlayed(seq: Long, playWallMs: Long, pipelineMs: Long, estimated: Boolean, backlogMs: Long = 0L) {
         lastPipelineMs = pipelineMs.coerceIn(0L, 2000L)
         lastPipelineEstimated = estimated
+        // v1.0.18 — the audio already queued ahead of this burst's
+        // first frame at write time (the VoicePlayer reads the
+        // playhead before writing): it separates backlog from
+        // hardware in the "phát" diagnostic ("chờ Z ms").
+        lastBacklogMs = backlogMs.coerceAtLeast(0L)
         val ema = pipelineEmaMs
         pipelineEmaMs = if (ema == null) {
             lastPipelineMs
@@ -861,27 +1176,109 @@ class DubDelayTracker(
      * Identifies the turn whose dub just ended, feeds its boundary
      * sample, re-anchors exactly, and measures the per-turn ratio
      * from consecutive turnCompletes. Guarded: a mis-paired boundary
-     * (wrong marker, or a sample inconsistent with the slice median)
-     * is skipped, never fed.
+     * (wrong marker, or a sample inconsistent with the anchor-implied
+     * lag) is skipped, never fed. Every reason a boundary is
+     * rejected is counted (v1.0.18 diagnostics).
+     *
+     * v1.0.18 — the marker is picked by the ANCHOR-IMPLIED speech
+     * position (see selectByAnchor), never by nearness to the
+     * slice-median lagEst (the floor-pinned trap that killed every
+     * boundary on the 27/11 device photos: "cặp mốc 0/60 s" in both
+     * sessions). While no exact anchor exists yet, the SEED LAG
+     * (first dub arrival − first line start ≈ true lag L0) points
+     * at the right turn; if the anchor path finds nothing later,
+     * the seed-lag marker is the fallback recovery.
      */
     @Synchronized
     fun onDubTurnComplete(nowMs: Long, audioPlayed: Boolean) {
-        if (!audioPlayed) return
-        val lagEst = lagEstimateMs()
-        val marker = selectMarker(nowMs, lagEst, countedCorrection = true)
-            ?: return
+        tcRecv++
+        if (!audioPlayed) {
+            tcNoAudio++
+            return
+        }
+        if (!everExactAnchor) {
+            // Seed-lag bootstrap: the k-th OBSERVED turnComplete is
+            // not the k-th turn (earlier turnCompletes never fired),
+            // so the oldest marker is wrong; the seed lag points at
+            // the right turn while the lag is still near L0.
+            val marker = seedMarker(nowMs, isTc = true)
+            if (marker == null) {
+                tcNoMarker++
+                return
+            }
+            acceptTurnComplete(marker, nowMs, viaSeed = true, sPos = null)
+            return
+        }
+        val (marker, sPos) = selectByAnchor(nowMs, isTc = true)
+        if (marker == null) {
+            // Anchor path found nothing (stale anchor): recover from
+            // the SEED LAG (an independent reference) instead of
+            // widening the anchor net — a wide anchor net only
+            // catches stale markers.
+            val seed = seedMarker(nowMs, isTc = true)
+            if (seed == null) {
+                tcNoMarker++
+                return
+            }
+            tcFallback++
+            acceptTurnComplete(seed, nowMs, viaSeed = true, sPos = null)
+            return
+        }
+        acceptTurnComplete(marker, nowMs, viaSeed = false, sPos = sPos)
+    }
+
+    /** v1.0.18 — shared accept path for a turnComplete once a marker
+     * is chosen (mirrors the sim's _accept_tc). [viaSeed] = the
+     * marker came from the seed lag (bootstrap or fallback
+     * recovery); [sPos] = the anchor-implied speech position for
+     * the anchor path (null for seed). Returns true when the sample
+     * was accepted. */
+    private fun acceptTurnComplete(
+        marker: TurnMarker,
+        nowMs: Long,
+        viaSeed: Boolean,
+        sPos: Long?
+    ): Boolean {
         val anchorSpeechNew = marker.audioMs + marker.countedMs
-        // A late/duplicate turnComplete for an older turn must not
-        // move the anchor backwards. Equality is fine: the bootstrap
-        // fallback may already have set this exact boundary, and the
-        // turnComplete confirms it (its sample + ratio measurement
-        // still count).
-        if (anchorSpeechNew < anchorSpeechMs) return
+        // A bootstrap (approximate) anchor must never veto an exact
+        // boundary as "backwards" — only an exact anchor may.
+        // Equality is fine: the bootstrap may already have set this
+        // exact boundary, and the turnComplete confirms it (its
+        // sample + ratio measurement still count).
+        if (anchorSpeechNew < anchorSpeechMs && everExactAnchor) {
+            tcAnchorBack++
+            return false
+        }
         // Raw (tc − marker) measures the lag of the turn's END
         // content: lag + counted + gap. Subtract both to get the lag.
         val latency = nowMs - marker.wallMs - marker.countedMs -
             TURN_COMPLETE_GAP_MS
-        if (kotlin.math.abs(latency - lagEst) > SAMPLE_CONSISTENCY_MS) return
+        if (latency !in 0L..MAX_SAMPLE_MS) {
+            tcConsistency++
+            return false
+        }
+        if (!viaSeed) {
+            // Anchor path: consistency against the anchor-implied
+            // lag (wall of S, interpolated from the slices), not
+            // the floor-pinned slice median.
+            val ref = impliedLagMs(nowMs, sPos)
+            if (kotlin.math.abs(latency - ref) > SAMPLE_CONSISTENCY_MS) {
+                tcConsistency++
+                return false
+            }
+        } else if (isDTrusted(nowMs)) {
+            // Seed-lag fallback recovery: cross-check against D
+            // when D is trusted (a transient lag would make the
+            // seed lag wrong by seconds).
+            if (kotlin.math.abs(latency - dBasedLagMs()) > SEED_FB_D_CHECK_MS) {
+                tcConsistency++
+                return false
+            }
+        }
+        // (Bootstrap 'seed' has nothing reliable to check against:
+        // the first sample SETS the scale.)
+        lastBoundarySampleMs = latency
+        lastBoundaryAtMs = nowMs
         // Per-turn ratio measurement (successor chain only): the dub
         // between two consecutive turnCompletes is exactly the later
         // turn's total. Guarded against a mis-paired marker (a total
@@ -900,13 +1297,23 @@ class DubDelayTracker(
         }
         lastTcSeq = marker.seq
         lastTcDubMs = cumDubMs
+        tcOk++
         recordTurnPair(nowMs)
         feedSample(latency, nowMs)
         reanchor(anchorSpeechNew, nowMs, exact = true)
+        // v1.0.18 — HOLD REFRESH at every accepted turnComplete:
+        // the next burst's chunks no longer inherit a hold that
+        // predates the latest latency by minutes (the v1.0.17
+        // limitation: hold only updated at bursts, ~4/420 s in the
+        // sim, so the actual line-start error stayed ~362 ms).
+        // Applies only to chunks enqueued after this; chunks
+        // already queued keep their due times.
+        lastHoldMs = (delayMs - latency - pipelineMs()).coerceAtLeast(0L)
+        return true
     }
 
     /**
-     * v1.0.14 — a dub burst started (a chunk after ≥500 ms of dub
+     * v1.0.14 — a dub burst started (a chunk after ≥300 ms of dub
      * silence). The chunk is the START of a turn's dub: the anchor is
      * the marker's start audio, and the sample is burst − marker wall
      * (no counted correction — a burst marks a dub START, unlike a
@@ -915,56 +1322,97 @@ class DubDelayTracker(
      * matched). The hold is max(0, D − latency − pipeline):
      * v1.0.17 subtracts the measured pipeline so the voice sounds
      * at (utterance start + D), not (D + pipeline) late.
+     *
+     * v1.0.18 — the marker is picked by the ANCHOR-IMPLIED speech
+     * position (see selectByAnchor), never by nearness to the
+     * slice-median lagEst. The consistency check is against the
+     * anchor-implied lag, plus a second opinion against the
+     * D-based lag while D is trusted (the anchor-implied check is
+     * tautological — it agrees with a wrong anchor, so a burst 2 s
+     * too old passes it and feeds an inflated sample that drags D
+     * up). Before the first exact anchor, the seed lag is the only
+     * reference.
      */
     private fun onDubBurst(nowMs: Long): Pair<Long, TurnMarker?> {
-        val lagEst = lagEstimateMs()
-        val marker = selectMarker(nowMs, lagEst, countedCorrection = false)
-            ?: return lastHoldMs to null
+        burstRecv++
+        if (!everExactAnchor) {
+            // Before the first exact anchor a burst has no reliable
+            // marker — except via the seed lag, which points at the
+            // right turn while the lag is still near L0. Skip the
+            // burst rather than mis-pair it.
+            val marker = seedMarker(nowMs, isTc = false)
+            if (marker == null) {
+                burstNoMarker++
+                return lastHoldMs to null
+            }
+            val latency = nowMs - marker.wallMs
+            if (latency !in 0L..MAX_SAMPLE_MS) {
+                burstConsistency++
+                return lastHoldMs to null
+            }
+            burstOk++
+            lastBoundarySampleMs = latency
+            lastBoundaryAtMs = nowMs
+            recordTurnPair(nowMs)
+            feedSample(latency, nowMs)
+            reanchor(marker.audioMs, nowMs, exact = true)
+            return (delayMs - latency - pipelineMs()).coerceAtLeast(0L) to marker
+        }
+        val (anchorMarker, sPos) = selectByAnchor(nowMs, isTc = false)
+        var viaSeed = false
+        val marker: TurnMarker = if (anchorMarker != null) {
+            anchorMarker
+        } else {
+            // Fallback: seed-lag marker (independent reference).
+            // A wide anchor net only catches stale markers.
+            val seed = seedMarker(nowMs, isTc = false)
+            if (seed == null) {
+                burstNoMarker++
+                return lastHoldMs to null
+            }
+            viaSeed = true
+            burstFallback++
+            seed
+        }
         // A marker older than the anchor (a late burst for an old
-        // turn) or inconsistent with the slice median: no sample,
-        // and no marker for the play report either — a sync error
-        // against the wrong sentence would be worse than none.
-        if (marker.audioMs < anchorSpeechMs) return lastHoldMs to null
-        val latency = nowMs - marker.wallMs
-        if (kotlin.math.abs(latency - lagEst) > SAMPLE_CONSISTENCY_MS) {
+        // turn) or inconsistent with the anchor: no sample, and no
+        // marker for the play report either — a sync error against
+        // the wrong sentence would be worse than none. Only an
+        // exact anchor may veto (here it always is exact).
+        if (marker.audioMs < anchorSpeechMs && everExactAnchor) {
+            burstAnchorBack++
             return lastHoldMs to null
         }
+        val latency = nowMs - marker.wallMs
+        if (latency !in 0L..MAX_SAMPLE_MS) {
+            burstConsistency++
+            return lastHoldMs to null
+        }
+        if (!viaSeed) {
+            val ref = impliedLagMs(nowMs, sPos)
+            if (kotlin.math.abs(latency - ref) > SAMPLE_CONSISTENCY_MS) {
+                burstConsistency++
+                return lastHoldMs to null
+            }
+            if (isDTrusted(nowMs) &&
+                kotlin.math.abs(latency - dBasedLagMs()) > BURST_D_CHECK_MS
+            ) {
+                burstConsistency++
+                return lastHoldMs to null
+            }
+        } else if (isDTrusted(nowMs) &&
+            kotlin.math.abs(latency - dBasedLagMs()) > SEED_FB_D_CHECK_MS
+        ) {
+            burstConsistency++
+            return lastHoldMs to null
+        }
+        burstOk++
+        lastBoundarySampleMs = latency
+        lastBoundaryAtMs = nowMs
         recordTurnPair(nowMs)
         feedSample(latency, nowMs)
         reanchor(marker.audioMs, nowMs, exact = true)
         return (delayMs - latency - pipelineMs()).coerceAtLeast(0L) to marker
-    }
-
-    /** Pick the turn marker whose implied lag is nearest [lagEst].
-     * With countedCorrection the implied lag is (now − wall −
-     * counted) — a turnComplete marks a dub END; without it the
-     * implied lag is (now − wall) — a burst marks a dub START. Only
-     * completed markers (counted known) are eligible for a
-     * turnComplete; any marker for a burst. Null when no marker is
-     * within [MARKER_RESIDUAL_MS] of the estimate. */
-    private fun selectMarker(
-        nowMs: Long,
-        lagEst: Long,
-        countedCorrection: Boolean
-    ): TurnMarker? {
-        var best: TurnMarker? = null
-        var bestResidual: Long? = null
-        for (marker in markers) {
-            if (countedCorrection && (!marker.done || marker.countedMs <= 0L)) {
-                continue
-            }
-            var implied = nowMs - marker.wallMs
-            if (countedCorrection) implied -= marker.countedMs
-            val residual = kotlin.math.abs(implied - lagEst)
-            if (bestResidual == null || residual < bestResidual) {
-                best = marker
-                bestResidual = residual
-            }
-        }
-        if (best == null || (bestResidual ?: Long.MAX_VALUE) > MARKER_RESIDUAL_MS) {
-            return null
-        }
-        return best
     }
 
     private fun reanchor(anchorSpeechNew: Long, nowMs: Long, exact: Boolean) {
@@ -1227,16 +1675,51 @@ class DubDelayTracker(
         } ?: " · lệch hình —"
         val pipePart = lastPipelineMs?.let {
             val mark = if (lastPipelineEstimated) "~" else ""
-            " · phát %s%d ms (TB %d ms)".format(mark, it, pipelineMs())
+            // v1.0.18 — "chờ Z ms" is the audio already queued
+            // ahead of this burst's first frame at write time
+            // (backlog), so a big "phát" can be told apart: backlog
+            // vs hardware.
+            val backlogPart = lastBacklogMs?.let { b ->
+                ", chờ %d ms".format(b)
+            } ?: ""
+            " · phát %s%d ms (TB %d ms%s)".format(mark, it, pipelineMs(), backlogPart)
         } ?: " · phát —"
         val ratioPart = " · giọng/gốc %.2f×".format(1.0 / ratio())
         val framePart = lastFrameResidualMs?.let {
             " · khung hình %+d ms".format(it)
         } ?: " · khung hình —"
-        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s".format(
+        // v1.0.18 — per-reason boundary rejection counters (the
+        // "cặp mốc 0" diagnosis): recv -> ok, and why the rest
+        // were rejected — no-mk = no marker within residual,
+        // no-aud = turnComplete with no dub audio, ab =
+        // anchor-backwards veto, cons = consistency/range, fb =
+        // recovered via the seed-lag marker. "tách N" = markers
+        // created by splitting a merged VAD turn (≥300 ms silence
+        // inside a turn). Only the sides with data are shown.
+        fun sideCounters(
+            name: String, recv: Int, ok: Int, noMarker: Int, noAudio: Int,
+            anchorBack: Int, consist: Int, fallback: Int
+        ): String {
+            if (recv == 0) return ""
+            var s = " · $name $recv ok $ok"
+            if (noMarker > 0) s += " no-mk $noMarker"
+            if (noAudio > 0) s += " no-aud $noAudio"
+            if (anchorBack > 0) s += " ab $anchorBack"
+            if (consist > 0) s += " cons $consist"
+            if (fallback > 0) s += " fb $fallback"
+            return s
+        }
+        val rejectPart = sideCounters(
+            "tc", tcRecv, tcOk, tcNoMarker, tcNoAudio, tcAnchorBack,
+            tcConsistency, tcFallback
+        ) + sideCounters(
+            "burst", burstRecv, burstOk, burstNoMarker, 0,
+            burstAnchorBack, burstConsistency, burstFallback
+        ) + if (splitMarkers > 0) " · tách $splitMarkers" else ""
+        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s".format(
             delaySec, samplePart, sampleTimes60s.size, turnPairTimes60s.size,
             speechSlices.size, lastHoldMs / 1000.0, vadPart, droppedPart,
-            syncPart, pipePart, ratioPart, framePart
+            syncPart, pipePart, ratioPart, framePart, rejectPart
         )
     }
 
@@ -1248,6 +1731,7 @@ class DubDelayTracker(
     @Synchronized
     fun resetForReconnect() {
         lastDubChunkAtMs = -1L
+        lastDueMs = 0L
         speechSlices.clear()
         speechAccumMs = 0L
         dubAccumMs = 0L
@@ -1317,6 +1801,34 @@ class DubDelayTracker(
         burstVideoTimes.clear()
         recentBurstMarkers.clear()
         lastFrameResidualMs = null
+        // v1.0.18 — a stop/start must reset CLEAN (the 27/11
+        // 2-session correction: session 2's D 3.7 s was seeded
+        // fresh, but stop() left firstAudioSeeded + the LatencyEma
+        // + the boundary state behind — harmless today because the
+        // service discards the tracker on stop, but stop() must be
+        // complete in case a tracker is ever reused).
+        firstAudioSeeded = false
+        seedLagMs = null
+        lastLoudAtMs = 0L
+        lastDueMs = 0L
+        lastBoundarySampleMs = 0L
+        lastBoundaryAtMs = 0L
+        splitMarkers = 0
+        tcRecv = 0
+        tcNoAudio = 0
+        tcNoMarker = 0
+        tcAnchorBack = 0
+        tcConsistency = 0
+        tcOk = 0
+        tcFallback = 0
+        burstRecv = 0
+        burstNoMarker = 0
+        burstAnchorBack = 0
+        burstConsistency = 0
+        burstOk = 0
+        burstFallback = 0
+        lastBacklogMs = null
+        latencyEma.reset()
         latencyEma.setMarginMs(2000L)
     }
 }

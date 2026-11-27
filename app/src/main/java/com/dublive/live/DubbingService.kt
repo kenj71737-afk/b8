@@ -853,9 +853,11 @@ class DubbingService : Service() {
                 // pipeline + the closed-loop sync error from the
                 // real sound, and the frame check asks the activity
                 // for the video's currentTime at this play start.
-                onBurstPlayed = { seq, playWallMs, pipelineMs, estimated ->
+                // v1.0.18 — fifth value: the backlog ahead of the
+                // burst's first frame at write time.
+                onBurstPlayed = { seq, playWallMs, pipelineMs, estimated, backlogMs ->
                     try {
-                        tracker?.onBurstPlayed(seq, playWallMs, pipelineMs, estimated)
+                        tracker?.onBurstPlayed(seq, playWallMs, pipelineMs, estimated, backlogMs)
                     } catch (e: Exception) {
                         Log.w(TAG, "tracker burstPlayed failed", e)
                     }
@@ -915,6 +917,12 @@ class DubbingService : Service() {
         currentUtteranceStartMs = 0L
         lastUtteranceStartMs = 0L
         firstAudioSentAtMs = 0L
+        // v1.0.18 — a stale true flag would let the new session's
+        // first turnComplete through with no audio at all (the
+        // reset-cleanliness check from the 27/11 2-session
+        // correction: audioPlayedThisTurn was never reset in the
+        // start block).
+        audioPlayedThisTurn = false
         lastNotedBurstSeq = 0L
         delayEnabled = true
         captureIsStereo48k = false

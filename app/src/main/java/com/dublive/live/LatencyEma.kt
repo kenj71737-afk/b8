@@ -60,6 +60,14 @@ class LatencyEma(
         emaMs = latencyMs.coerceIn(0L, maxDelayMs - marginMs)
     }
 
+    /** v1.0.18 — full reset for a session restart (stop/start):
+     * the EMA and the margin must not leak from the previous
+     * session into the next one. */
+    fun reset() {
+        emaMs = null
+        marginMs = 2000L
+    }
+
     /** The delay the EMA currently targets (ema + margin, clamped).
      * Null before any sample/seed. */
     fun targetDelay(): Long? =

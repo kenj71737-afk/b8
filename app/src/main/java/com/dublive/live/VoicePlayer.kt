@@ -6,6 +6,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTimestamp
 import android.media.AudioTrack
+import android.media.PlaybackParams
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
 import android.os.SystemClock
@@ -87,7 +88,25 @@ class VoicePlayer(
      * v1.0.18 — fifth value: the backlog (ms) already queued ahead
      * of the burst's first frame at write time.
      */
-    private val onBurstPlayed: (Long, Long, Long, Boolean, Long) -> Unit = { _, _, _, _, _ -> }
+    private val onBurstPlayed: (Long, Long, Long, Boolean, Long) -> Unit = { _, _, _, _, _ -> },
+    /**
+     * v1.0.19 — TIME-STRETCH catch-up (the runaway-backlog fix).
+     * Three callbacks into the tracker, all called on the player
+     * thread:
+     *  - [onPipelineSample]: every 20th chunk, the TYPICAL
+     *    pipeline (render − due) so the tracker feeds its EMA
+     *    with the mid-burst pipeline, not the burst-first one
+     *    (which under-measures it ~10x).
+     *  - [onWriteLate]: every chunk taken, how late the take was
+     *    vs its due (take − due, ms). The tracker raises the
+     *    stretch to 1.5x when the loop is >200 ms behind.
+     *  - [onTrackLevel]: after every chunk write, the audio
+     *    queued in the track (ms) and the buffer cap (ms). The
+     *    tracker raises the stretch when the level is high.
+     */
+    private val onPipelineSample: (Long, Long) -> Unit = { _, _ -> },
+    private val onWriteLate: (Long) -> Unit = { _ -> },
+    private val onTrackLevel: (Long, Long) -> Unit = { _, _ -> }
 ) {
     companion object {
         private const val TAG = "DubLive-Voice"
@@ -150,8 +169,15 @@ class VoicePlayer(
      * enqueued by [playAudio] is due at arrival + that hold. A later
      * burst's different hold never retimes chunks already queued —
      * the queue stores a fixed due time per block.
+     *
+     * v1.0.19 — staleMs 700 (was the 500 default): a chunk >700 ms
+     * overdue is dropped instead of played late. The sim showed
+     * 500 ms drops 7.2% of the audio at a 2.5x generation burst,
+     * 700 ms drops 3.1% and the 1.5x sync stays <500 ms, while
+     * 1000 ms breaks the 1.5x sync (511 ms). Only the dub voice
+     * gets 700 ms — the background player's queue keeps 500 ms.
      */
-    private val holdQueue = DelayedAudioQueue()
+    private val holdQueue = DelayedAudioQueue(staleMs = 700L)
     @Volatile private var currentHoldMs = 0L
     private var audioTrack: AudioTrack? = null
     /**
@@ -224,6 +250,35 @@ class VoicePlayer(
      * 24 kHz mono 16-bit audio): the playhead poll runs between
      * slices, so it is never starved longer than ~50 ms. */
     private val SLICE_BYTES = 2400
+    /**
+     * v1.0.19 — TIME-STRETCH (AudioTrack.setPlaybackParams, Sonic
+     * inside the framework: speed up without changing pitch).
+     * The tracker asks for 1.0–1.5x; the service calls
+     * [setPlaybackSpeed] and the player loop applies it. The
+     * pending speed is applied in the player thread (not in the
+     * setter) so a track rebuild never races a setPlaybackParams
+     * call on a dead track. [stretchSupported] goes false forever
+     * once setPlaybackParams throws — the player then stays at
+     * 1.0x and the tracker falls back to word-drop.
+     */
+    @Volatile private var pendingSpeed = 1.0
+    @Volatile private var currentSpeed = 1.0
+    @Volatile private var stretchSupported = true
+    /** v1.0.19 — how often a mid-burst pipeline sample is taken
+     * (every 20th chunk ≈ every 10 s of dub). */
+    private val PIPELINE_SAMPLE_EVERY = 20
+    private var chunksSincePipelineSample = 0
+    /**
+     * v1.0.19 — the framework's minimum buffer (bytes) and the
+     * buffer actually built (bytes), for the diagnostics/log. The
+     * honest hardware floor: at minBuf 32 KB the pipeline cannot
+     * go below ~682 ms, and the dynamic margin must be built from
+     * the MEASURED pipeline, not from the sim's 100–300 ms hope.
+     */
+    @Volatile var minBufferBytes = 0
+        private set
+    @Volatile var bufferBytes = 0
+        private set
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -304,6 +359,13 @@ class VoicePlayer(
             } else {
                 4096
             }
+            // v1.0.19 — remember the floor for the diagnostics/log:
+            // the device's minBuf is the honest pipeline floor.
+            minBufferBytes = if (minBuf > 0) minBuf else 0
+            bufferBytes = bufBytes
+            Log.i(TAG, "AudioTrack minBuf=%d B (%d ms) buf=%d B (%d ms)"
+                .format(minBufferBytes, minBufferBytes / 48,
+                    bufferBytes, bufferBytes / 48))
             AudioTrack.Builder()
                 .setAudioAttributes(attrs)
                 .setAudioFormat(format)
@@ -364,12 +426,20 @@ class VoicePlayer(
         playerThread = Thread({
             while (running) {
                 try {
+                    // v1.0.19 — apply the pending time-stretch speed
+                    // (the service pushes the tracker's target; the
+                    // setter only stores it, the loop applies it so
+                    // a rebuild never races setPlaybackParams on a
+                    // dead track). setPlaybackParams is Sonic inside
+                    // the framework: faster without changing pitch.
+                    applyPendingSpeed()
                     // v1.0.17 — even with no chunk due, poll the
                     // playhead: a burst-start confirmation may be
                     // waiting for its first frame to render.
                     confirmPlayStart()
-                    val chunk = holdQueue.pollDue(System.currentTimeMillis(), 0L)
-                    if (chunk == null) {
+                    val takeNow = System.currentTimeMillis()
+                    val dueInfo = holdQueue.pollDueInfo(takeNow, 0L)
+                    if (dueInfo == null) {
                         try {
                             Thread.sleep(5)
                         } catch (_: InterruptedException) {
@@ -377,7 +447,15 @@ class VoicePlayer(
                         }
                         continue
                     }
-                    lastDubAudioAtMs = System.currentTimeMillis()
+                    val chunk = dueInfo.first
+                    val dueMs = dueInfo.second
+                    // v1.0.19 — loop lateness (take − due): how far
+                    // behind the player loop is. The tracker raises
+                    // the stretch to 1.5x when this exceeds 200 ms
+                    // (a 2.5x generation burst sits at ~330 ms
+                    // median, a 1.5x one at ~40 ms).
+                    try { onWriteLate((takeNow - dueMs).coerceAtLeast(0L)) } catch (_: Exception) { }
+                    lastDubAudioAtMs = takeNow
                     if (!speechStartedSignalled) {
                         speechStartedSignalled = true
                         try { onSpeechStarted() } catch (_: Exception) { }
@@ -449,6 +527,42 @@ class VoicePlayer(
                         }
                     }
                     totalFramesWritten += (writtenBytes / 2).toLong()
+                    // v1.0.19 — post-write track level + mid-burst
+                    // pipeline sample. The level after this write is
+                    // the audio queued in the track; the backlog
+                    // ahead of THIS chunk's first frame is the level
+                    // minus the chunk just written (the chunk sits
+                    // at the END of the queue). Its first frame
+                    // renders after that backlog drains at the
+                    // current stretch speed, plus hardware — so the
+                    // typical pipeline is (now − due) + backlog /
+                    // speed + HW. Every 20th chunk this feeds the
+                    // tracker's pipeline EMA (the burst-first
+                    // pipeline under-measures the typical one ~10x).
+                    val writeDoneWall = System.currentTimeMillis()
+                    val chunkMs = (writtenBytes / 2L * 1000L) / 24000L
+                    val capMs = if (bufferBytes > 0) bufferBytes / 48L else 0L
+                    val levelAfterMs = try {
+                        val head = readPlayhead()
+                        if (head != null) {
+                            maxOf(0L, ((totalFramesWritten - head.first) * 1000L) / 24000L)
+                        } else {
+                            backlogMs + chunkMs
+                        }
+                    } catch (_: Exception) {
+                        backlogMs + chunkMs
+                    }
+                    try { onTrackLevel(levelAfterMs, capMs) } catch (_: Exception) { }
+                    chunksSincePipelineSample++
+                    if (chunksSincePipelineSample >= PIPELINE_SAMPLE_EVERY) {
+                        chunksSincePipelineSample = 0
+                        val aheadMs = maxOf(0L, levelAfterMs - chunkMs)
+                        val speed = currentSpeed.coerceAtLeast(1.0)
+                        val pipeSample = (writeDoneWall - dueMs +
+                            (aheadMs / speed).toLong() + FALLBACK_HW_MS)
+                            .coerceAtLeast(0L)
+                        try { onPipelineSample(pipeSample, backlogMs) } catch (_: Exception) { }
+                    }
                     if (burstStart != null && track != null) {
                         beginPlayMeasurement(burstStart, firstFrame, backlogMs)
                     }
@@ -508,7 +622,12 @@ class VoicePlayer(
                     // Already rendering (underrun / tiny backlog).
                     tsWall to false
                 } else {
-                    tsWall + ((firstFrame - pos) * 1000L) / 24000L to false
+                    // v1.0.19 — the backlog ahead drains at the
+                    // current stretch speed, not real-time: divide
+                    // by the speed (at 1.5x a 600 ms backlog drains
+                    // in 400 ms). At 1.0x this is unchanged.
+                    val speed = currentSpeed.coerceAtLeast(1.0)
+                    tsWall + (((firstFrame - pos) * 1000L) / (24000L * speed)).toLong() to false
                 }
             }
         } catch (_: Exception) {
@@ -539,6 +658,25 @@ class VoicePlayer(
     private fun confirmPlayStart() {
         val confirm = synchronized(measureLock) { pendingConfirm } ?: return
         val nowWall = System.currentTimeMillis()
+        // v1.0.19 — when the stretch is on (speed != 1.0), the
+        // playhead framePosition counts POST-STRETCH output frames,
+        // which advance faster than the input frames: the
+        // `head.first >= firstFrame` check would fire EARLY (before
+        // the audio actually sounds). Skip the poll and report the
+        // prediction made at write time (which already divides the
+        // backlog drain by the speed), flagged estimated=true.
+        if (currentSpeed != 1.0) {
+            synchronized(measureLock) {
+                if (pendingConfirm === confirm) pendingConfirm = null
+            }
+            val playWall = confirm.predictedPlayWallMs ?: nowWall
+            val pipeline = (playWall - confirm.dueWallMs).coerceAtLeast(0L)
+            Log.i(TAG, "burst seq=%d arrival=%d hold=%d due=%d backlog=%d play=%d pipeline=%d est=%b (stretch %.2fx, predicted)"
+                .format(confirm.seq, confirm.arrivalWallMs, confirm.holdMs,
+                    confirm.dueWallMs, confirm.backlogMs, playWall, pipeline, true, currentSpeed))
+            try { onBurstPlayed(confirm.seq, playWall, pipeline, true, confirm.backlogMs) } catch (_: Exception) { }
+            return
+        }
         val head = try { readPlayhead() } catch (_: Exception) { null }
         if (head != null && head.first >= confirm.firstFrame) {
             synchronized(measureLock) {
@@ -574,6 +712,11 @@ class VoicePlayer(
         playerThread?.interrupt()
         try { playerThread?.join(500) } catch (_: Exception) { }
         playerThread = null
+        // v1.0.19 — a rebuilt track starts at 1.0x: reset the
+        // applied speed so the loop re-applies the pending speed
+        // to the new track (otherwise applyPendingSpeed sees
+        // pending == current and never sets it on the new track).
+        currentSpeed = 1.0
         // v1.0.17 — a rebuilt track starts a new frame stream: any
         // pending play measurement refers to the dead track's frames
         // and must not report against the new one.
@@ -664,6 +807,54 @@ class VoicePlayer(
                 holdMs = holdMs,
                 chunkIndex = -1L
             )
+        }
+    }
+
+    /**
+     * v1.0.19 — TIME-STRETCH catch-up. The service pushes the
+     * tracker's target speed (1.0–1.5x) here; the player loop
+     * applies it via [applyPendingSpeed]. setPlaybackParams is
+     * Sonic inside the framework (faster, same pitch). If the
+     * device does not support it, the call throws: the player
+     * then stays at 1.0x forever ([stretchSupported] = false) and
+     * the tracker falls back to dropping late words. Never throws.
+     */
+    fun setPlaybackSpeed(speed: Double) {
+        if (!stretchSupported) return
+        pendingSpeed = speed.coerceIn(1.0, 1.5)
+    }
+
+    /** Current applied stretch speed (1.0 when unsupported). */
+    val playbackSpeed: Double get() = currentSpeed
+
+    /** True when this device supports setPlaybackParams. */
+    val isStretchSupported: Boolean get() = stretchSupported
+
+    /** v1.0.19 — apply [pendingSpeed] to the live track (player
+     * thread only). A rebuild resets the speed to 1.0: re-apply
+     * the pending value after a rebuild too (buildTrack calls
+     * this once via the loop's first tick). */
+    private fun applyPendingSpeed() {
+        val want = pendingSpeed
+        if (want == currentSpeed) return
+        val track = audioTrack ?: return
+        if (!stretchSupported) {
+            pendingSpeed = 1.0
+            currentSpeed = 1.0
+            return
+        }
+        try {
+            track.playbackParams = PlaybackParams().setSpeed(want.toFloat())
+            currentSpeed = want
+            Log.i(TAG, "playback speed -> %.2fx".format(want))
+        } catch (e: Exception) {
+            Log.w(TAG, "setPlaybackParams(%.2f) unsupported on this device, staying at 1.0x".format(want), e)
+            stretchSupported = false
+            pendingSpeed = 1.0
+            currentSpeed = 1.0
+            try {
+                track.playbackParams = PlaybackParams().setSpeed(1.0f)
+            } catch (_: Exception) { }
         }
     }
 

@@ -46,6 +46,20 @@ class VadDetector(
     private val frameSamples = sampleRate / 50 // 20 ms frames
     private val speechFramesNeeded = 8 // 8 x 20 ms = 160 ms >= 150 ms
     private val silenceFramesToEnd = 35 // 35 x 20 ms = 700 ms
+    /**
+     * v1.0.19 — BELOW-START counter. The 700 ms below-END rule
+     * alone never ends a turn while background music plays:
+     * music is RMS 300–800, above the END threshold (240) so it
+     * resets quietFrames, but below the START threshold (600) so
+     * it is not speech. The turn stays open, the marker ages,
+     * and every burst is rejected as no-marker (device 28/11:
+     * no-mk 23/31, pairs 0/60 s). End the turn after 15 frames
+     * (300 ms) continuously below the START threshold as well —
+     * a 300 ms dip below START is an inter-line pause, not a
+     * within-sentence syllable dip (those are < 200 ms). The
+     * 700 ms below-END rule is kept for true silence.
+     */
+    private val belowStartFramesToEnd = 15 // 15 x 20 ms = 300 ms
 
     /** RMS of the most recent 20 ms frame (0 when silent). Read by the
      * service's level ticker so the UI can show a live input-level meter. */
@@ -72,6 +86,9 @@ class VadDetector(
     private var inSpeech = false
     private var loudFrames = 0
     private var quietFrames = 0
+    /** v1.0.19 — consecutive frames below the START threshold
+     * inside an utterance (music / pause). */
+    private var belowStartFrames = 0
     private var pendingHead = mutableListOf<Short>()
 
     /** v1.0.8 — live-update from Settings: the service's watchdog
@@ -155,11 +172,23 @@ class VadDetector(
             } else {
                 quietFrames++
             }
+            // v1.0.19 — below-START counter: music (RMS 300–800) is
+            // above END so it never advances quietFrames, but it is
+            // below START, so it advances this counter. 15 frames
+            // (300 ms) below START ends the turn even when the
+            // frames are loud enough to keep quietFrames at 0.
+            if (frameRms >= startThreshold) {
+                belowStartFrames = 0
+            } else {
+                belowStartFrames++
+            }
             listener.onSpeechChunk(frame)
-            if (quietFrames >= silenceFramesToEnd) {
+            if (quietFrames >= silenceFramesToEnd ||
+                belowStartFrames >= belowStartFramesToEnd) {
                 inSpeech = false
                 loudFrames = 0
                 quietFrames = 0
+                belowStartFrames = 0
                 listener.onSpeechEnd()
             }
         }
@@ -169,6 +198,7 @@ class VadDetector(
         inSpeech = false
         loudFrames = 0
         quietFrames = 0
+        belowStartFrames = 0
         pendingHead.clear()
         preRoll.clear()
     }

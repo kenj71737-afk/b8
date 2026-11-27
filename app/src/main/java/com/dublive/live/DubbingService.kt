@@ -416,6 +416,15 @@ class DubbingService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "diagnostics broadcast failed", e)
                 }
+                // v1.0.19 — push the tracker's time-stretch target
+                // to the player (also pushed at every burst play):
+                // 1.0x when caught up, up to 1.5x when the dub is
+                // falling behind the picture.
+                try {
+                    voicePlayer?.setPlaybackSpeed(tracker?.currentStretchSpeed ?: 1.0)
+                } catch (e: Exception) {
+                    Log.w(TAG, "setPlaybackSpeed failed", e)
+                }
             }
             // Silence diagnosis: capturing but nothing heard for a while.
             if (lastOutputAtMs == 0L && lastHeardAtMs > 0L &&
@@ -861,7 +870,43 @@ class DubbingService : Service() {
                     } catch (e: Exception) {
                         Log.w(TAG, "tracker burstPlayed failed", e)
                     }
+                    // v1.0.19 — push the tracker's stretch target
+                    // to the player at every burst play (it also
+                    // runs in the level ticker, 1 s).
+                    try {
+                        voicePlayer?.setPlaybackSpeed(tracker?.currentStretchSpeed ?: 1.0)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "setPlaybackSpeed failed", e)
+                    }
                     requestVideoTime("burst", seq, playWallMs)
+                },
+                // v1.0.19 — time-stretch catch-up (VoicePlayer
+                // thread). The mid-burst pipeline sample feeds the
+                // tracker's EMA with the TYPICAL pipeline (the
+                // burst-first one under-measures it ~10x); the
+                // write lateness raises the stretch to 1.5x when
+                // the player loop is >200 ms behind; the track
+                // level raises it when the buffer is filling.
+                onPipelineSample = { pipelineMs, backlogMs ->
+                    try {
+                        tracker?.onPipelineSample(pipelineMs, backlogMs)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker pipelineSample failed", e)
+                    }
+                },
+                onWriteLate = { lateMs ->
+                    try {
+                        tracker?.noteLateness(lateMs, System.currentTimeMillis())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker noteLateness failed", e)
+                    }
+                },
+                onTrackLevel = { levelMs, capMs ->
+                    try {
+                        tracker?.noteLevel(levelMs, capMs, System.currentTimeMillis())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker noteLevel failed", e)
+                    }
                 }
             ).also {
                 it.start()
@@ -1726,26 +1771,25 @@ class DubbingService : Service() {
                 override fun onSpeechChunk(samples: ShortArray) {
                     val bytes = shortsToBytes(samples)
                     utteranceBytes.write(bytes)
-                    // v1.0.11 (hotfix) — count EXACTLY what Live
-                    // hears. v1.0.10 fed every in-speech frame to the
-                    // tracker, including the 700 ms VAD silence tail
-                    // after each sentence — frames below the END
-                    // threshold that are NEVER sent to Live and have
-                    // NO dub. That overcounts ~700 ms per utterance,
-                    // so with a translation the same length as the
-                    // original the slice queue grows, samples inflate
-                    // and D runs away (simulation: D 5.0 -> 11.2 s).
-                    // The tracker now uses the same rms gate as the
-                    // Live send below: only frames loud enough to be
-                    // sent to Live (rms >= END threshold) count as
-                    // speech time. Quiet syllables between END and
-                    // START threshold are still sent and still counted
-                    // (v1.0.8); the silence tail is not. Together
-                    // with the head counted in onSpeechStart, counted
-                    // speech = head + loud chunks = everything sent
-                    // to Live that produces dub.
+                    // v1.0.19 — tracker feed gate is the START
+                    // threshold (600), NOT the END threshold (240).
+                    // v1.0.11 gated the tracker at END to avoid
+                    // overcounting the 700 ms silence tail — but
+                    // music frames (RMS 300–800) are above END, so
+                    // they reached the tracker as "speech ms" and
+                    // kept lastLoudAtMs fresh: the v1.0.18 marker
+                    // split never saw a >= 300 ms gap (device 28/11:
+                    // "tách 1" in a whole session, no-mk 23/31).
+                    // Gating the tracker at START keeps music out of
+                    // the marker clock, so the split sees the pause.
+                    // The LIVE SEND below stays at END (240): quiet
+                    // syllables (240–600) still go to the model, or
+                    // the dub stutters (the 20:37 report). The
+                    // tracker therefore undercounts quiet syllables
+                    // slightly — the sim (tracker_gate=600) shows
+                    // this is a small, stable bias the ratio absorbs.
                     val rms = rmsOf(samples)
-                    if (rms >= vadEndThreshold) {
+                    if (rms >= vadThreshold) {
                         try {
                             tracker?.onSpeechMs(
                                 (samples.size / 16).toLong(),

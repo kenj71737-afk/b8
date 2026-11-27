@@ -278,8 +278,12 @@ class DubDelayTracker(
         /** v1.0.17 — pipeline EMA seed (ms) before any burst has
          * been measured. The sim's pipeline model is 100–300 ms. */
         const val PIPELINE_SEED_MS = 150L
-        /** v1.0.17 — jitter headroom inside the dynamic margin. */
-        const val PIPELINE_JITTER_MS = 400L
+        /** v1.0.17 — jitter headroom inside the dynamic margin.
+         * v1.0.19 — 400 → 800 ms: the hold (≈ margin − pipeline
+         * ≈ jitter) saturated at 0 under a 2.5x generation burst
+         * and the drop hit 23%; the larger jitter is the slack
+         * that absorbs burst-latency variation. */
+        const val PIPELINE_JITTER_MS = 800L
         /** v1.0.17 — dynamic margin clamp (pipeline + jitter). */
         const val MARGIN_MIN_MS = 500L
         const val MARGIN_MAX_MS = 2000L
@@ -313,6 +317,25 @@ class DubDelayTracker(
         /** v1.0.18 — seed-lag fallback D-based cross-check (looser:
          * the fallback IS the recovery). */
         const val SEED_FB_D_CHECK_MS = 2500L
+        /** v1.0.19 — hard D cap: the device lag maxed at 8.3 s;
+         * D must never chase a runaway backlog again. */
+        const val MAX_DELAY_CAP_MS = 8000L
+        /** v1.0.19 — time-stretch ceiling (error-driven path only). */
+        const val MAX_STRETCH_SPEED = 1.5
+        /** v1.0.19 — level-driven stretch ceiling: a full buffer
+         * alone does not justify the fastest stretch. */
+        const val STRETCH_LEVEL_CAP = 1.25
+        /** v1.0.19 — burst D-validation window (burst-successor
+         * ratio gate). */
+        const val BURST_D_VALIDATE_MS = 1000L
+        /** v1.0.19 — slice D-check window (feedSample). */
+        const val SLICE_D_CHECK_MS = 1500L
+        /** v1.0.19 — sustained slice D-rejections before re-anchor. */
+        const val SLICE_D_REANCHOR_STREAK = 6
+        /** v1.0.19 — hold slew limit per burst (ms). */
+        const val HOLD_SLEW_MS = 300L
+        /** v1.0.19 — lateness threshold for the stretch raise. */
+        const val LATENESS_STRETCH_MS = 200L
     }
 
     /** One 500 ms slice of counted speech: its wall span and its
@@ -447,6 +470,43 @@ class DubDelayTracker(
     private var burstConsistency = 0
     private var burstOk = 0
     private var burstFallback = 0
+
+    // ---- v1.0.19 — slice D-check + D-based re-anchor ----
+    /** Slice samples rejected by the D-check, and the current
+     * run of consecutive rejections (6 in a row re-anchors). */
+    private var sliceDReject = 0
+    private var sliceDStreak = 0
+    /** Re-anchors to the D-based marker (slice streak / burst
+     * no-marker recovery). */
+    private var dReanchors = 0
+
+    // ---- v1.0.19 — burst-successor ratio measurement ----
+    /** Last accepted burst's marker, for the successor chain.
+     * Named lastRatioBurstSeq (not lastBurstSeq): the public
+     * val lastBurstSeq already exists (the burst sequence the
+     * service reads) and a private var of the same name would
+     * collide with it. */
+    private var lastRatioBurstSeq: Long? = null
+    private var lastBurstAudioMs = 0L
+    private var lastBurstDubMs = 0L
+    private var lastBurstValidated = false
+    private var ratioBurstMeas = 0
+
+    // ---- v1.0.19 — time-stretch controller ----
+    /** Target time-stretch speed (1.0 = no stretch). Read by the
+     * service via [currentStretchSpeed]; raised by noteLevel /
+     * noteLateness, steered by [stretchUpdate]. */
+    private var targetSpeed = 1.0
+    /** When the level/lateness demand last raised the speed: the
+     * hysteresis lowering in [stretchUpdate] holds off for 5 s. */
+    private var levelRaiseAtMs: Long? = null
+    private var lastStretchUpdateMs = 0L
+
+    // ---- v1.0.19 — marker diagnostics ----
+    /** Marker-split attempts (gap condition met with an open
+     * marker) vs [splitMarkers] (splits that actually fired). */
+    private var splitAttempts = 0
+    private var stallResets = 0
 
     // ---- diagnostics ----
     private var lastSampleMs = 0L
@@ -594,6 +654,15 @@ class DubDelayTracker(
         }
     }
 
+    /** v1.0.19 — hard D cap: a delay set from a measurement is
+     * clamped to [MAX_DELAY_CAP_MS] (8000 ms) as well as
+     * [maxDelayMs]. The device lag maxed at 8.3 s; D must never
+     * chase a runaway backlog again. NOT used by [adjustManual]
+     * (the user's explicit ±1 s button stays uncapped up to
+     * maxDelayMs). */
+    private fun capDelayMs(v: Long): Long =
+        v.coerceIn(Prefs.MIN_DELAY_MS, minOf(maxDelayMs, MAX_DELAY_CAP_MS))
+
     /** v1.0.18 — D-based lag: D − dynamic margin. The delay is the
      * EMA of the accepted boundary/slice samples + margin, so D −
      * margin is the best available estimate of the current lag
@@ -601,13 +670,15 @@ class DubDelayTracker(
     private fun dBasedLagMs(): Long =
         maxOf(MIN_SAMPLE_MS, delayMs - dynamicMarginMs())
 
-    /** v1.0.18 — is D a reliable second opinion right now? The last
-     * accepted boundary sample agrees with D − margin within 1 s
-     * and is recent. False during a lag transient (D chasing), so
-     * the D-based checks are skipped and cannot block recovery. */
-    private fun isDTrusted(nowMs: Long): Boolean =
-        lastBoundaryAtMs != 0L && nowMs - lastBoundaryAtMs <= D_TRUSTED_WINDOW_MS &&
-            kotlin.math.abs(lastBoundarySampleMs - dBasedLagMs()) <= 1000L
+    /** v1.0.19 — D is ALWAYS a trusted second opinion now. The
+     * v1.0.18 gate disabled the D-check exactly when it was most
+     * needed (D moves make it false; a wrong anchor makes the
+     * last boundary disagree). The D-check is the only ABSOLUTE
+     * guard (the anchor-implied check is tautological when the
+     * anchor is wrong). A genuine lag transient moves the lag
+     * <200 ms per burst interval, far inside the 1500 ms
+     * D-check window. Signature and all call sites unchanged. */
+    private fun isDTrusted(nowMs: Long): Boolean = true
 
     /** Current lag estimate: median of the recent slice samples —
      * but only when the samples are fresh (newest within 10 s) and
@@ -732,6 +803,8 @@ class DubDelayTracker(
      * pair, not of this silence).
      */
     private fun resetForStall(nowMs: Long) {
+        // v1.0.19 — stall-reset counter (diagnostics).
+        stallResets++
         windowSamples.clear()
         windowStartMs = nowMs
         speechAccumMs = 0L
@@ -780,6 +853,16 @@ class DubDelayTracker(
         // turn-start head chunk (its marker was just created with
         // counted 0).
         val lastMarker = markers.lastOrNull()
+        // v1.0.19 — split ATTEMPT: the gap condition met with an
+        // open marker, whether or not the counted>0 guard below
+        // lets the split fire (the head chunk's marker was just
+        // created with counted 0). Attempts vs splits tells a
+        // merged-turn screenshot apart from a no-silence one.
+        if (lastMarker != null && !lastMarker.done &&
+            lastLoudAtMs > 0L && nowMs - lastLoudAtMs >= SPLIT_SILENCE_MS
+        ) {
+            splitAttempts++
+        }
         if (lastMarker != null && !lastMarker.done && lastMarker.countedMs > 0L &&
             lastLoudAtMs > 0L && nowMs - lastLoudAtMs >= SPLIT_SILENCE_MS
         ) {
@@ -953,8 +1036,8 @@ class DubDelayTracker(
             // the right turn while the lag is still near L0.
             seedLagMs = elapsed
             latencyEma.seed(elapsed)
-            val newDelay = (elapsed + dynamicMarginMs())
-                .coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
+            // v1.0.19 — hard D cap (see capDelayMs).
+            val newDelay = capDelayMs(elapsed + dynamicMarginMs())
             if (newDelay != delayMs) {
                 delayMs = newDelay
                 onDelayChanged(delayMs)
@@ -1076,11 +1159,17 @@ class DubDelayTracker(
         // playhead before writing): it separates backlog from
         // hardware in the "phát" diagnostic ("chờ Z ms").
         lastBacklogMs = backlogMs.coerceAtLeast(0L)
-        val ema = pipelineEmaMs
-        pipelineEmaMs = if (ema == null) {
-            lastPipelineMs
-        } else {
-            ((ema * 7 + lastPipelineMs!! * 3) / 10).coerceIn(0L, 1000L)
+        // v1.0.19 — the BURST-FIRST pipeline must NOT feed the
+        // EMA: the burst-first chunk renders after an idle loop
+        // (~50 ms) while the typical pipeline is ~1 s, so feeding
+        // it drags the EMA to ~700 ms while the true typical
+        // pipeline is ~1125 ms. Only mid-burst samples (via
+        // onPipelineSample, every 20th chunk from the VoicePlayer)
+        // feed the EMA now. The burst pipeline still seeds the
+        // EMA (first burst only) and still feeds lastPipelineMs /
+        // the sync error below.
+        if (pipelineEmaMs == null) {
+            pipelineEmaMs = lastPipelineMs
         }
         applyDynamicMargin()
         lastBurstPlayWallMs = playWallMs
@@ -1114,6 +1203,133 @@ class DubDelayTracker(
             pairingLog.first().burstSeq <= seq
         ) {
             pairingLog.removeFirst()
+        }
+        // v1.0.19 — steer the time-stretch speed from the fresh
+        // sync error / backlog.
+        stretchUpdate(playWallMs)
+    }
+
+    /** v1.0.19 — current time-stretch target speed (1.0 = no
+     * stretch). The service reads this and applies it to the
+     * VoicePlayer drain; the tracker only decides the speed. */
+    val currentStretchSpeed: Double get() = targetSpeed
+
+    /**
+     * v1.0.19 — MID-BURST PIPELINE SAMPLE. The burst-first
+     * chunk's pipeline (~50 ms — the loop is idle at burst
+     * starts) systematically UNDER-measures the typical pipeline
+     * (~1 s: the backlog builds up as a burst's chunks arrive
+     * compressed). The hold subtracts the pipeline EMA, so the
+     * under-measurement plays the voice ~800 ms late against the
+     * picture. The player reports the pipeline of every 20th
+     * chunk (a mid-burst chunk); only those samples feed the EMA
+     * (0.3 weight, capped at 1000 ms — same formula as
+     * onBurstPlayed's old EMA update), so the EMA tracks the
+     * TYPICAL pipeline, not the burst-first one.
+     */
+    @Synchronized
+    fun onPipelineSample(pipelineMs: Long, backlogMs: Long = 0L) {
+        val sample = pipelineMs.coerceIn(0L, 2000L)
+        lastPipelineMs = sample
+        lastBacklogMs = backlogMs.coerceAtLeast(0L)
+        val ema = pipelineEmaMs
+        pipelineEmaMs = if (ema == null) {
+            sample
+        } else {
+            ((ema * 7 + sample * 3) / 10).coerceIn(0L, 1000L)
+        }
+        applyDynamicMargin()
+    }
+
+    /**
+     * v1.0.19 — FAST level demand: the track level (audio queued
+     * in the track) is read per chunk, unlike the sync error
+     * (per burst). A high level means the queue is growing
+     * DURING a line — raise the speed at once instead of waiting
+     * for the next burst play. Thresholds are fractions of the
+     * buffer cap (the level saturates at the cap, so absolute ms
+     * thresholds would never fire at a small minBuf).
+     * Raise-only; the lowering is the hysteresis + decay in
+     * [stretchUpdate]. The raise caps at [STRETCH_LEVEL_CAP]
+     * (1.25): a full buffer alone does not justify the fastest
+     * stretch (at speed 1.5 the buffer is often >85% full and
+     * 1.5x there breaks sync); only the error-driven path in
+     * [stretchUpdate] may go to 1.5.
+     */
+    @Synchronized
+    fun noteLevel(levelMs: Long, capMs: Long, nowMs: Long) {
+        if (capMs <= 0L) return
+        val frac = levelMs.toDouble() / capMs.toDouble()
+        val wantRaw = if (frac > 0.85) MAX_STRETCH_SPEED
+            else if (frac > 0.6) 1.20
+            else if (frac > 0.3) 1.10
+            else return
+        val want = minOf(wantRaw, STRETCH_LEVEL_CAP)
+        if (want > targetSpeed) {
+            targetSpeed = want
+            levelRaiseAtMs = nowMs
+        }
+    }
+
+    /**
+     * v1.0.19 — LATENESS-DRIVEN stretch. The loop lateness (how
+     * far behind the player loop is when a chunk is due) cleanly
+     * separates a 2.5x generation burst (median ~330 ms) from a
+     * 1.5x one (~40 ms); the sync error and track backlog overlap
+     * between the two speeds. When the loop is >200 ms behind,
+     * raise the speed to [MAX_STRETCH_SPEED] (1.5x) so the drain
+     * outruns the burst; the level-raise hold in [stretchUpdate]
+     * keeps it from being lowered again for 5 s.
+     */
+    @Synchronized
+    fun noteLateness(lateMs: Long, nowMs: Long) {
+        if (lateMs > LATENESS_STRETCH_MS && targetSpeed < MAX_STRETCH_SPEED) {
+            targetSpeed = MAX_STRETCH_SPEED
+            levelRaiseAtMs = nowMs
+        }
+    }
+
+    /**
+     * v1.0.19 — time-stretch controller: target speed from the
+     * last closed-loop sync error + the last track backlog, with
+     * hysteresis bands (up at 500/1200/2500 ms, down below
+     * 200/600/1500 ms) and a staleness decay (no burst play for
+     * >5 s steps the speed back toward 1.0). Called at the end
+     * of [onBurstPlayed] and at the end of [flushWindowIfDue].
+     */
+    private fun stretchUpdate(nowMs: Long) {
+        lastStretchUpdateMs = nowMs
+        val err = lastSyncErrorMs ?: 0L
+        val backlog = lastBacklogMs ?: 0L
+        val want = if (err > 2500 || backlog > 4000) MAX_STRETCH_SPEED
+            else if (err > 1200 || backlog > 2500) 1.20
+            else if (err > 500 || backlog > 1200) 1.10
+            else 1.00
+        if (want > targetSpeed) {
+            targetSpeed = want
+        } else if (want < targetSpeed) {
+            // Do not lower the speed while a level demand is fresh
+            // (raised within the last 5 s): the queue is still
+            // growing during the line, and lowering here would undo
+            // noteLevel at every burst play (the stretch was stuck
+            // at 1.0 for the whole session in the sim).
+            if (levelRaiseAtMs != null && nowMs - levelRaiseAtMs!! <= 5000L) {
+                return
+            }
+            val downOk = when (targetSpeed) {
+                MAX_STRETCH_SPEED -> err < 1500 && backlog < 2500
+                1.20 -> err < 600 && backlog < 1200
+                1.10 -> err < 200 && backlog < 600
+                else -> true
+            }
+            if (downOk) targetSpeed = want
+        }
+        // Staleness decay: the sync error is only as fresh as the
+        // last burst play; a stale error must not hold the speed up.
+        if (lastBurstPlayWallMs != null && nowMs - lastBurstPlayWallMs!! > 5000L &&
+            targetSpeed > 1.0
+        ) {
+            targetSpeed = maxOf(1.0, kotlin.math.round((targetSpeed - 0.10) * 100) / 100)
         }
     }
 
@@ -1299,7 +1515,7 @@ class DubDelayTracker(
         lastTcDubMs = cumDubMs
         tcOk++
         recordTurnPair(nowMs)
-        feedSample(latency, nowMs)
+        feedSample(latency, nowMs, boundary = true)
         reanchor(anchorSpeechNew, nowMs, exact = true)
         // v1.0.18 — HOLD REFRESH at every accepted turnComplete:
         // the next burst's chunks no longer inherit a hold that
@@ -1335,6 +1551,9 @@ class DubDelayTracker(
      */
     private fun onDubBurst(nowMs: Long): Pair<Long, TurnMarker?> {
         burstRecv++
+        // v1.0.19 — previous hold, for the hold slew limit (the
+        // hold may not drop more than HOLD_SLEW_MS below it).
+        val prevHoldMs = lastHoldMs
         if (!everExactAnchor) {
             // Before the first exact anchor a burst has no reliable
             // marker — except via the seed lag, which points at the
@@ -1343,6 +1562,10 @@ class DubDelayTracker(
             val marker = seedMarker(nowMs, isTc = false)
             if (marker == null) {
                 burstNoMarker++
+                // v1.0.19 — NO-MARKER RE-ANCHOR (see 5b below):
+                // re-anchor at once to the D-based marker so the
+                // next bursts find their markers again.
+                reanchorToDMarker(nowMs)
                 return lastHoldMs to null
             }
             val latency = nowMs - marker.wallMs
@@ -1354,9 +1577,11 @@ class DubDelayTracker(
             lastBoundarySampleMs = latency
             lastBoundaryAtMs = nowMs
             recordTurnPair(nowMs)
-            feedSample(latency, nowMs)
+            feedSample(latency, nowMs, boundary = true)
             reanchor(marker.audioMs, nowMs, exact = true)
-            return (delayMs - latency - pipelineMs()).coerceAtLeast(0L) to marker
+            noteBurstRatio(marker, latency)
+            // v1.0.19 — ROBUST HOLD + SLEW (see robustHoldMs).
+            return robustHoldMs(nowMs, prevHoldMs) to marker
         }
         val (anchorMarker, sPos) = selectByAnchor(nowMs, isTc = false)
         var viaSeed = false
@@ -1368,6 +1593,8 @@ class DubDelayTracker(
             val seed = seedMarker(nowMs, isTc = false)
             if (seed == null) {
                 burstNoMarker++
+                // v1.0.19 — NO-MARKER RE-ANCHOR (see 5b below).
+                reanchorToDMarker(nowMs)
                 return lastHoldMs to null
             }
             viaSeed = true
@@ -1410,9 +1637,98 @@ class DubDelayTracker(
         lastBoundarySampleMs = latency
         lastBoundaryAtMs = nowMs
         recordTurnPair(nowMs)
-        feedSample(latency, nowMs)
+        feedSample(latency, nowMs, boundary = true)
         reanchor(marker.audioMs, nowMs, exact = true)
-        return (delayMs - latency - pipelineMs()).coerceAtLeast(0L) to marker
+        noteBurstRatio(marker, latency)
+        // v1.0.19 — ROBUST HOLD + SLEW (see robustHoldMs).
+        return robustHoldMs(nowMs, prevHoldMs) to marker
+    }
+
+    /** v1.0.19 — marker whose wall time is nearest (nowMs −
+     * lagMs), provided it is within [MARKER_RESIDUAL_MS] (2500
+     * ms) of that target; null otherwise. The D-based marker:
+     * the absolute reference for re-anchoring when the anchor
+     * has drifted (no-marker bursts, sustained slice D-check
+     * rejections). */
+    private fun markerNearLagMs(nowMs: Long, lagMs: Long): TurnMarker? {
+        val target = nowMs - lagMs
+        var best: TurnMarker? = null
+        var bestResidual: Long? = null
+        for (marker in markers) {
+            val residual = kotlin.math.abs(marker.wallMs - target)
+            if (bestResidual == null || residual < bestResidual) {
+                best = marker
+                bestResidual = residual
+            }
+        }
+        if (best == null || (bestResidual ?: Long.MAX_VALUE) > MARKER_RESIDUAL_MS) {
+            return null
+        }
+        return best
+    }
+
+    /** v1.0.19 — re-anchor at once to the D-based marker
+     * (no-marker recovery). Returns true when a marker was
+     * found and the anchor moved. */
+    private fun reanchorToDMarker(nowMs: Long): Boolean {
+        val marker = markerNearLagMs(nowMs, dBasedLagMs()) ?: return false
+        reanchor(marker.audioMs, nowMs, exact = true)
+        dReanchors++
+        return true
+    }
+
+    /** v1.0.19 — ROBUST HOLD + SLEW. A single burst's latency is
+     * noisy (a mid-turn burst's lat is inflated by speech
+     * elapsed in the turn); one outlier zeroes the hold and the
+     * dues cluster → drops. So the hold is recomputed from the
+     * robust lag estimate instead of the single burst latency:
+     * hold = max(0, D − lagEstimate − pipeline). The hold may
+     * not drop more than [HOLD_SLEW_MS] (300 ms) below the
+     * previous hold — a 1 s hold drop makes a whole second of
+     * dub due at once and the queue drops it; a rise is
+     * unlimited (it only delays dues). */
+    private fun robustHoldMs(nowMs: Long, prevHoldMs: Long): Long {
+        val robust = (delayMs - lagEstimateMs(nowMs) - pipelineMs())
+            .coerceAtLeast(0L)
+        return maxOf(prevHoldMs - HOLD_SLEW_MS, robust)
+    }
+
+    /** v1.0.19 — BURST-SUCCESSOR RATIO. The marker this burst
+     * paired with and the previous accepted burst's marker are
+     * consecutive lines (seq + 1): the speech between them is
+     * the earlier line's counted, the dub between them is that
+     * line's total dub. Same sanity bounds as the turnComplete
+     * successor chain. GATED on the D-check: the measurement is
+     * only trusted when BOTH bursts' latencies agree with the
+     * D-based lag (|lat − (D − margin)| ≤ 1000 ms). Without the
+     * gate the ratio feeds back into the very selection that
+     * produced it and diverges (measured 0.50, latencies
+     * overestimated ~5 s); the D-based lag is an independent
+     * reference that breaks the loop. Feeds the existing
+     * ratio() sums; the per-turn ratio from turnCompletes is
+     * untouched. */
+    private fun noteBurstRatio(marker: TurnMarker, latency: Long) {
+        val validated =
+            kotlin.math.abs(latency - dBasedLagMs()) <= BURST_D_VALIDATE_MS
+        val prevSeq = lastRatioBurstSeq
+        if (prevSeq != null && marker.seq == prevSeq + 1L &&
+            lastBurstValidated && validated
+        ) {
+            val countedDiff = marker.audioMs - lastBurstAudioMs
+            val dubDiff = cumDubMs - lastBurstDubMs
+            val expected = countedDiff * 1.3
+            if (countedDiff > 0 && dubDiff >= 0.5 * expected &&
+                dubDiff <= 2.0 * expected
+            ) {
+                sumCountedMs += countedDiff
+                sumTotalDubMs += dubDiff
+                ratioBurstMeas++
+            }
+        }
+        lastRatioBurstSeq = marker.seq
+        lastBurstAudioMs = marker.audioMs
+        lastBurstDubMs = cumDubMs
+        lastBurstValidated = validated
     }
 
     private fun reanchor(anchorSpeechNew: Long, nowMs: Long, exact: Boolean) {
@@ -1436,8 +1752,36 @@ class DubDelayTracker(
      * Feed one latency sample (slice or boundary) into the 4 s
      * window and the recent-samples buffer. Returns the hold for
      * this sample: max(0, D − sample).
+     *
+     * v1.0.19 — SLICE D-CHECK ([boundary] = false only): a wrong
+     * anchor inflates the slice sample; feeding it corrupts the
+     * window median → D → the D-check itself (anchor and D lock
+     * in wrong together). The D-based lag is the absolute
+     * reference: a slice sample >1500 ms from it cannot be a
+     * genuine lag, so it is REJECTED — never added to
+     * recentSamples or windowSamples (never feeds the EMA) — but
+     * lastSampleMs/lastSampleAtMs still update so the HUD shows
+     * it, and the hold (D − sample) is still returned. 6
+     * consecutive rejections = the anchor is wrong (not a noisy
+     * sample): re-anchor to the D-based marker. Boundary samples
+     * bypass the check entirely (they have their own checks in
+     * acceptTurnComplete/onDubBurst).
      */
-    private fun feedSample(sampleMs: Long, nowMs: Long): Long {
+    private fun feedSample(sampleMs: Long, nowMs: Long, boundary: Boolean): Long {
+        if (!boundary) {
+            if (kotlin.math.abs(sampleMs - dBasedLagMs()) > SLICE_D_CHECK_MS) {
+                lastSampleMs = sampleMs
+                lastSampleAtMs = nowMs
+                sliceDReject++
+                sliceDStreak++
+                if (sliceDStreak >= SLICE_D_REANCHOR_STREAK) {
+                    reanchorToDMarker(nowMs)
+                    sliceDStreak = 0
+                }
+                return (delayMs - sampleMs).coerceAtLeast(0L)
+            }
+            sliceDStreak = 0
+        }
         lastSampleMs = sampleMs
         lastSampleAtMs = nowMs
         recentSamples.addLast(nowMs to sampleMs)
@@ -1566,7 +1910,7 @@ class DubDelayTracker(
                 )
             )
             while (pairingLog.size > MAX_PAIRING_LOG) pairingLog.removeFirst()
-            feedSample(sample.toLong(), nowMs)
+            feedSample(sample.toLong(), nowMs, boundary = false)
         }
     }
 
@@ -1594,12 +1938,17 @@ class DubDelayTracker(
             }
             val updated = latencyEma.sample(median, delayMs)
             if (updated != null) {
-                delayMs = updated.toLong()
+                // v1.0.19 — hard D cap (see capDelayMs).
+                delayMs = capDelayMs(updated.toLong())
                 onDelayChanged(delayMs)
             }
         }
         windowSamples.clear()
         windowStartMs = nowMs
+        // v1.0.19 — steer the time-stretch speed (runs when the
+        // window actually flushes, every ~4 s, not on the
+        // early-return paths above).
+        stretchUpdate(nowMs)
     }
 
     /**
@@ -1716,10 +2065,21 @@ class DubDelayTracker(
             "burst", burstRecv, burstOk, burstNoMarker, 0,
             burstAnchorBack, burstConsistency, burstFallback
         ) + if (splitMarkers > 0) " · tách $splitMarkers" else ""
-        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s".format(
+        // v1.0.19 — marker diagnostics, appended after the
+        // rejection counters: marker count + newest marker age,
+        // split attempts vs splits that fired, stall resets, and
+        // the current time-stretch speed.
+        val newestAgePart = markers.lastOrNull()?.let {
+            "%d ms trước".format((nowMs - it.wallMs).coerceAtLeast(0L))
+        } ?: "—"
+        val markerPart = " · mốc %d (mới nhất %s) · tách thử %d/được %d · stall %d · tốc độ %.2f×".format(
+            markers.size, newestAgePart, splitAttempts, splitMarkers,
+            stallResets, targetSpeed
+        )
+        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s".format(
             delaySec, samplePart, sampleTimes60s.size, turnPairTimes60s.size,
             speechSlices.size, lastHoldMs / 1000.0, vadPart, droppedPart,
-            syncPart, pipePart, ratioPart, framePart, rejectPart
+            syncPart, pipePart, ratioPart, framePart, rejectPart, markerPart
         )
     }
 
@@ -1737,6 +2097,13 @@ class DubDelayTracker(
         dubAccumMs = 0L
         windowSamples.clear()
         windowStartMs = 0L
+        // v1.0.19 — burst-ratio chain + stretch state restart;
+        // the ratio sums, EMA and D are kept (as before).
+        lastRatioBurstSeq = null
+        lastBurstValidated = false
+        targetSpeed = 1.0
+        levelRaiseAtMs = null
+        sliceDStreak = 0
     }
 
     /** Manual nudge from the "Trễ −1s / +1s" buttons: shift D by the
@@ -1828,6 +2195,21 @@ class DubDelayTracker(
         burstOk = 0
         burstFallback = 0
         lastBacklogMs = null
+        // v1.0.19 — burst-ratio chain, slice D-check, D-based
+        // re-anchors, marker diagnostics and stretch state.
+        lastRatioBurstSeq = null
+        lastBurstAudioMs = 0L
+        lastBurstDubMs = 0L
+        lastBurstValidated = false
+        ratioBurstMeas = 0
+        sliceDReject = 0
+        sliceDStreak = 0
+        dReanchors = 0
+        splitAttempts = 0
+        stallResets = 0
+        targetSpeed = 1.0
+        levelRaiseAtMs = null
+        lastStretchUpdateMs = 0L
         latencyEma.reset()
         latencyEma.setMarginMs(2000L)
     }

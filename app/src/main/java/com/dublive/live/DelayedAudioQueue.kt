@@ -63,7 +63,17 @@ class DelayedAudioQueue(
      * fixed-hold block it is the due time stored at [add] time.
      */
     @Synchronized
-    fun pollDue(nowMs: Long, delayMs: Long): ByteArray? {
+    fun pollDue(nowMs: Long, delayMs: Long): ByteArray? =
+        pollDueInfo(nowMs, delayMs)?.first
+
+    /**
+     * v1.0.19 — like [pollDue] but also returns the block's due
+     * time (ms). The VoicePlayer needs it to measure the loop
+     * lateness (take − due, which drives the time-stretch) and
+     * the mid-burst pipeline sample (render − due).
+     */
+    @Synchronized
+    fun pollDueInfo(nowMs: Long, delayMs: Long): Pair<ByteArray, Long>? {
         while (true) {
             val head = queue.firstOrNull() ?: return null
             val dueAt = head.dueMs ?: (head.arrivalMs + delayMs)
@@ -74,7 +84,7 @@ class DelayedAudioQueue(
             }
             if (overdue < 0) return null
             queue.removeFirst()
-            return head.data
+            return head.data to dueAt
         }
     }
 

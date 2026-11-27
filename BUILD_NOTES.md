@@ -1,3 +1,184 @@
+# DubLive v1.0.18 — SỬA NEO RANH GIỚI LƯỢT NÓI ĐANG CHẾT + PIPELINE SPIKE + BỎ 49 LÁT (28/11/2026)
+
+Thử v1.0.17 trên máy thật (user, trang 18dj.tv, phim Trung tập 2 rồi tập 3,
+27/11 23:07 và 23:13) chứng minh 3 lỗi. Bản này sửa cả 3 trên nền v1.0.17
+(đo neo giờ phát, trừ VAD lag 180 ms, margin động, nhạc trượt dần ~1 s,
+chẩn đoán lệch hình/phát/khung hình giữ nguyên). KHÔNG mang lại share
+target v1.0.15, KHÔNG mang lại sửa probe/watchdog v1.0.16.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.18.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.18.apk`)
+- Kích thước: 9.545.042 bytes (9,1 MB). MD5: 007c960b53d5d613ed487be967e52311.
+- aapt2: package `com.dublive.live`, versionCode 19, versionName 1.0.18.
+  Dex (classes3.dex) xác nhận logic mới: `seedMarker`, `selectByAnchor`,
+  `impliedSpeechPos`, `wallAtSpeech`, `impliedLagMs`, `acceptTurnComplete`,
+  `isDTrusted`, `dBasedLagMs`, `splitMarkers`, `lastDueMs`,
+  `lastBoundarySample`, `seedLagMs`, `BURST_GAP`, `SLICE_BYTES`,
+  `backlogMs`, `tcNoMarker`, `tcConsistency`, `burstFallback`,
+  `lastBacklogMs`; marker v1.0.15/16 (`DubLiveResumeVideo`, `decayIfStale`,
+  "Mở bằng DubLive") = 0.
+- Actions run **46041603490** (job "Build APK" completed/success; job
+  "Create GitHub Release" FAIL — bình thường ở run trigger bằng tag),
+  commit `8682acfa65e05da7a542b5d13003c4f7d260acda` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15221375610, bản Debug), tag
+  `v1.0.18-dublive`. Build 1 lần đậu ngay (không lỗi biên dịch).
+  Tải artifact bằng `gh.py download-artifact <id> <outfile>` (2 tham số
+  vị trí; tải trực tiếp qua API bị 401).
+
+## Kết quả thử v1.0.17 trên máy (27/11 23:07 + 23:13, 18dj.tv)
+
+- Không có lỗi Live nào trong cả 2 lần chụp. Phụ đề Việt HIỆN ĐƯỢC
+  ("Ôi, Đến bắt tôi đi. Á, á, á, á,"). Video chạy được, D CỬ ĐỘNG:
+  3,0 s → 3,7 s. Tỉ lệ giọng/gốc đo được **1,46×** (ổn định cả 2 lần,
+  cao hơn giả định 1,3×).
+- Ảnh 1 (23:07): "D 3,0 s · mẫu cuối 0,6 s (51 s trước) · 14 mẫu/60 s ·
+  cặp mốc 0/60 s · chờ 0 lát · hold 0,4 s · VAD: nghỉ · bỏ 49 lát/0 mẫu
+  (nhỏ 15 hoãn/lớn 0) · lệch hình — · phát 1438 ms (TB 444 ms) ·
+  giọng/gốc 1,46× · khung hình —".
+- Ảnh 2 (23:13): "D 3,7 s · mẫu cuối 2,4 s (7 s trước) · 6 mẫu/60 s ·
+  cặp mốc 0/60 s · chờ 0 lát · hold 0,4 s · VAD: nghỉ · lệch hình — ·
+  phát 762 ms (TB 656 ms) · giọng/gốc 1,46× · khung hình —".
+- **ĐÍNH CHÍNH 27/11 23:17: 2 ảnh là 2 PHIÊN RIÊNG BIỆT** — user TẮT
+  lồng tiếng rồi BẬT LẠI giữa 2 lần chụp, KHÔNG phải 1 phiên liên tục
+  6 phút. Hệ quả: mọi bộ đếm đều reset giữa 2 ảnh (ảnh 2 không có "bỏ
+  49 lát" vì đó là phiên mới, bộ đếm về 0 — "bỏ 49 lát" chỉ thuộc phiên
+  1); D 3,0 s và D 3,7 s là 2 giá trị D của 2 phiên khác nhau; "phát TB
+  444 ms" và "TB 656 ms" là 2 EMA riêng, không phải xu hướng tăng;
+  "cặp mốc 0/60 s" ở CẢ 2 phiên độc lập càng củng cố kết luận neo
+  ranh giới đang chết — không phải sự cố 1 phiên.
+- **Kiểm tra reset (đọc code 27/11 ~23:17):** stop/start TẠO object mới
+  — `stopDub()` gọi `tracker?.stop()` rồi `tracker = null`, start tạo
+  `DubDelayTracker` + `VoicePlayer` mới, `firstAudioSentAtMs = 0L`
+  (DubbingService dòng 917). D phiên 2 (3,7 s) là seed first-audio
+  mới của phiên 2, KHÔNG phải state sót. Lỗ hổng tiềm ẩn đã sửa trong
+  v1.0.18: `DubDelayTracker.stop()` KHÔNG reset `firstAudioSeeded` và
+  `LatencyEma` (vô hại hôm nay vì object bị vứt, nhưng `stop()` phải
+  hoàn chỉnh — đã thêm `LatencyEma.reset()` + `firstAudioSeeded =
+  false` + reset toàn bộ state ranh giới); `audioPlayedThisTurn`
+  (DubbingService dòng 385) KHÔNG được reset trong khối start — cờ
+  true cũ có thể cho turnComplete đầu tiên của phiên mới đi qua dù
+  chưa có audio nào (đã thêm `audioPlayedThisTurn = false` ở khối
+  start, cạnh `firstAudioSentAtMs = 0L`).
+
+## 3 lỗi + cách sửa (đã chứng minh bằng mô phỏng trước khi build)
+
+1. **Cặp mốc = 0/60 s ở cả 2 phiên** — neo ranh giới lượt nói
+   (turnComplete/burst, cốt lõi v1.0.14) đang CHẾT, trong khi ghép lát
+   vẫn chạy (6–14 mẫu/60 s). Hệ quả: "lệch hình —" và "khung hình —"
+   không bao giờ có số (cả hai đều cần cặp mốc).
+   - Nguyên nhân THẬT (tìm ra 28/11, xác nhận trong code Kotlin):
+     **VAD turns gộp** — `VadDetector.kt` chỉ kết thúc lượt nói sau
+     ~700 ms im lặng liên tục (35 frame × 20 ms), mà khoảng lặng
+     trong phim chỉ 100–400 ms, nên nhiều câu thoại gộp thành MỘT
+     marker dài; turnComplete không bao giờ tìm được marker DONE,
+     burst thì lấy mẫu đối chiếu marker bắt đầu từ nhiều phút trước
+     (mẫu quá lớn, bị loại bởi consistency). Sim trước đây tự tạo
+     700 ms im lặng cuối mỗi câu nên không bao giờ tái hiện được 0 cặp.
+     **SỬA: TÁCH MARKER** — im lặng ≥300 ms trong một lượt VAD là
+     ranh giới câu: đóng marker hiện tại, mở marker mới ngay đó
+     (`onSpeechMs`, trước khi đếm chunk; guard counted>0 bỏ qua chunk
+     head lúc mở lượt).
+   - Nguyên nhân phụ (đã sửa cùng): (a) vòng tự khóa bootstrap — khi
+     chưa có neo chính xác, mỗi lần mở lượt chạy lại công thức tail v5,
+     đẩy neo VƯỢT QUA mọi marker → mọi ranh giới bị loại là "đi lùi";
+     (b) lagEst kẹt sàn — trung vị mẫu lát kẹt ở ~0,6 s, mẫu ranh giới
+     thật 2,4–3,0 s bị loại bởi guard consistency 2 s.
+     **SỬA:** guard đi lùi chỉ áp khi đã có neo CHÍNH XÁC; chọn marker
+     theo vị trí thoại mà neo suy ra cho vị trí dub hiện tại
+     (S = anchor_s + (cumDub − anchor_u) × ratio), KHÔNG theo độ gần
+     với lagEst trung vị lát; lagEst ưu tiên D − margin khi mẫu lát
+     cũ (>10 s) hoặc lệch D − margin >1 s; ranh giới đầu tiên bootstrap
+     từ **SEED LAG** (lần dub đầu tới − lần thoại đầu ≈ độ trễ thật L0);
+     fallback khi đường neo không tìm được marker là marker seed-lag
+     (tham chiếu độc lập) — KHÔNG nới rộng lưới neo, KHÔNG lấy marker
+     cũ nhất (trace chứng minh cả hai đều sai: anchor-wide chọn marker
+     1, cũ 12 s, sai +6,4 s; marker cũ nhất sai ~9 câu); burst được
+     kiểm chéo bằng D khi D đáng tin (|mẫu − (D − margin)| >1500 ms
+     thì loại; fallback seed-lag 2500 ms) vì kiểm tra neo suy ra là
+     vòng lặp tự khẳng định (đồng ý với neo sai).
+   - **Bộ đếm chẩn đoán từng lý do loại** (hiện trong dòng chẩn đoán):
+     `tc N ok M no-mk X no-aud Y ab Z cons W fb V · burst N ok M ... ·
+     tách K` (no-mk = không có marker trong residual, no-aud =
+     turnComplete không có audio, ab = bị chặn đi lùi, cons = loại do
+     consistency/phạm vi, fb = khôi phục bằng seed-lag; "tách K" =
+     số marker tạo ra bằng cách tách lượt VAD gộp).
+2. **"phát 1438 ms (TB 444 ms)" rồi "phát 762 ms (TB 656 ms)"** —
+   pipeline đo được cao gấp 2–3 lần mô hình 100–300 ms của sim1017.
+   Cơ chế (đọc code): bộ đệm AudioTrack = minBuf×4 (64 KB = 1365 ms
+   khi minBuf 16 KB — spike 1438 ms khớp 1365 + ~70 ms phần cứng/poll)
+   VÀ vòng lặp phát ghi cả chunk trong MỘT lần `write()` chặn trong
+   khi `confirmPlayStart()` chỉ chạy ở đầu vòng lặp — poll playhead
+   bị ĐÓI suốt lần ghi chặn.
+   **SỬA (VoicePlayer):** đệm = max(minBuf, min(minBuf×2, 12000 B))
+   (tối đa 250 ms, không dưới mức tối thiểu framework; minBuf 16 KB →
+   đệm vẫn 16 KB = 341 ms, minBuf 4 KB → 8 KB = 170 ms); ghi theo lát
+   ≤2400 B (50 ms) với `confirmPlayStart()` giữa các lát (poll không
+   bao giờ đói quá ~50 ms); đọc backlog trước khung đầu của burst qua
+   `readPlayhead()` trước khi ghi, truyền qua `PendingConfirm` tới
+   `onBurstPlayed` — chẩn đoán "phát" hiện thêm "chờ Z ms" để tách
+   backlog khỏi phần cứng; mỗi burst ghi log `burst seq=… arrival=…
+   hold=… due=… backlog=… play=… pipeline=… est=…`.
+   **Lưu ý trung thực:** số đo pipeline chỉ là của chunk ĐẦU burst
+   (vòng lặp đang rảnh lúc burst bắt đầu nên đọc ~50 ms, trong khi
+   pipeline THẬT trên mọi chunk là ~660 ms) — tracker vẫn đo thiếu
+   pipeline, tốn ~186 ms trôi trong câu (lỗi slice-play); chấp nhận
+   được, đã ghi rõ, không ép số.
+3. **"bỏ 49 lát" (phiên 1)** — 49 lát thoại (~24 s) bị vứt do hàng đợi
+   tràn (MAX_SLICES=40). Hệ quả của lỗi 1: neo chạy trước nên mục tiêu
+   ghép rơi quá lát mới nhất hoặc vào lát quá tươi → lát chất đống
+   rồi tràn. **SỬA:** sửa lỗi 1 thì số này hết (sim: bỏ lát 0/0);
+   MAX_SLICES giữ 40, không tăng.
+4. **Tính lại hold ở mỗi turnComplete** (ứng viên v1.0.17): hold chỉ
+   cập nhật ở burst (hiếm — 4 burst/420 s trong sim) nên hold bị cũ,
+   lỗi đầu câu thực tế ~362 ms. **SỬA:** mỗi turnComplete được chấp
+   nhận thì tính lại `hold = D − độ trễ mới nhất − pipeline` (chỉ áp
+   cho chunk xếp hàng sau đó; giọng đang phát giữ nguyên giờ tới).
+   Thêm: **hold đơn điệu** — giờ tới của chunk không bao giờ đi trước
+   giờ tới của chunk trước (tránh đảo thứ tự làm FIFO phát muộn cả
+   đoạn). Burst gap 500 → 300 ms (khoảng lặng giữa câu của model
+   thường 200–400 ms).
+
+## Mô phỏng sim1018.py (chạy TRƯỚC khi build — GATE PASS)
+
+Thế giới thiết bị: phim 18dj.tv, câu 1,5–3,0 s, khoảng lặng 60% ngắn
+100–400 ms / 40% dài 1500–3500 ms (lượt VAD gộp: 52 lượt cho ~111 câu),
+dub 1,46×, độ trễ thật 2,4 s, phần cứng 50 ms, tốc độ sinh 2,5× (chính)
+và 1,5× (stress), đoạn stretch 30 s (180–210 s).
+- **speed=2,5, minBuf=4096: GATE PASS** — cặp mốc/60 s 17 → 21; bỏ lát
+  0 → 0; sai số mẫu ranh giới trung vị 0 ms (p90 2602 ms); pipeline TB
+  đo được 52 → 50 ms (max 652 ms); lỗi đầu câu thực tế (ổn định) trung
+  vị 22 → 12 ms; fresh-hold 7/393 → 4/474 ms (cần <300/<600).
+- **speed=1,5, minBuf=16384: GATE PASS** — cặp mốc/60 s 15 → 23; bỏ
+  lát 0 → 0; sai số mẫu ranh giới trung vị 0 ms; pipeline TB 273 →
+  233 ms (max 890 ms); lỗi đầu câu thực tế (ổn định) 694 → 307 ms;
+  fresh-hold 184/513 → 233/542 ms.
+- **tc OFF** (server không gửi turnComplete): NEW vẫn ghép 60 cặp chỉ
+  bằng burst — đường burst độc lập hoạt động.
+- **Hồi quy v6** (thế giới sim1017, lag chạy tới ~16 s — phi vật lý,
+  đã loại bằng bằng chứng thiết bị): fresh-hold trung vị 17 → 114 ms
+  (<300 tuyệt đối; 17 ms của OLD là giả tạo — metric fresh-hold tính
+  lại hold từ phép chọn marker lagEst cũ đang bị thay, nên trong thế
+  giới lag chạy nó thưởng cho tracker KHÔNG bám lag trong khi lỗi
+  thực tế của OLD là 3540 ms); lỗi đầu câu thực tế (ổn định)
+  1491 → 366 ms; cặp mốc 0 → 3 — **PASS**.
+- Hạn chế còn lại (ghi rõ, không giấu): audio bị bỏ do hàng đợi hold
+  (>500 ms quá hạn) 37–43% ở speed 2,5 (giọng bỏ từ thay vì phát muộn)
+  — cơ chế bắt kịp (time-stretch) là câu hỏi sản phẩm cho v1.0.19,
+  KHÔNG phải sửa tracker v1.0.18.
+
+## Checklist thử lại trên máy (xem 3–5 phút, phim 18dj.tv)
+
+- **cặp mốc N/60 s phải > 0** (trước đây luôn 0) — kèm chi tiết
+  `tc N ok M … · burst N ok M … · tách K` để biết lý do loại nếu vẫn 0.
+- **lệch hình và khung hình phải có số** thay vì "—".
+- **bỏ lát phải về ~0** (trước đây 49 lát/phiên).
+- **phát TB phải về 100–300 ms** (minBuf 16 KB thì TB thật ~350 ms do
+  đệm tối thiểu framework — xem thêm "chờ Z ms" để tách backlog);
+  không còn spike >1000 ms.
+- Môi có khớp giọng không, nhạc có giật khi D đổi không.
+- Nếu "cặp mốc" vẫn 0: chụp ảnh chẩn đoán — bộ đếm `tc/burst`
+  (no-mk/no-aud/ab/cons) sẽ cho biết ranh giới chết ở bước nào.
+
 # DubLive v1.0.17 — ĐO ĐỘ TRỄ HÌNH THEO LÚC GIỌNG THỰC SỰ PHÁT (27/11/2026)
 
 User hỏi 27/11 22:07: "Làm sao để đo độ trễ hình chính xác, giúp video

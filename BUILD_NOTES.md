@@ -1,3 +1,145 @@
+# DubLive v1.0.17 — ĐO ĐỘ TRỄ HÌNH THEO LÚC GIỌNG THỰC SỰ PHÁT (27/11/2026)
+
+User hỏi 27/11 22:07: "Làm sao để đo độ trễ hình chính xác, giúp video
+gốc và nhạc nền gốc khớp với giọng dịch". Bản này thay cách đo D bằng
+phép đo neo theo lúc giọng THỰC SỰ PHÁT RA LOA, trên nền v1.0.14
+(revert 26/11). KHÔNG mang lại share target v1.0.15, KHÔNG mang lại
+sửa probe/watchdog v1.0.16.
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.17.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.17.apk`)
+- Kích thước: 9.540.438 bytes (9,1 MB). MD5: 5a82a989a0d614b9e378751ea1be3e65.
+- aapt2: package `com.dublive.live`, versionCode 18, versionName 1.0.17.
+  Dex (classes3.dex) xác nhận logic mới: `onBurstPlayed` (4×),
+  `DubDelayTracker` (12×), `setMarginMs`, `VAD_DETECTION_LAG`,
+  `noteBurstStart`, `pipelineEma`, `dynamicMargin`,
+  `TYPE_VIDEO_TIME` / `onBurstVideoTime`, chuỗi chẩn đoán "lệch hình" /
+  "phát" / "khung hình" / "giọng/gốc"; marker v1.0.15/16
+  (`DubLiveResumeVideo`, `decayIfStale`, "Mở bằng DubLive") = 0.
+- Actions run **46028369480** (job "Build APK" completed/success; job
+  "Create GitHub Release" FAIL — bình thường ở run trigger bằng tag),
+  commit `a73fe3ce551799478ebe655738deeea15a76b691` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15212903076, bản Debug), tag
+  `v1.0.17-dublive`. Build 2 lần: lần 1 (run 46027493726, commit
+  `4471194b`) fail ở `compileReleaseKotlin` — lỗi kiểu
+  `DubDelayTracker.kt:1116:36 Type mismatch: inferred type is Double
+  but Long was expected` (`wall` là Double vì `target` chứa `ratio()`;
+  sửa `sourceWallMs = wall.toLong()`, push lại commit `a73fe3ce`, dời
+  tag sang commit mới thì build đậu.
+
+## Vì sao phép đo cũ (v1.0.14) chưa chính xác
+
+1. Đo lúc giọng TỚI máy, không phải lúc PHÁT RA LOA. Giữa hai mốc còn
+   hold + bộ đệm AudioTrack; +2000 ms cộng thêm chỉ là số đoán.
+2. Mốc gốc lệch hệ thống: VAD nhận ra câu muộn ~150–200 ms so với lúc
+   nhân vật mở miệng (đã đếm 160 ms head vào audio nhưng KHÔNG trừ vào
+   giờ wall của marker).
+3. Chỉ đo đầu/cuối lượt nói; trong một câu dài giọng dịch dài hơn gốc
+   ~1,3 lần nên độ lệch trôi dần trong câu, 2 mốc không thấy được.
+4. Nhạc nền liền mạch: mỗi lần D nhảy (deadband/creep) là nhạc gốc trễ
+   giật một cái — D đổi phải trượt dần, không nhảy.
+5. Không có vòng kín phía hình: không ai kiểm tra khung hình đang hiện
+   lúc giọng bắt đầu phát có đúng mốc câu đó không.
+
+## Cách đo mới — và cái bẫy vòng tròn (QUAN TRỌNG)
+
+- **Giờ phát giọng thật:** VoicePlayer báo lại thời điểm burst thực sự
+  bắt đầu phát qua `onBurstPlayed(seq, playWallMs, pipelineMs,
+  estimated)`. Đo bằng `AudioTrack.getTimestamp()` (framePosition +
+  nanoTime → giờ wall qua offset CLOCK_MONOTONIC vs
+  `elapsedRealtimeNanos`): dự đoán giờ phát lúc ghi chunk, rồi poll
+  playhead mỗi vòng lặp tới khi frame đầu tiên render xong thì báo giờ
+  wall quan sát được (chính xác ~5 ms poll); quá 2 s thì báo dự đoán
+  kèm cờ `estimated=true`; nếu getTimestamp không có thì dự đoán = giờ
+  tới + 30 ms phần cứng, cũng gắn cờ estimated. Lược TTS không đo được
+  (không có PCM AudioTrack) — tracker giữ pipeline EMA cũ cho các lượt
+  đó. Cách đo đã dùng được ghi rõ ở đây: **getTimestamp + poll
+  playhead, fallback dự đoán có gắn cờ**.
+- **Bẫy vòng tròn (đã chứng minh bằng sim, xem dưới):** với hold =
+  D − độ trễ tới máy, mẫu neo giờ phát = (giờ phát − mốc gốc) = D +
+  pipeline THEO ĐỊNH NGHĨA — nó đo chính D, không đo độ trễ dịch.
+  Đưa mẫu đó vào EMA thì D tự đuổi chính mình, chạy lên tới khi kẹp
+  20 s. Vì vậy **EMA VẪN GIỮ mẫu neo giờ tới** (phép đo duy nhất độc
+  lập với D). Mẫu neo giờ phát làm 3 việc khác: (1) đo pipeline mỗi
+  burst (giờ phát − giờ tới − hold) để hold TRỪ pipeline EMA
+  (hold = D − độ trễ tới − pipeline) → giọng phát đúng ở (mốc câu +
+  D) thay vì muộn thêm pipeline; (2) sai số đồng bộ vòng kín
+  (giờ phát − mốc gốc) − D, hiện là "lệch hình ±X ms" (~0 ở trạng thái
+  ổn định; dương dai dẳng = hold đã bão hòa, D phải tăng); (3) mẫu lát
+  neo giờ phát liên tục trong lượt (chẩn đoán).
+- **Trừ độ trễ VAD khỏi mốc gốc:** hằng số
+  `VAD_DETECTION_LAG_MS = 180` (160 ms head đã đếm + 20 ms 1 hop
+  khung) — service lùi giờ wall của marker đúng 180 ms trước khi gọi
+  `onSpeechTurnStart`; head vẫn đưa vào audio với giờ wall cuối như cũ.
+- **Biên an toàn đo được:** margin = pipeline EMA + 400 ms jitter,
+  kẹp 500–2000 ms (`MARGIN_MIN/MAX_MS`, `PIPELINE_JITTER_MS = 400`);
+  `LatencyEma.marginMs` thành `var` + `setMarginMs()`; giữ EMA 0.3,
+  deadband 500 ms, creep 250 ms.
+- **Nhạc không giật khi D đổi:** DelayNode WebAudio đổi tau
+  `setTargetAtTime` từ 0,025 s → 0,3 s (~1 s mới ổn định 95% sau 3τ);
+  DelayedBackgroundPlayer đổi `delayMs` thành `targetDelayMs` +
+  `effectiveDelayMs` trượt ≤10 ms mỗi 10 ms (tốc độ trượt 1× thời gian
+  thực). Canvas đã cắt theo thời gian nên giữ nguyên.
+- **Chẩn đoán mới trên dòng HUD:** "lệch hình ±X ms" (sai số đồng bộ
+  ở lần phát burst gần nhất), "phát Y ms (TB Z ms)" (độ trễ pipeline,
+  tiền tố `~` khi estimated), "giọng/gốc Z.ZZ×" (tỉ lệ giọng/gốc đo
+  được = 1/ratio), "khung hình ±R ms" (phần dư khung hình, CHỈ BÁO).
+  Kiểm tra khung hình: mỗi lần burst bắt đầu phát, service gửi
+  broadcast `TYPE_VIDEO_TIME_REQUEST`, MainActivity đọc
+  `video.currentTime` qua JS (video tốt nhất của TapJs, không có thì
+  video lớn nhất đang hiện) rồi trả về service qua
+  `ACTION_VIDEO_TIME` (sửa lại giờ video về đúng giờ wall của sự kiện
+  theo độ trễ vòng JS, trừ khi video đang pause); phần dư = (giờ video
+  đang hiện − giờ video của marker) − D. **Phiên này CHỈ BÁO, KHÔNG
+  tự sửa D theo phần dư** — để v1.0.18 sau khi thấy số thật trên máy.
+
+## Mô phỏng sim1017.py (gate PASS mới build)
+
+Dựa trên sim1014_v6.py, thế giới khắc nghiệt như v6 (thoại nhanh
+3,5–4,5 s/câu, giọng dài 1,3×, đoạn liền 30 s ở 180–210 s, xoay key
+ở 300 s, 420 s) + pipeline phát giọng P = 100–300 ms
+(200 + 100·sin(t/60s) + U(−50,50)) + VAD lag 180 ms. So sánh bộ ước
+lượng cũ (neo giờ tới) với mới (neo giờ phát). Kết quả (seed
+20261127, lưu ở `/tmp/sim1017_final.txt`):
+- **Gate (lỗi đầu câu với hold TƯƠI = độ chính xác của bộ ước lượng,
+  vùng ổn định, n=69): MỚI |lỗi| trung vị 66 ms (< 300), p90 291 ms
+  (< 600); CŨ trung vị 422 ms, p90 480 ms — mới tốt hơn ~6,4×.**
+  (Số cũ ≈ 180 ms VAD + ~200 ms pipeline đúng như lý thuyết; số mới
+  ≈ P − P_ema ≈ ±50–70 ms. Pipeline EMA cuối 198 ms so với P thật
+  100–300 ms; margin động cuối 598 ms.)
+- Lỗi mẫu burst (độ chệch VAD + chọn marker): CŨ −326 ms, MỚI −146 ms.
+- Lỗi đầu câu THỰC TẾ (hold cũ, n=88): CŨ trung vị |lỗi| 445 ms, MỚI
+  362 ms; p90 CŨ 1220 ms → MỚI 747 ms. Số này KHÔNG qua gate vì bị
+  chi phối bởi hold cũ: burst hiếm (chỉ 4 lần/420 s trong thế giới
+  này) nên hold giữ từ lần burst trước trong khi lag trôi dần giữa các
+  lần cập nhật — hạn chế có sẵn của v1.0.14, cả hai thiết kế đều chung,
+  KHÔNG thuộc phạm vi v1.0.17. Ứng viên v1.0.18: tính lại hold ở mỗi
+  turnComplete (không chỉ ở burst).
+- Lỗi lát-phát trong câu (độ trôi trong câu, n=240): trung vị |lỗi|
+  ~445 ms cả hai thiết kế — độ trôi thật (trong câu 4 s, lag tăng
+  ~1,2 s vì giọng dài 1,3×) và không thể triệt bằng đo đầu câu; chỉ
+  báo, không gate.
+- `--literal` (mẫu neo giờ phát đưa THẲNG vào EMA — cách đọc theo
+  nghĩa đen của yêu cầu): mẫu burst có outlier +3331 ms (nhiễm D),
+  và D chạy không kiểm soát bị che lấp trong thế giới này vì lag thật
+  cũng tăng tới ~16 s; quyết định giữ EMA neo giờ tới dựa trên đại số
+  (mẫu = D + pipeline theo định nghĩa), không dựa vào sim chạy mất
+  kiểm soát rõ rệt.
+
+## Checklist thử trên máy (xem 3–5 phút)
+
+1. D cử động ra sao khi thoại nhanh — có bám theo hay đứng im như
+   v1.0.14?
+2. "lệch hình ±X ms" báo bao nhiêu (kỳ vọng gần 0, dao động vài chục
+   ms khi ổn định; nếu dương dai dẳng > 500 ms thì hold đã bão hòa).
+3. "phát Y ms" báo bao nhiêu (kỳ vọng 100–300 ms; tiền tố `~` = số
+   ước lượng, không phải đo trực tiếp).
+4. Môi nhân vật có khớp giọng không ở đầu câu; "khung hình ±R ms"
+   báo bao nhiêu.
+5. Nhạc nền có bị giật khi D đổi không (đổi D phải nghe trượt dần
+   ~1 s, không nhảy).
+6. Chụp ảnh dòng chẩn đoán đầy đủ gửi lại.
+
 # DubLive — REVERT VỀ v1.0.14 (26/11/2026 ~10:45)
 
 User yêu cầu bỏ v1.0.15 và v1.0.16, lấy v1.0.14 làm nền để tiếp tục hoàn thiện.

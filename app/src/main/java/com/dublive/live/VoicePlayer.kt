@@ -9,7 +9,6 @@ import android.media.AudioTrack
 import android.media.PlaybackParams
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
-import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -575,11 +574,20 @@ class VoicePlayer(
 
     /**
      * v1.0.17 — the AudioTrack playhead, as (framePosition,
-     * wall time the timestamp was taken). AudioTimestamp.nanoTime
-     * shares the CLOCK_MONOTONIC base with elapsedRealtimeNanos,
-     * so the wall time is currentTimeMillis shifted by the
-     * nanoTime/elapsedRealtime offset. Null when the track cannot
-     * report (not playing yet, OEM build without the path).
+     * wall time the timestamp was taken).
+     * v1.0.20 — CLOCK FIX (Error 1, device 28/11: "lệch hình
+     * -135,043,353 ms" ≈ -37.5 h). AudioTimestamp.nanoTime is
+     * in the CLOCK_MONOTONIC base (same as System.nanoTime()).
+     * The old code subtracted SystemClock.elapsedRealtimeNanos(),
+     * which is CLOCK_BOOTTIME (MONOTONIC + total suspend time
+     * since boot) — the difference is MINUS the phone's total
+     * suspend time, so the predicted play wall was ~37.5 h in
+     * the past and every sync number derived from it was
+     * garbage (its own comment claiming the two share a base
+     * was WRONG). Reference System.nanoTime() (same base) and
+     * validate the timestamp is fresh: a nanoTime more than
+     * 60 s from now is stale/bogus — return null so the caller
+     * falls back to due + hardware (estimated).
      */
     private fun readPlayhead(): Pair<Long, Long>? {
         val track = audioTrack ?: return null
@@ -587,9 +595,10 @@ class VoicePlayer(
             val ts = AudioTimestamp()
             if (!track.getTimestamp(ts)) return null
             if (ts.framePosition < 0L) return null
+            val nanoNow = System.nanoTime()
+            if (kotlin.math.abs(ts.nanoTime - nanoNow) > 60_000_000_000L) return null
             val wallNow = System.currentTimeMillis()
-            val tsWall = wallNow +
-                (ts.nanoTime - SystemClock.elapsedRealtimeNanos()) / 1_000_000L
+            val tsWall = wallNow + (ts.nanoTime - nanoNow) / 1_000_000L
             ts.framePosition to tsWall
         } catch (_: Exception) {
             null
@@ -607,7 +616,7 @@ class VoicePlayer(
      */
     private fun beginPlayMeasurement(start: BurstStartInfo, firstFrame: Long, backlogMs: Long) {
         val dueWall = start.arrivalWallMs + start.holdMs
-        val (predicted, estimated) = try {
+        val (rawPredicted, estimated) = try {
             val head = readPlayhead()
             if (head == null) {
                 // No timestamp on this device: no way to know the
@@ -633,6 +642,12 @@ class VoicePlayer(
         } catch (_: Exception) {
             (dueWall + FALLBACK_HW_MS) to true
         }
+        // v1.0.20 — clamp the prediction: a play wall more than
+        // 1 s before its due or more than 20 s after it cannot be
+        // real (this burst's audio is due now). A poisoned clock
+        // (v1.0.19: -37.5 h) must never reach the tracker, even
+        // if a future readPlayhead bug slips past the 60 s check.
+        val predicted = rawPredicted.coerceIn(dueWall - 1000L, dueWall + 20000L)
         synchronized(measureLock) {
             pendingConfirm = PendingConfirm(
                 seq = start.seq,

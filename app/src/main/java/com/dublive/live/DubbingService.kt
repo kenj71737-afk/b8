@@ -342,6 +342,19 @@ class DubbingService : Service() {
     private var lastHeardAtMs = 0L
     /** v1.0.10 — last diagnostics broadcast (throttled to 1 s). */
     private var lastDiagAtMs = 0L
+    /**
+     * v1.0.20 — VAD/feed diagnostics samples (1/s, last 60 s):
+     * VAD turns started, tracker-fed speech ms, spectral-gate
+     * rejected frames. Differenced over the window they give the
+     * /60 s rates appended to the diagnostics HUD, so a
+     * screenshot can tell "quiet content" (few VAD turns, little
+     * fed speech, few gate rejects) apart from "the app is
+     * starved" (VAD turns flowing but no fed speech / samples).
+     */
+    private data class VadDiagSample(
+        val nowMs: Long, val turns: Int, val fedMs: Long, val gateRejects: Int
+    )
+    private val vadDiagSamples = ArrayDeque<VadDiagSample>()
 
     /**
      * v1.0.4 — generation guard (with GeminiLiveClient's own socket
@@ -412,7 +425,9 @@ class DubbingService : Service() {
             if (now - lastDiagAtMs >= 1000L) {
                 lastDiagAtMs = now
                 try {
-                    tracker?.let { broadcast(TYPE_DIAG, message = it.diagnostics(now)) }
+                    tracker?.let { tr ->
+                        broadcast(TYPE_DIAG, message = tr.diagnostics(now) + vadDiagPart(now))
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "diagnostics broadcast failed", e)
                 }
@@ -606,18 +621,32 @@ class DubbingService : Service() {
                     val eventWall = intent?.getLongExtra(EXTRA_EVENT_WALL_MS, 0L) ?: 0L
                     if (timeSec >= 0.0 && eventWall > 0L) {
                         val replyWall = System.currentTimeMillis()
-                        val eventVideoSec = if (paused) {
-                            timeSec
+                        // v1.0.20 — GARBAGE GUARD (Error 1): the
+                        // round trip (reply − event) is the video
+                        // advance the correction subtracts. A
+                        // negative or >60 s round trip means the
+                        // event wall came from a poisoned clock (the
+                        // v1.0.19 readPlayhead bug: -37.5 h) — drop
+                        // the reply and log the raw values instead
+                        // of feeding a garbage frame residual.
+                        val roundTripMs = replyWall - eventWall
+                        if (roundTripMs < 0L || roundTripMs > 60_000L) {
+                            Log.w(TAG, "video time reply dropped: roundTrip=%d ms (eventWall=%d replyWall=%d timeSec=%.3f purpose=%s seq=%d)"
+                                .format(roundTripMs, eventWall, replyWall, timeSec, purpose, seq))
                         } else {
-                            timeSec - (replyWall - eventWall).coerceAtLeast(0L) / 1000.0
-                        }
-                        try {
-                            when (purpose) {
-                                "marker" -> tracker?.setMarkerVideoTime(seq, eventVideoSec)
-                                "burst" -> tracker?.onBurstVideoTime(seq, eventVideoSec)
+                            val eventVideoSec = if (paused) {
+                                timeSec
+                            } else {
+                                timeSec - roundTripMs / 1000.0
                             }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "tracker video time failed", e)
+                            try {
+                                when (purpose) {
+                                    "marker" -> tracker?.setMarkerVideoTime(seq, eventVideoSec)
+                                    "burst" -> tracker?.onBurstVideoTime(seq, eventVideoSec)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "tracker video time failed", e)
+                            }
                         }
                     }
                     return START_NOT_STICKY
@@ -1771,25 +1800,25 @@ class DubbingService : Service() {
                 override fun onSpeechChunk(samples: ShortArray) {
                     val bytes = shortsToBytes(samples)
                     utteranceBytes.write(bytes)
-                    // v1.0.19 — tracker feed gate is the START
-                    // threshold (600), NOT the END threshold (240).
-                    // v1.0.11 gated the tracker at END to avoid
-                    // overcounting the 700 ms silence tail — but
-                    // music frames (RMS 300–800) are above END, so
-                    // they reached the tracker as "speech ms" and
-                    // kept lastLoudAtMs fresh: the v1.0.18 marker
-                    // split never saw a >= 300 ms gap (device 28/11:
-                    // "tách 1" in a whole session, no-mk 23/31).
-                    // Gating the tracker at START keeps music out of
-                    // the marker clock, so the split sees the pause.
-                    // The LIVE SEND below stays at END (240): quiet
-                    // syllables (240–600) still go to the model, or
-                    // the dub stutters (the 20:37 report). The
-                    // tracker therefore undercounts quiet syllables
-                    // slightly — the sim (tracker_gate=600) shows
-                    // this is a small, stable bias the ratio absorbs.
+                    // v1.0.20 — tracker feed gate REVERTED to the END
+                    // threshold (240). v1.0.19 gated it at START
+                    // (600) to keep music out of the marker clock,
+                    // but it starved the tracker instead: quiet
+                    // speech (RMS 240–600) never fed the tracker,
+                    // so cumSpeechMs barely advanced, slices never
+                    // completed, lastSpeechSliceAtMs went stale and
+                    // the stall reset fired on every turn start and
+                    // every dub chunk (device 28/11: 1 sample/60 s,
+                    // 5 bursts, stall 159). The gated below-START
+                    // end rule (VadDetector, v1.0.20) now bounds
+                    // music exposure instead: a turn ends 300 ms
+                    // after the speech stops being speech-like, so
+                    // at most ~300 ms of music feeds per turn, and
+                    // frames outside a turn never reach the tracker.
+                    // The LIVE SEND below stays at END (240) as
+                    // before: quiet syllables still go to the model.
                     val rms = rmsOf(samples)
-                    if (rms >= vadThreshold) {
+                    if (rms >= vadEndThreshold) {
                         try {
                             tracker?.onSpeechMs(
                                 (samples.size / 16).toLong(),
@@ -2656,6 +2685,41 @@ class DubbingService : Service() {
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
                 .createNotificationChannel(channel)
         }
+    }
+
+    /**
+     * v1.0.20 — VAD/feed diagnostics part, appended to the
+     * tracker's diagnostics HUD: VAD turns started / tracker-fed
+     * speech ms / spectral-gate rejected frames in the last 60 s.
+     * Sampled once per second (with the diagnostics broadcast)
+     * and differenced over the window. A counter reset (new
+     * session / VAD recreated) restarts the window instead of
+     * producing negative rates. Returns "" when the VAD/tracker
+     * is not running.
+     */
+    private fun vadDiagPart(nowMs: Long): String {
+        val v = vad ?: return ""
+        val tr = tracker ?: return ""
+        val sample = VadDiagSample(nowMs, v.turnsStarted, tr.totalSpeechMs, v.gateRejectedFrames)
+        vadDiagSamples.addLast(sample)
+        while (vadDiagSamples.isNotEmpty() &&
+            nowMs - vadDiagSamples.first().nowMs > 60_000L
+        ) {
+            vadDiagSamples.removeFirst()
+        }
+        val first = vadDiagSamples.firstOrNull() ?: return ""
+        if (sample.turns < first.turns || sample.fedMs < first.fedMs ||
+            sample.gateRejects < first.gateRejects
+        ) {
+            vadDiagSamples.clear()
+            vadDiagSamples.addLast(sample)
+            return " · lượt VAD 0/60 s · lời nói 0 ms/60 s · gate loại 0 khung/60 s"
+        }
+        return " · lượt VAD %d/60 s · lời nói %d ms/60 s · gate loại %d khung/60 s".format(
+            sample.turns - first.turns,
+            sample.fedMs - first.fedMs,
+            sample.gateRejects - first.gateRejects
+        )
     }
 
     /** v1.0.5 — RMS of one PCM chunk, for the noise gate in onSpeechChunk. */

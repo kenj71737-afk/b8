@@ -1,5 +1,7 @@
 package com.dublive.live
 
+import android.util.Log
+
 /**
  * v1.0.14 — TURN-BOUNDARY pairing (design v6, proven by simulation
  * sim1014_v6.py). REPLACES the v1.0.10–v1.0.13 positional FIFO pairing.
@@ -230,6 +232,7 @@ class DubDelayTracker(
     private val onDelayChanged: (Long) -> Unit
 ) {
     companion object {
+        private const val TAG = "DubDelayTracker"
         /** One measurement slice, ms. */
         const val SLICE_MS = 500L
         /** Max speech slices kept (20 s of speech). */
@@ -328,6 +331,22 @@ class DubDelayTracker(
         /** v1.0.19 — burst D-validation window (burst-successor
          * ratio gate). */
         const val BURST_D_VALIDATE_MS = 1000L
+        /** v1.0.20 — BURST D-CHECK BYPASS: after this many
+         * consecutive D-check-only rejections the next burst
+         * bypasses the D-check (the anchor-implied + range checks
+         * still apply, the ratio validation is skipped for the
+         * bypassed burst). The v1.0.19 device test pinned D at
+         * the 8 s cap from a stale 7.2 s sample, so honest bursts
+         * (true lag ~2.4 s) failed the 1500 ms D-check forever
+         * and D could never recover — a deadlock the slice
+         * D-check's 6-streak re-anchor does not cover for
+         * bursts. */
+        const val BURST_DCHECK_BYPASS_STREAK = 3
+        /** v1.0.20 — GARBAGE GUARD: a sync/frame value beyond
+         * this cannot be real (the v1.0.19 clock bug produced
+         * -135,043,353 ms). Such a value is dropped (shown as
+         * "—") and its raw inputs are logged. */
+        const val SYNC_GARBAGE_MS = 60_000L
         /** v1.0.19 — slice D-check window (feedSample). */
         const val SLICE_D_CHECK_MS = 1500L
         /** v1.0.19 — sustained slice D-rejections before re-anchor. */
@@ -507,6 +526,31 @@ class DubDelayTracker(
      * marker) vs [splitMarkers] (splits that actually fired). */
     private var splitAttempts = 0
     private var stallResets = 0
+
+    // ---- v1.0.20 — stall EPISODES + burst D-check bypass ----
+    /** True while inside a stall episode: [resetForStall] is
+     * episode-gated (a no-op while already stalled) so a long
+     * silence cannot wipe the accumulating speech over and over
+     * — the v1.0.19 non-self-healing lock (device "stall 159":
+     * per-chunk/per-turn-start resets, each wiping the speech
+     * before a 500 ms slice could ever complete). Cleared when
+     * a slice completes ([onSpeechMs]) or when a turn starts
+     * without a reset firing ([onSpeechTurnStart]). */
+    private var stalled = false
+    /** Stall EPISODES (not reset invocations): the diagnostics
+     * counter. [stallResets] (invocations) is kept for
+     * debugging but no longer displayed. */
+    private var stallEpisodes = 0
+    /** Consecutive bursts rejected ONLY by the D-check (the
+     * anchor-implied + range checks passed). At
+     * [BURST_DCHECK_BYPASS_STREAK] the next burst bypasses the
+     * D-check. Reset on any accepted burst. */
+    private var burstDCheckStreak = 0
+    /** Stall episodes, for the diagnostics HUD. */
+    val stallEpisodeCount: Int get() = stallEpisodes
+    /** Total speech ms fed to the tracker this session (for the
+     * service's /60 s fed-speech diagnostic). */
+    val totalSpeechMs: Long get() = cumSpeechMs
 
     // ---- diagnostics ----
     private var lastSampleMs = 0L
@@ -801,10 +845,33 @@ class DubDelayTracker(
      * cumulative counters and the per-turn ratio sums are session
      * state and survive (the ratio is a property of the language
      * pair, not of this silence).
+     *
+     * v1.0.20 — EPISODE-GATED (the v1.0.19 non-self-healing lock):
+     * the old code did NOT refresh [lastSpeechSliceAtMs], so once
+     * the source went >10 s stale, EVERY later turn start and
+     * every dub chunk re-fired the reset, wiping the accumulating
+     * speech before a 500 ms slice could ever complete — permanent
+     * death (device 28/11: "stall 159", 1 sample/60 s, 5 bursts).
+     * Now the reset is a no-op while already [stalled] (count
+     * EPISODES, not invocations) and it refreshes
+     * [lastSpeechSliceAtMs] to now, so the stall condition clears
+     * and the next speech can accumulate into a slice.
      */
     private fun resetForStall(nowMs: Long) {
-        // v1.0.19 — stall-reset counter (diagnostics).
+        // v1.0.20 — episode gate: while already stalled this is
+        // a no-op (the state was already wiped by the first reset
+        // of this episode; wiping again would kill the speech
+        // accumulating since).
+        if (stalled) return
+        stalled = true
+        stallEpisodes++
+        // v1.0.19 — stall-reset counter (diagnostics; invocations,
+        // kept for debugging — the HUD shows episodes now).
         stallResets++
+        // v1.0.20 — refresh the slice clock: the reset IS the
+        // acknowledgement of the stall, so the next speech frame
+        // must not re-trigger it before a slice can complete.
+        lastSpeechSliceAtMs = nowMs
         windowSamples.clear()
         windowStartMs = nowMs
         speechAccumMs = 0L
@@ -898,6 +965,10 @@ class DubDelayTracker(
                 )
             )
             lastSpeechSliceAtMs = nowMs
+            // v1.0.20 — a slice completed: the stall episode is
+            // over (the source is speaking again and pairing can
+            // resume). This is what makes the stall self-healing.
+            stalled = false
             while (speechSlices.size > MAX_SLICES) {
                 speechSlices.removeFirst()
                 droppedSlices++
@@ -933,6 +1004,11 @@ class DubDelayTracker(
             nowMs - lastSpeechSliceAtMs > STALL_MS
         ) {
             resetForStall(nowMs)
+        } else {
+            // v1.0.20 — no reset fired: the source is not stalled
+            // (a slice arrived within 10 s), so clear the episode
+            // flag. The turn start itself proves speech is flowing.
+            stalled = false
         }
         markerSeq++
         markers.addLast(
@@ -1180,7 +1256,20 @@ class DubDelayTracker(
             pendingBursts.removeFirst()
         }
         if (record?.markerWallMs != null) {
-            lastSyncErrorMs = (playWallMs - record.markerWallMs!!) - delayMs
+            // v1.0.20 — GARBAGE GUARD (Error 1): a sync error
+            // beyond ±60 s cannot be real (the v1.0.19 clock bug
+            // produced -135,043,353 ms). Drop it (show "—") and
+            // log the raw inputs so the next diagnosis has them;
+            // never feed it to the stretch controller either
+            // (stretchUpdate treats null as 0).
+            val syncErr = (playWallMs - record.markerWallMs!!) - delayMs
+            lastSyncErrorMs = if (kotlin.math.abs(syncErr) > SYNC_GARBAGE_MS) {
+                Log.w(TAG, "garbage sync error dropped: playWall=%d markerWall=%d D=%d err=%d (clock type: playWall from VoicePlayer readPlayhead, nanoTime base)"
+                    .format(playWallMs, record.markerWallMs!!, delayMs, syncErr))
+                null
+            } else {
+                syncErr
+            }
             // Play-anchored slice samples for this burst.
             val slices = pairingLog.filter { it.burstSeq == seq }
                 .sortedBy { it.dubCumMs }
@@ -1373,7 +1462,18 @@ class DubDelayTracker(
             ?: return
         val vBurst = burstVideoTimes.firstOrNull { it.first == seq }?.second
             ?: return
-        lastFrameResidualMs = ((vBurst - vMarker) * 1000.0 - delayMs).toLong()
+        // v1.0.20 — GARBAGE GUARD (Error 1, same poisoned wall as
+        // the sync error: the service's video-time correction
+        // inherits the play wall). Beyond ±60 s the residual is
+        // dropped (show "—") and the raw inputs are logged.
+        val residual = ((vBurst - vMarker) * 1000.0 - delayMs).toLong()
+        lastFrameResidualMs = if (kotlin.math.abs(residual) > SYNC_GARBAGE_MS) {
+            Log.w(TAG, "garbage frame residual dropped: vBurst=%.3f vMarker=%.3f D=%d residual=%d seq=%d"
+                .format(vBurst, vMarker, delayMs, residual, seq))
+            null
+        } else {
+            residual
+        }
     }
 
     /** Current dynamic margin, for the service / diagnostics. */
@@ -1571,9 +1671,11 @@ class DubDelayTracker(
             val latency = nowMs - marker.wallMs
             if (latency !in 0L..MAX_SAMPLE_MS) {
                 burstConsistency++
+                burstDCheckStreak = 0
                 return lastHoldMs to null
             }
             burstOk++
+            burstDCheckStreak = 0
             lastBoundarySampleMs = latency
             lastBoundaryAtMs = nowMs
             recordTurnPair(nowMs)
@@ -1608,32 +1710,66 @@ class DubDelayTracker(
         // exact anchor may veto (here it always is exact).
         if (marker.audioMs < anchorSpeechMs && everExactAnchor) {
             burstAnchorBack++
+            burstDCheckStreak = 0
             return lastHoldMs to null
         }
         val latency = nowMs - marker.wallMs
         if (latency !in 0L..MAX_SAMPLE_MS) {
             burstConsistency++
+            burstDCheckStreak = 0
             return lastHoldMs to null
         }
         if (!viaSeed) {
             val ref = impliedLagMs(nowMs, sPos)
             if (kotlin.math.abs(latency - ref) > SAMPLE_CONSISTENCY_MS) {
                 burstConsistency++
+                burstDCheckStreak = 0
                 return lastHoldMs to null
             }
+            // v1.0.20 — BURST D-CHECK BYPASS: the D-check is the
+            // last gate, but a D pinned from a stale sample (the
+            // v1.0.19 device test: D 8 s from a 7.2 s sample vs a
+            // true lag ~2.4 s) rejects every honest burst forever
+            // and D can never recover — a deadlock. After 3
+            // consecutive D-check-only rejections the next burst
+            // bypasses the D-check (the anchor-implied + range
+            // checks above still apply). The bypassed burst's
+            // ratio validation is skipped (see below).
+            var bypassedDCheck = false
             if (isDTrusted(nowMs) &&
                 kotlin.math.abs(latency - dBasedLagMs()) > BURST_D_CHECK_MS
             ) {
-                burstConsistency++
-                return lastHoldMs to null
+                if (burstDCheckStreak >= BURST_DCHECK_BYPASS_STREAK) {
+                    bypassedDCheck = true
+                    burstDCheckStreak = 0
+                    Log.i(TAG, "burst D-check bypassed after %d streak rejections (latency=%d, dBased=%d)"
+                        .format(BURST_DCHECK_BYPASS_STREAK, latency, dBasedLagMs()))
+                } else {
+                    burstConsistency++
+                    burstDCheckStreak++
+                    return lastHoldMs to null
+                }
+            } else {
+                burstDCheckStreak = 0
             }
+            burstOk++
+            lastBoundarySampleMs = latency
+            lastBoundaryAtMs = nowMs
+            recordTurnPair(nowMs)
+            feedSample(latency, nowMs, boundary = true)
+            reanchor(marker.audioMs, nowMs, exact = true)
+            if (!bypassedDCheck) noteBurstRatio(marker, latency)
+            // v1.0.19 — ROBUST HOLD + SLEW (see robustHoldMs).
+            return robustHoldMs(nowMs, prevHoldMs) to marker
         } else if (isDTrusted(nowMs) &&
             kotlin.math.abs(latency - dBasedLagMs()) > SEED_FB_D_CHECK_MS
         ) {
             burstConsistency++
+            burstDCheckStreak = 0
             return lastHoldMs to null
         }
         burstOk++
+        burstDCheckStreak = 0
         lastBoundarySampleMs = latency
         lastBoundaryAtMs = nowMs
         recordTurnPair(nowMs)
@@ -1717,8 +1853,20 @@ class DubDelayTracker(
             val countedDiff = marker.audioMs - lastBurstAudioMs
             val dubDiff = cumDubMs - lastBurstDubMs
             val expected = countedDiff * 1.3
-            if (countedDiff > 0 && dubDiff >= 0.5 * expected &&
-                dubDiff <= 2.0 * expected
+            // v1.0.20 — TIGHTENED bounds [0.7, 1.6] (was [0.5,
+            // 2.0]) + counted >= 500 ms. The v1.0.19 device test
+            // showed ratio display 2.00x = the clamp ceiling:
+            // undercounted speech (feed gate 600) + fragmented
+            // markers (small countedDiff, full-turn dubDiff)
+            // saturated the ratio at the 0.5 clamp, and the
+            // saturated ratio drifted the anchor (~76% of true
+            // speed), feeding the consistency rejections. The
+            // turnComplete successor chain (acceptTurnComplete)
+            // keeps [0.5, 2.0] — only this BURST chain tightens
+            // (it is the chain that fires on the device; tc_recv
+            // is ~0 there).
+            if (countedDiff >= 500L && dubDiff >= 0.7 * expected &&
+                dubDiff <= 1.6 * expected
             ) {
                 sumCountedMs += countedDiff
                 sumTotalDubMs += dubDiff
@@ -2020,7 +2168,11 @@ class DubDelayTracker(
         // (video time now − marker video time) − D; positive = the
         // shown frame is ahead of the spoken sentence.
         val syncPart = lastSyncErrorMs?.let {
-            " · lệch hình %+d ms".format(it)
+            // v1.0.20 — belt-and-braces garbage guard (the setters
+            // already null out |.| > 60 s; this covers any value
+            // set through another path).
+            if (kotlin.math.abs(it) > SYNC_GARBAGE_MS) " · lệch hình —"
+            else " · lệch hình %+d ms".format(it)
         } ?: " · lệch hình —"
         val pipePart = lastPipelineMs?.let {
             val mark = if (lastPipelineEstimated) "~" else ""
@@ -2035,7 +2187,9 @@ class DubDelayTracker(
         } ?: " · phát —"
         val ratioPart = " · giọng/gốc %.2f×".format(1.0 / ratio())
         val framePart = lastFrameResidualMs?.let {
-            " · khung hình %+d ms".format(it)
+            // v1.0.20 — belt-and-braces garbage guard (see above).
+            if (kotlin.math.abs(it) > SYNC_GARBAGE_MS) " · khung hình —"
+            else " · khung hình %+d ms".format(it)
         } ?: " · khung hình —"
         // v1.0.18 — per-reason boundary rejection counters (the
         // "cặp mốc 0" diagnosis): recv -> ok, and why the rest
@@ -2067,14 +2221,16 @@ class DubDelayTracker(
         ) + if (splitMarkers > 0) " · tách $splitMarkers" else ""
         // v1.0.19 — marker diagnostics, appended after the
         // rejection counters: marker count + newest marker age,
-        // split attempts vs splits that fired, stall resets, and
-        // the current time-stretch speed.
+        // split attempts vs splits that fired, stall EPISODES, and
+        // the current time-stretch speed. (v1.0.20: stall shows
+        // EPISODES now, not reset invocations — one long silence
+        // is one episode, not 159 resets.)
         val newestAgePart = markers.lastOrNull()?.let {
             "%d ms trước".format((nowMs - it.wallMs).coerceAtLeast(0L))
         } ?: "—"
         val markerPart = " · mốc %d (mới nhất %s) · tách thử %d/được %d · stall %d · tốc độ %.2f×".format(
             markers.size, newestAgePart, splitAttempts, splitMarkers,
-            stallResets, targetSpeed
+            stallEpisodes, targetSpeed
         )
         return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s".format(
             delaySec, samplePart, sampleTimes60s.size, turnPairTimes60s.size,
@@ -2104,6 +2260,10 @@ class DubDelayTracker(
         targetSpeed = 1.0
         levelRaiseAtMs = null
         sliceDStreak = 0
+        // v1.0.20 — burst D-check streak + stall episode flag
+        // restart (a new connection means new speech is coming).
+        burstDCheckStreak = 0
+        stalled = false
     }
 
     /** Manual nudge from the "Trễ −1s / +1s" buttons: shift D by the
@@ -2207,6 +2367,10 @@ class DubDelayTracker(
         dReanchors = 0
         splitAttempts = 0
         stallResets = 0
+        // v1.0.20 — stall episodes + burst D-check streak.
+        stalled = false
+        stallEpisodes = 0
+        burstDCheckStreak = 0
         targetSpeed = 1.0
         levelRaiseAtMs = null
         lastStretchUpdateMs = 0L

@@ -5,9 +5,13 @@ import kotlin.math.sqrt
 /**
  * Lightweight energy-based voice activity detector for 16 kHz mono PCM.
  *
- * - Speech counts only after >= 150 ms of continuous energy above threshold.
+ * - Speech counts only after >= 80 ms of energy above threshold
+ *   (v1.0.20: 4 frames, was 8 = 160 ms; tolerance 2 frames).
  * - Keeps a ~500 ms pre-roll ring buffer so the start of a sentence is not cut.
- * - An utterance ends after ~700 ms of continuous silence.
+ * - An utterance ends after ~700 ms of continuous silence, or
+ *   300 ms of non-speech-like audio below the start threshold
+ *   (v1.0.20: the below-START rule is spectral-gated, so quiet
+ *   speech does not end a sentence).
  * This is a fresh implementation written for DubLive.
  *
  * v1.0.8 — HYSTERESIS (two thresholds) + spectral gate. The old code
@@ -44,7 +48,40 @@ class VadDetector(
     }
 
     private val frameSamples = sampleRate / 50 // 20 ms frames
-    private val speechFramesNeeded = 8 // 8 x 20 ms = 160 ms >= 150 ms
+    /**
+     * v1.0.20 — START need 4 frames (was 8). The v1.0.19 device
+     * test (28/11, "giọng đứng, lúc dịch lúc không"): quiet
+     * drama dialogue (RMS 300–550) rarely holds 8 consecutive
+     * loud frames, so turns almost never started and Live got
+     * loud fragments only. The sim grid (grid1020.py, calibrated
+     * world): need 8/tol 0 sends 24% of speech, need 4/tol 2
+     * sends 95%, need 4/tol 2 + warm 3 sends 97%. The START
+     * threshold itself is NOT lowered (music at 250–650 would
+     * false-start); only the frame count + tolerance change.
+     */
+    private val speechFramesNeeded = 4 // 4 x 20 ms = 80 ms
+    /** v1.0.20 — START tolerance: up to 2 consecutive
+     * non-passing frames (a quiet syllable / a gate-failing
+     * frame) inside the start window do not reset the counter.
+     * The single most important VAD change (tol 0 -> 2 lifts
+     * sent speech 24% -> 75% at need 8). */
+    private val startToleranceFrames = 2
+    private var startFailStreak = 0
+    /**
+     * v1.0.20 — WARM / SOFT START. Dialogue comes in bursts:
+     * for 5 s after a turn ends, a new line needs only 3 frames
+     * ([warmStartFramesNeeded]) and they only need to clear the
+     * END threshold ([warmThreshold], 240) — an ALL-SOFT line
+     * (no frame above START) can still open a turn while
+     * dialogue is ongoing. Music false-starts need 3
+     * consecutive gate-passing frames above END (p ~ 0.2% per
+     * triple) and the gated below-START rule kills a music turn
+     * after 300 ms anyway. Applies only to the start rule; the
+     * cold start (no recent turn) keeps need 4 @ START.
+     */
+    private val warmStartFramesNeeded = 3
+    private val warmWindowMs = 5000L
+    private var lastTurnEndMs = 0L
     private val silenceFramesToEnd = 35 // 35 x 20 ms = 700 ms
     /**
      * v1.0.19 — BELOW-START counter. The 700 ms below-END rule
@@ -54,12 +91,30 @@ class VadDetector(
      * it is not speech. The turn stays open, the marker ages,
      * and every burst is rejected as no-marker (device 28/11:
      * no-mk 23/31, pairs 0/60 s). End the turn after 15 frames
-     * (300 ms) continuously below the START threshold as well —
-     * a 300 ms dip below START is an inter-line pause, not a
-     * within-sentence syllable dip (those are < 200 ms). The
-     * 700 ms below-END rule is kept for true silence.
+     * (300 ms) below the START threshold as well.
+     * v1.0.20 — GATED: the v1.0.19 rule counted EVERY frame
+     * below START, including quiet speech (RMS 300–550 spends
+     * most frames below START), so it cut sentences ~300 ms
+     * after they started (the "giọng đứng" mechanism: a turn
+     * ends, re-start needs 8 loud frames + gate, the audio
+     * between is lost). Now only a frame that is NOT
+     * speech-like advances the counter: quiet speech (gate
+     * pass) resets it, music (gate fail) advances it. The gate
+     * is evaluated only on frames between END and START (frames
+     * below END are silence and advance it directly; frames at
+     * or above START reset it) so the FFT cost is ~50/s max.
      */
     private val belowStartFramesToEnd = 15 // 15 x 20 ms = 300 ms
+
+    /** v1.0.20 — diagnostics counters (read by the service's
+     * 1 s ticker for the /60 s rates). [turnsStarted] counts
+     * every turn the VAD opens; [gateRejectedFrames] counts
+     * energetic frames that failed the spectral gate while
+     * starting a turn (the sim's gate_rejects). */
+    @Volatile var turnsStarted = 0
+        private set
+    @Volatile var gateRejectedFrames = 0
+        private set
 
     /** RMS of the most recent 20 ms frame (0 when silent). Read by the
      * service's level ticker so the UI can show a live input-level meter. */
@@ -133,20 +188,36 @@ class VadDetector(
         val frameRms = rms(frame)
         lastRms = frameRms
         if (!inSpeech) {
-            // START: needs energy above the start threshold AND, when
-            // the gate is on, a speech-like spectrum. A loud music
-            // frame fails the gate, resets the counter and goes to
-            // pre-roll like any quiet frame — it never opens an
-            // utterance. The gate runs only on energetic frames.
-            val energetic = frameRms > startThreshold
+            // START (v1.0.20): need [speechFramesNeeded] (4)
+            // frames, with up to [startToleranceFrames] (2)
+            // consecutive non-passing frames tolerated inside the
+            // window. WARM/SOFT START: for 5 s after a turn ends
+            // (dialogue is ongoing) only 3 frames are needed and
+            // they only need to clear the END threshold (240), so
+            // an all-soft line can still open a turn. A loud music
+            // frame fails the gate, counts as a non-passing frame
+            // (tolerated, not a reset) and goes to pre-roll like
+            // any quiet frame — it never opens an utterance on its
+            // own. The gate runs only on energetic frames.
+            val nowMs = System.currentTimeMillis()
+            val warmActive = lastTurnEndMs > 0L &&
+                nowMs - lastTurnEndMs < warmWindowMs
+            val needNow = if (warmActive) warmStartFramesNeeded
+                else speechFramesNeeded
+            val thrNow = if (warmActive) endThreshold
+                else startThreshold
+            val energetic = frameRms > thrNow
             val speechLike = !energetic || !spectralGateEnabled ||
                 spectralGate.isSpeechLike(frame)
             if (energetic && speechLike) {
+                startFailStreak = 0
                 loudFrames++
                 pendingHead.addAll(frame.toList())
-                if (loudFrames >= speechFramesNeeded) {
+                if (loudFrames >= needNow) {
                     inSpeech = true
                     quietFrames = 0
+                    startFailStreak = 0
+                    turnsStarted++
                     val head = ShortArray(preRoll.size + pendingHead.size)
                     var idx = 0
                     for (s in preRoll) head[idx++] = s
@@ -156,9 +227,14 @@ class VadDetector(
                     listener.onSpeechStart(head)
                 }
             } else {
-                loudFrames = 0
-                pendingHead.clear()
+                if (energetic) gateRejectedFrames++
+                startFailStreak++
                 for (s in frame) pushPreRoll(s)
+                if (startFailStreak > startToleranceFrames) {
+                    loudFrames = 0
+                    pendingHead.clear()
+                    startFailStreak = 0
+                }
             }
         } else {
             // INSIDE an utterance: hysteresis — only frames at or below
@@ -172,15 +248,23 @@ class VadDetector(
             } else {
                 quietFrames++
             }
-            // v1.0.19 — below-START counter: music (RMS 300–800) is
-            // above END so it never advances quietFrames, but it is
-            // below START, so it advances this counter. 15 frames
-            // (300 ms) below START ends the turn even when the
-            // frames are loud enough to keep quietFrames at 0.
+            // v1.0.20 — GATED below-START counter (see the field
+            // comment): only a frame that is NOT speech-like
+            // advances it. Quiet speech (between END and START,
+            // gate pass) resets it; music (gate fail) advances
+            // it; silence (below END) advances it directly; loud
+            // speech (at/above START) resets it. The gate is
+            // evaluated only on the in-between frames, so the
+            // FFT cost is ~50/s max.
             if (frameRms >= startThreshold) {
                 belowStartFrames = 0
-            } else {
+            } else if (frameRms <= endThreshold) {
                 belowStartFrames++
+            } else {
+                val speechLike = !spectralGateEnabled ||
+                    spectralGate.isSpeechLike(frame)
+                if (speechLike) belowStartFrames = 0
+                else belowStartFrames++
             }
             listener.onSpeechChunk(frame)
             if (quietFrames >= silenceFramesToEnd ||
@@ -189,6 +273,8 @@ class VadDetector(
                 loudFrames = 0
                 quietFrames = 0
                 belowStartFrames = 0
+                startFailStreak = 0
+                lastTurnEndMs = System.currentTimeMillis()
                 listener.onSpeechEnd()
             }
         }
@@ -199,6 +285,8 @@ class VadDetector(
         loudFrames = 0
         quietFrames = 0
         belowStartFrames = 0
+        startFailStreak = 0
+        lastTurnEndMs = 0L
         pendingHead.clear()
         preRoll.clear()
     }

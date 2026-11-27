@@ -7,9 +7,24 @@ package com.dublive.live
  * picture and the dubbed voice.
  *
  * A sample is (dub burst start arrival − source utterance start).
- * EMA 0.3 per sample + 2000 ms safety margin, clamped to the 3–20 s
+ * EMA 0.3 per sample + safety margin, clamped to the 3–20 s
  * delay range, 500 ms deadband (a change smaller than the deadband does
  * not update the delay, so the picture does not jitter on every turn).
+ *
+ * v1.0.17 — DYNAMIC MARGIN (was a fixed 2000 ms). The fixed margin
+ * was a guess at the playback pipeline: it neither measured the
+ * pipeline nor compensated it, so the voice always played
+ * (pipeline) late against the picture no matter what D was — the
+ * hold (D − arrival latency) moves the voice by exactly as much as
+ * D moves the picture, so no D can ever fix a pipeline offset.
+ * The tracker now measures the pipeline per burst (VoicePlayer
+ * reports the real play start) and sets the margin to
+ * pipeline + ~400 ms jitter, clamped 500–2000 ms. The margin is
+ * the headroom that keeps the hold >= 0 despite latency variance:
+ * D = EMA(arrival latency) + margin must exceed
+ * (arrival latency + pipeline) for the voice to be schedulable at
+ * (utterance start + D) at all. [setMarginMs] is called by the
+ * tracker whenever its pipeline EMA moves.
  *
  * v1.0.14 — CREEP (the 05:08 freeze trap). The deadband + the 3 s
  * floor clamp could freeze D forever: with every sample stuck at the
@@ -25,12 +40,20 @@ package com.dublive.live
  * Pure Kotlin, no Android dependencies, unit-testable.
  */
 class LatencyEma(
-    private val marginMs: Long = 2000L,
+    private var marginMs: Long = 2000L,
     private val minDelayMs: Long = 3000L,
     private val maxDelayMs: Long = 20000L,
     private val creepMs: Long = 250L
 ) {
     private var emaMs: Long? = null
+
+    /** v1.0.17 — dynamic margin (pipeline + jitter, 500–2000 ms),
+     * set by the tracker as its pipeline EMA moves. */
+    fun setMarginMs(margin: Long) {
+        marginMs = margin.coerceIn(500L, 2000L)
+    }
+
+    fun margin(): Long = marginMs
 
     /** Seed the estimate (the first translation's latency). */
     fun seed(latencyMs: Long) {

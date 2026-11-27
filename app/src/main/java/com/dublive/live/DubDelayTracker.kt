@@ -84,6 +84,64 @@ package com.dublive.live
  * tap only the main video, time-based canvas delay, FGS type per mode,
  * no alarm stream anywhere, SpectralGate default ON.
  *
+ * v1.0.17 — PLAY-ANCHORED MEASUREMENT. Why the old measurement
+ * was systematically wrong, and what this version changes.
+ *
+ * THE OLD ERROR (measured on arrival, never on sound): a sample was
+ * (dub chunk ARRIVAL wall − source slice wall), and the voice was
+ * held to play at (arrival + hold) with hold = D − arrival latency.
+ * But a chunk taken from the hold queue only SOUNDS once the
+ * AudioTrack drains the frames queued ahead of it — the playback
+ * pipeline (buffer backlog + hardware, 100–300 ms on this phone).
+ * The old code assumed that pipeline was 0 and hid it in a fixed
+ * 2000 ms margin. The voice therefore always played (pipeline)
+ * late against the picture, and NO value of D could fix it: the
+ * hold moves the voice by exactly as much as D moves the picture,
+ * so the offset is D-independent. The VAD added a second systematic
+ * error: the turn marker was stamped at VAD TRIGGER time, ~180 ms
+ * after the speaker actually started (the 160 ms head + one 20 ms
+ * frame hop), so every boundary sample underestimated the lag by
+ * ~180 ms. And inside one long sentence the dub (1.3x the source)
+ * drifts away from the picture continuously — two boundary samples
+ * cannot see that drift.
+ *
+ * WHY THE PLAY-ANCHORED SAMPLE MUST NOT FEED THE EMA (the
+ * circularity trap — verified in sim1017.py before building):
+ * with hold = D − arrival latency, a play-anchored sample is
+ *   play − source = D + pipeline
+ * by construction — it measures D itself, not the translation
+ * latency. Feeding it to the EMA (D = EMA + margin) makes D chase
+ * itself and run away by (pipeline + margin) every EMA time
+ * constant until it clamps at 20 s (the sim shows exactly that).
+ * The EMA therefore KEEPS its arrival-anchored samples — they are
+ * the only D-independent measurement of the translation latency.
+ * The play-anchored measurement instead does three jobs that the
+ * arrival measurement cannot:
+ *   1. It measures the PIPELINE per burst (play − arrival − hold).
+ *      The hold then SUBTRACTS the pipeline EMA
+ *      (hold = D − arrival latency − pipeline), so the voice
+ *      sounds at (utterance start + D) instead of (D + pipeline).
+ *      The margin becomes dynamic — pipeline + ~400 ms jitter,
+ *      clamped 500–2000 ms — the headroom that keeps the hold >= 0
+ *      despite latency variance.
+ *   2. It gives the CLOSED-LOOP sync error: (play − source) − D
+ *      at every burst — what the user actually sees (lips vs
+ *      voice), shown in the diagnostics as "lệch hình ±X ms".
+ *      In steady state it is ~0; a persistent positive value
+ *      means the hold saturated (latency > D) and D must grow.
+ *   3. It gives CONTINUOUS in-turn samples: every paired 500 ms
+ *      dub slice gets a play time (burst play + its offset inside
+ *      the burst), so the drift inside a long sentence shows up as
+ *      a growing play-anchored sample instead of only at the two
+ *      ends. These are diagnostics only (the EMA still eats the
+ *      arrival-anchored slices — same drift, D-independent).
+ * The frame check (item 6) is the second closed loop, on the
+ * PICTURE side: at each burst play the service reads the video's
+ * currentTime through JS and compares the frame the canvas should
+ * be showing against the spoken sentence. v1.0.17 only REPORTS the
+ * residual ("khung hình ±X ms"); it never steers D by it — that
+ * waits for v1.0.18, once real device numbers exist.
+ *
  * All methods are @Synchronized: speech frames arrive on the capture
  * thread, dub chunks on the Live socket thread, turnComplete on the
  * Live thread, manual nudges on the main thread, diagnostics on the
@@ -127,6 +185,31 @@ class DubDelayTracker(
         /** Estimated gap between a turn's dub end and its
          * turnComplete (the model's inter-turn silence). */
         const val TURN_COMPLETE_GAP_MS = 200L
+        /**
+         * v1.0.17 — VAD DETECTION LAG: the VAD fires onSpeechStart
+         * only after 8 loud frames (8 x 20 ms = 160 ms head) have
+         * accumulated, plus one 20 ms frame hop of chunking/
+         * processing. The speaker really started ~180 ms BEFORE
+         * the trigger wall time. The service subtracts this from
+         * the marker wall (and from the utterance-start stamps) so
+         * every boundary sample measures from the true sentence
+         * start; the slice walls need no correction (they are
+         * capture times, stamped when the audio was recorded, not
+         * when the VAD recognised it).
+         */
+        const val VAD_DETECTION_LAG_MS = 180L
+        /** v1.0.17 — pipeline EMA seed (ms) before any burst has
+         * been measured. The sim's pipeline model is 100–300 ms. */
+        const val PIPELINE_SEED_MS = 150L
+        /** v1.0.17 — jitter headroom inside the dynamic margin. */
+        const val PIPELINE_JITTER_MS = 400L
+        /** v1.0.17 — dynamic margin clamp (pipeline + jitter). */
+        const val MARGIN_MIN_MS = 500L
+        const val MARGIN_MAX_MS = 2000L
+        /** v1.0.17 — pairing-log capacity (500 ms units). */
+        const val MAX_PAIRING_LOG = 240
+        /** v1.0.17 — burst/marker video-time records kept. */
+        const val MAX_VIDEO_TIME_RECORDS = 12
     }
 
     /** One 500 ms slice of counted speech: its wall span and its
@@ -257,6 +340,100 @@ class DubDelayTracker(
     private var deferredTooSmall = 0
     private var droppedTooLarge = 0
 
+    // ---- v1.0.17 — play-anchored measurement ----
+    /** One dub burst: the record the VoicePlayer's play report is
+     * matched against. [markerWallMs] is the TRUE sentence start
+     * (VAD lag already subtracted by the service); null when the
+     * burst could not be paired with a turn marker (its play still
+     * measures the pipeline, it just yields no sync sample). */
+    private data class BurstRecord(
+        val seq: Long,
+        val arrivalWallMs: Long,
+        val holdMs: Long,
+        var markerSeq: Long?,
+        var markerWallMs: Long?,
+        val startCumDubMs: Long
+    )
+
+    /** One paired 500 ms unit: its dub-stream position, the source
+     * wall it was paired with, and the burst it arrived in. At
+     * burst play time the play-anchored sample is
+     * (burstPlay + (dubCum − burstStartCum)) − sourceWall. */
+    private data class PairingRecord(
+        val dubCumMs: Long,
+        val sourceWallMs: Long,
+        val burstSeq: Long
+    )
+
+    /** Burst sequence: incremented at every burst start (and at the
+     * session's first chunk, which the old isBurst test does not
+     * count as a burst). The service reads it after
+     * [onDubAudioArrival] and notes the burst to the VoicePlayer
+     * before the first chunk is played. */
+    private var burstSeq = 0L
+    val lastBurstSeq: Long get() = burstSeq
+    val lastMarkerSeq: Long get() = markerSeq
+    /** Bursts whose play report has not arrived yet (oldest first).
+     * Pruned when a newer burst's report arrives. */
+    private val pendingBursts = ArrayDeque<BurstRecord>()
+    /** Recent paired units, oldest first (for the play-anchored
+     * slice samples at burst play time). */
+    private val pairingLog = ArrayDeque<PairingRecord>()
+    /** Playback pipeline EMA (ms): play − (arrival + hold), EMA 0.3
+     * over measured bursts. Seeded at 150 ms; survives reconnects
+     * (it is a property of the device's audio path, not of the
+     * Live socket). The hold subtracts it and the margin is built
+     * from it — see [dynamicMarginMs]. */
+    private var pipelineEmaMs: Long? = null
+    /** Last measured pipeline (ms) and whether it was the
+     * queue-based fallback (getTimestamp unavailable) rather than a
+     * playhead measurement. */
+    private var lastPipelineMs: Long? = null
+    private var lastPipelineEstimated = false
+    /** Closed-loop sync error at the last burst play:
+     * (play − marker wall) − D. Positive = the voice sounded late
+     * against the picture (hold saturated or pipeline
+     * underestimated); ~0 in steady state. Null = no burst has
+     * played yet. */
+    private var lastSyncErrorMs: Long? = null
+    /** Last burst's play wall and its play-anchored slice sample. */
+    private var lastBurstPlayWallMs: Long? = null
+    private var lastPlaySliceSampleMs: Long? = null
+    /** Drift inside the last burst: last minus first play-anchored
+     * slice sample (positive = the voice drifts later than the
+     * picture as the sentence goes on — the 1.3x dub stretching). */
+    private var playDriftMs: Long? = null
+    /** Video-time records for the frame check (item 6): the video's
+     * currentTime at the marker wall / at the burst play wall,
+     * already corrected to the event wall by the service. */
+    private val markerVideoTimes = ArrayDeque<Pair<Long, Double>>()
+    private val burstVideoTimes = ArrayDeque<Pair<Long, Double>>()
+    /** Recent burst seq -> marker seq, for the frame residual
+     * (the pending burst record is gone by the time the JS replies
+     * arrive). */
+    private val recentBurstMarkers = ArrayDeque<Pair<Long, Long>>()
+    /** Frame residual at the last burst play (ms): (video time now
+     * − marker video time) − D. Positive = the shown frame is AHEAD
+     * of the spoken sentence. Report-only in v1.0.17. */
+    private var lastFrameResidualMs: Long? = null
+
+    /** v1.0.17 — current pipeline estimate (seed before any
+     * measurement). */
+    private fun pipelineMs(): Long = pipelineEmaMs ?: PIPELINE_SEED_MS
+
+    /** v1.0.17 — dynamic margin: pipeline + jitter, 500–2000 ms.
+     * This is the headroom that keeps the hold >= 0: D must exceed
+     * (arrival latency + pipeline) for the voice to be schedulable
+     * at (utterance start + D) at all. */
+    private fun dynamicMarginMs(): Long =
+        (pipelineMs() + PIPELINE_JITTER_MS).coerceIn(MARGIN_MIN_MS, MARGIN_MAX_MS)
+
+    /** v1.0.17 — push the current dynamic margin into the EMA
+     * (called after every pipeline update and at the first seed). */
+    private fun applyDynamicMargin() {
+        latencyEma.setMarginMs(dynamicMarginMs())
+    }
+
     val currentDelayMs: Long get() = delayMs
     val currentHoldMs: Long get() = lastHoldMs
 
@@ -285,7 +462,7 @@ class DubDelayTracker(
             val sorted = recentSamples.map { it.second }.sorted()
             return sorted[sorted.size / 2]
         }
-        return maxOf(MIN_SAMPLE_MS, delayMs - 2000L)
+        return maxOf(MIN_SAMPLE_MS, delayMs - dynamicMarginMs())
     }
 
     /**
@@ -367,6 +544,13 @@ class DubDelayTracker(
      * re-anchors it; the tail formula must never overwrite it (its
      * tail integrates the ratio bias until it clamps to 0 and the
      * anchor sits ~1.5 s too high).
+     *
+     * v1.0.17 — [nowMs] is the TRUE utterance start wall: the
+     * service subtracts VAD_DETECTION_LAG_MS (180 ms) before
+     * calling, because the VAD only triggers ~180 ms after the
+     * speaker started (160 ms head + one 20 ms frame hop). Stamping
+     * the marker at trigger time underestimated every boundary
+     * sample by ~180 ms.
      */
     @Synchronized
     fun onSpeechTurnStart(nowMs: Long) {
@@ -444,6 +628,18 @@ class DubDelayTracker(
      * [firstAudioSentAtMs] is when the first source audio of the
      * session was sent to Live (0 when none yet) — used once, for the
      * ALDA first-audio seed.
+     *
+     * v1.0.17 — the hold subtracts the measured pipeline:
+     * hold = D − arrival latency − pipeline. The old hold
+     * (D − arrival latency) left the voice sounding at
+     * (utterance start + D + pipeline) — systematically late against
+     * the picture by the pipeline, at every D. The seed also uses
+     * the dynamic margin (pipeline + jitter) instead of the fixed
+     * 2000 ms. Every burst start (plus the session's first chunk,
+     * which the old isBurst test does not count) records a
+     * [BurstRecord] so the VoicePlayer's play report can be matched
+     * to its turn marker; the service reads [lastBurstSeq] after
+     * this call and notes the burst to the VoicePlayer.
      */
     @Synchronized
     fun onDubAudioArrival(
@@ -453,17 +649,23 @@ class DubDelayTracker(
     ): Long {
         var hold = lastHoldMs
         // ALDA FIX32 first-audio seed: the very first translation's
-        // latency sets the EMA and the delay (latency + 2000 ms).
+        // latency sets the EMA and the delay (latency + margin).
+        // v1.0.17 — the margin is dynamic (pipeline + jitter), and
+        // the seed hold already subtracts the pipeline, so the
+        // first voice sounds at (utterance start + D), not D +
+        // pipeline late.
         if (!firstAudioSeeded && firstAudioSentAtMs > 0L) {
             firstAudioSeeded = true
+            applyDynamicMargin()
             val elapsed = (nowMs - firstAudioSentAtMs).coerceIn(0L, 18000L)
             latencyEma.seed(elapsed)
-            val newDelay = (elapsed + 2000L).coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
+            val newDelay = (elapsed + dynamicMarginMs())
+                .coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
             if (newDelay != delayMs) {
                 delayMs = newDelay
                 onDelayChanged(delayMs)
             }
-            hold = (newDelay - elapsed).coerceAtLeast(0L)
+            hold = (newDelay - elapsed - pipelineMs()).coerceAtLeast(0L)
             lastHoldMs = hold
         }
         // v1.0.14 — dub burst: a chunk arriving ≥500 ms after the
@@ -472,11 +674,25 @@ class DubDelayTracker(
         // pairing below is still the main measurement.
         val isBurst = lastDubChunkAtMs >= 0L &&
             nowMs - lastDubChunkAtMs >= 500L
+        val isFirstChunk = lastDubChunkAtMs < 0L
+        val burstStartCumDubMs = cumDubMs
         lastDubChunkAtMs = nowMs
         cumDubMs += dubMs
         if (isBurst) {
-            hold = onDubBurst(nowMs)
+            burstSeq++
+            val (burstHold, marker) = onDubBurst(nowMs)
+            hold = burstHold
             lastHoldMs = hold
+            recordBurst(burstSeq, nowMs, hold, marker, burstStartCumDubMs)
+        } else if (isFirstChunk) {
+            // v1.0.17 — the session's (or post-reconnect) first
+            // chunk is not a burst by the old test, but it still
+            // starts a voice burst physically: record it so its
+            // play report measures the (cold-start) pipeline.
+            // No marker yet — the play still yields the pipeline,
+            // just no sync sample.
+            burstSeq++
+            recordBurst(burstSeq, nowMs, hold, null, burstStartCumDubMs)
         }
         // Continuous slice pairing (v1.0.10, re-anchored in v6).
         pairDubSlices(dubMs, nowMs)
@@ -485,6 +701,157 @@ class DubDelayTracker(
         return hold
     }
 
+    /** v1.0.17 — record a burst for its play report (and remember
+     * its marker for the frame check). */
+    private fun recordBurst(
+        seq: Long,
+        arrivalWallMs: Long,
+        holdMs: Long,
+        marker: TurnMarker?,
+        startCumDubMs: Long
+    ) {
+        pendingBursts.addLast(
+            BurstRecord(
+                seq = seq,
+                arrivalWallMs = arrivalWallMs,
+                holdMs = holdMs,
+                markerSeq = marker?.seq,
+                markerWallMs = marker?.wallMs,
+                startCumDubMs = startCumDubMs
+            )
+        )
+        if (marker != null) {
+            recentBurstMarkers.addLast(seq to marker.seq)
+            while (recentBurstMarkers.size > MAX_VIDEO_TIME_RECORDS) {
+                recentBurstMarkers.removeFirst()
+            }
+        }
+        while (pendingBursts.size > MAX_VIDEO_TIME_RECORDS) {
+            pendingBursts.removeFirst()
+        }
+    }
+
+    /**
+     * v1.0.17 — the VoicePlayer reports that a burst's first frame
+     * actually sounded: [seq] is the burst (from [lastBurstSeq]),
+     * [playWallMs] the wall time it sounded, [pipelineMs] the
+     * playback pipeline (play − arrival − hold) and [estimated]
+     * true when the value is the queue-based fallback (no
+     * getTimestamp on this device) instead of a playhead
+     * measurement. Called on the VoicePlayer's thread — the
+     * tracker is @Synchronized throughout, so this is safe.
+     *
+     * Three jobs, none of which feeds the EMA (see the class doc
+     * for why a play-anchored sample must never feed it):
+     *  1. The pipeline EMA moves (0.3) and the dynamic margin
+     *     follows (pipeline + 400 ms jitter, 500–2000 ms).
+     *  2. The closed-loop sync error: (play − marker wall) − D —
+     *     what the user sees. ~0 in steady state; persistently
+     *     positive means the hold saturated and D must grow (the
+     *     arrival-anchored samples already carry that: a saturated
+     *     burst's arrival latency exceeds D − pipeline, so the
+     *     EMA raises D through the normal path).
+     *  3. The play-anchored slice samples: every paired 500 ms
+     *     unit of this burst gets play time = burst play + its
+     *     offset inside the burst. Their drift (last − first)
+     *     shows the in-turn stretch; the last value is the
+     *     current in-turn sync. Diagnostics only.
+     */
+    @Synchronized
+    fun onBurstPlayed(seq: Long, playWallMs: Long, pipelineMs: Long, estimated: Boolean) {
+        lastPipelineMs = pipelineMs.coerceIn(0L, 2000L)
+        lastPipelineEstimated = estimated
+        val ema = pipelineEmaMs
+        pipelineEmaMs = if (ema == null) {
+            lastPipelineMs
+        } else {
+            ((ema * 7 + lastPipelineMs!! * 3) / 10).coerceIn(0L, 1000L)
+        }
+        applyDynamicMargin()
+        lastBurstPlayWallMs = playWallMs
+        val record = pendingBursts.firstOrNull { it.seq == seq }
+        // Prune this burst and everything older: their reports
+        // will never arrive now (or arrived already).
+        while (pendingBursts.isNotEmpty() && pendingBursts.first().seq <= seq) {
+            pendingBursts.removeFirst()
+        }
+        if (record?.markerWallMs != null) {
+            lastSyncErrorMs = (playWallMs - record.markerWallMs!!) - delayMs
+            // Play-anchored slice samples for this burst.
+            val slices = pairingLog.filter { it.burstSeq == seq }
+                .sortedBy { it.dubCumMs }
+            if (slices.isNotEmpty()) {
+                val samples = slices.map { entry ->
+                    val playSliceWall = playWallMs +
+                        (entry.dubCumMs - record.startCumDubMs)
+                    playSliceWall - entry.sourceWallMs
+                }
+                lastPlaySliceSampleMs = samples.last()
+                playDriftMs = if (samples.size >= 2) {
+                    samples.last() - samples.first()
+                } else {
+                    0L
+                }
+            }
+        }
+        // Pairing-log entries of this burst and older are spent.
+        while (pairingLog.isNotEmpty() &&
+            pairingLog.first().burstSeq <= seq
+        ) {
+            pairingLog.removeFirst()
+        }
+    }
+
+    /**
+     * v1.0.17 — frame check (report-only): the service passes the
+     * video's currentTime, already corrected to the EVENT wall (the
+     * JS reply arrives after the event, so the service subtracts
+     * the wall time the video advanced during the round trip —
+     * unless the video was paused, when no correction applies).
+     * [setMarkerVideoTime] records the marker's video time;
+     * [onBurstVideoTime] the video time at a burst's play start.
+     * The residual is (video time now − marker video time) − D:
+     * positive = the shown frame is AHEAD of the spoken sentence.
+     * v1.0.17 only reports it; it never steers D.
+     */
+    @Synchronized
+    fun setMarkerVideoTime(markerSeq: Long, videoTimeSec: Double) {
+        markerVideoTimes.addLast(markerSeq to videoTimeSec)
+        while (markerVideoTimes.size > MAX_VIDEO_TIME_RECORDS) {
+            markerVideoTimes.removeFirst()
+        }
+        // A burst video time may already be waiting for this marker.
+        for ((seq, _) in burstVideoTimes) {
+            tryComputeFrameResidual(seq)
+        }
+    }
+
+    @Synchronized
+    fun onBurstVideoTime(seq: Long, videoTimeSec: Double) {
+        burstVideoTimes.addLast(seq to videoTimeSec)
+        while (burstVideoTimes.size > MAX_VIDEO_TIME_RECORDS) {
+            burstVideoTimes.removeFirst()
+        }
+        tryComputeFrameResidual(seq)
+    }
+
+    private fun tryComputeFrameResidual(seq: Long) {
+        val markerSeq = recentBurstMarkers.firstOrNull { it.first == seq }?.second
+            ?: return
+        val vMarker = markerVideoTimes.firstOrNull { it.first == markerSeq }?.second
+            ?: return
+        val vBurst = burstVideoTimes.firstOrNull { it.first == seq }?.second
+            ?: return
+        lastFrameResidualMs = ((vBurst - vMarker) * 1000.0 - delayMs).toLong()
+    }
+
+    /** Current dynamic margin, for the service / diagnostics. */
+    fun currentMarginMs(): Long = dynamicMarginMs()
+
+    /** v1.0.17 — the frame residual at the last burst play (ms),
+     * or null when the JS video-time round trip has not completed
+     * for any burst yet. */
+    val lastFrameResidual: Long? get() = lastFrameResidualMs
     /**
      * v1.0.14 — the server finished a turn (turnComplete). [nowMs] is
      * the arrival wall time; [audioPlayed] is whether any dub audio
@@ -543,22 +910,29 @@ class DubDelayTracker(
      * silence). The chunk is the START of a turn's dub: the anchor is
      * the marker's start audio, and the sample is burst − marker wall
      * (no counted correction — a burst marks a dub START, unlike a
-     * turnComplete which marks a dub END). Returns this burst's hold =
-     * max(0, D − latency).
+     * turnComplete which marks a dub END). Returns (this burst's
+     * hold, the turn marker it paired with — null when no marker
+     * matched). The hold is max(0, D − latency − pipeline):
+     * v1.0.17 subtracts the measured pipeline so the voice sounds
+     * at (utterance start + D), not (D + pipeline) late.
      */
-    private fun onDubBurst(nowMs: Long): Long {
+    private fun onDubBurst(nowMs: Long): Pair<Long, TurnMarker?> {
         val lagEst = lagEstimateMs()
         val marker = selectMarker(nowMs, lagEst, countedCorrection = false)
-            ?: return lastHoldMs
-        if (marker.audioMs < anchorSpeechMs) return lastHoldMs
+            ?: return lastHoldMs to null
+        // A marker older than the anchor (a late burst for an old
+        // turn) or inconsistent with the slice median: no sample,
+        // and no marker for the play report either — a sync error
+        // against the wrong sentence would be worse than none.
+        if (marker.audioMs < anchorSpeechMs) return lastHoldMs to null
         val latency = nowMs - marker.wallMs
         if (kotlin.math.abs(latency - lagEst) > SAMPLE_CONSISTENCY_MS) {
-            return lastHoldMs
+            return lastHoldMs to null
         }
         recordTurnPair(nowMs)
         feedSample(latency, nowMs)
         reanchor(marker.audioMs, nowMs, exact = true)
-        return (delayMs - latency).coerceAtLeast(0L)
+        return (delayMs - latency - pipelineMs()).coerceAtLeast(0L) to marker
     }
 
     /** Pick the turn marker whose implied lag is nearest [lagEst].
@@ -730,6 +1104,20 @@ class DubDelayTracker(
                 droppedTooLarge++
                 continue
             }
+            // v1.0.17 — log the pairing for the play-anchored slice
+            // samples: at this burst's play time the slice's play
+            // wall is (burst play + (dubCum − burst start cum)) and
+            // its play-anchored sample is that minus the source
+            // wall recorded here. The log is pruned in
+            // onBurstPlayed once its burst has played.
+            pairingLog.addLast(
+                PairingRecord(
+                    dubCumMs = anchorDubMs + pairedDubMs,
+                    sourceWallMs = wall,
+                    burstSeq = burstSeq
+                )
+            )
+            while (pairingLog.size > MAX_PAIRING_LOG) pairingLog.removeFirst()
             feedSample(sample.toLong(), nowMs)
         }
     }
@@ -822,9 +1210,33 @@ class DubDelayTracker(
         } else {
             ""
         }
-        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s".format(
+        // v1.0.17 — play-anchored sync diagnostics. "lệch hình" is
+        // the closed-loop error at the last burst play: (play −
+        // marker wall) − D. Positive = the voice sounded late
+        // against the picture; ~0 in steady state. "phát" is the
+        // measured playback pipeline (play − arrival − hold) with
+        // its EMA; "~" marks the queue-based fallback estimate (no
+        // getTimestamp on this device). "giọng/gốc" is the measured
+        // dub/speech duration ratio (1.3x = the Vietnamese dub runs
+        // ~30% longer than the Chinese original). "khung hình" is
+        // the JS video-time residual (report-only in v1.0.17):
+        // (video time now − marker video time) − D; positive = the
+        // shown frame is ahead of the spoken sentence.
+        val syncPart = lastSyncErrorMs?.let {
+            " · lệch hình %+d ms".format(it)
+        } ?: " · lệch hình —"
+        val pipePart = lastPipelineMs?.let {
+            val mark = if (lastPipelineEstimated) "~" else ""
+            " · phát %s%d ms (TB %d ms)".format(mark, it, pipelineMs())
+        } ?: " · phát —"
+        val ratioPart = " · giọng/gốc %.2f×".format(1.0 / ratio())
+        val framePart = lastFrameResidualMs?.let {
+            " · khung hình %+d ms".format(it)
+        } ?: " · khung hình —"
+        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s".format(
             delaySec, samplePart, sampleTimes60s.size, turnPairTimes60s.size,
-            speechSlices.size, lastHoldMs / 1000.0, vadPart, droppedPart
+            speechSlices.size, lastHoldMs / 1000.0, vadPart, droppedPart,
+            syncPart, pipePart, ratioPart, framePart
         )
     }
 
@@ -890,5 +1302,21 @@ class DubDelayTracker(
         deferredTooSmall = 0
         droppedTooLarge = 0
         emptyPairings = 0
+        // v1.0.17 — play-anchored state.
+        burstSeq = 0L
+        pendingBursts.clear()
+        pairingLog.clear()
+        pipelineEmaMs = null
+        lastPipelineMs = null
+        lastPipelineEstimated = false
+        lastSyncErrorMs = null
+        lastBurstPlayWallMs = null
+        lastPlaySliceSampleMs = null
+        playDriftMs = null
+        markerVideoTimes.clear()
+        burstVideoTimes.clear()
+        recentBurstMarkers.clear()
+        lastFrameResidualMs = null
+        latencyEma.setMarginMs(2000L)
     }
 }

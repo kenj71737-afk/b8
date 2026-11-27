@@ -168,6 +168,23 @@ class DubbingService : Service() {
          */
         const val TYPE_DIAG = "diag"
         /**
+         * v1.0.17 — frame check (report-only): the service asks the
+         * activity for the main video's currentTime at a marker wall
+         * or a burst play wall (TYPE_VIDEO_TIME_REQUEST, broadcast),
+         * and the activity answers with ACTION_VIDEO_TIME (an
+         * intent, not a DUB_EVENT broadcast). EXTRA_EVENT_WALL_MS
+         * is the wall time of the marker / burst play the video
+         * time belongs to; the service corrects the JS round trip
+         * back to that wall before handing it to the tracker.
+         */
+        const val TYPE_VIDEO_TIME_REQUEST = "video_time_request"
+        const val ACTION_VIDEO_TIME = "com.dublive.live.VIDEO_TIME"
+        const val EXTRA_VIDEO_TIME_SEC = "video_time_sec"
+        const val EXTRA_VIDEO_PAUSED = "video_paused"
+        const val EXTRA_VIDEO_PURPOSE = "video_purpose"
+        const val EXTRA_VIDEO_SEQ = "video_seq"
+        const val EXTRA_EVENT_WALL_MS = "event_wall_ms"
+        /**
          * v1.0.11 — audio route broadcast: which stream the dub voice
          * (and the delayed original audio) is currently on.
          * EXTRA_AUDIO_MODE is "media" | "call" | "mic"; EXTRA_MESSAGE
@@ -288,6 +305,9 @@ class DubbingService : Service() {
     /** When the first source audio of the session was sent to Live
      * (ALDA FIX32 first-audio seed). 0 = none yet. */
     @Volatile private var firstAudioSentAtMs = 0L
+    /** v1.0.17 — last burst seq noted to the VoicePlayer (the
+     * player measures that burst's real play start). */
+    private var lastNotedBurstSeq = 0L
 
     private var keyIndex = 0
     private var modelIndex = 0
@@ -563,6 +583,36 @@ class DubbingService : Service() {
                     applyDubStreamVolume(pct)
                     return START_NOT_STICKY
                 }
+                ACTION_VIDEO_TIME -> {
+                    // v1.0.17 — frame check reply from the activity:
+                    // the main video's currentTime at JS-run time.
+                    // Correct it back to the EVENT wall (the video
+                    // advanced during the JS round trip, unless it
+                    // was paused) and hand it to the tracker. A
+                    // negative time means "no video found".
+                    val timeSec = intent?.getDoubleExtra(EXTRA_VIDEO_TIME_SEC, -1.0) ?: -1.0
+                    val paused = intent?.getBooleanExtra(EXTRA_VIDEO_PAUSED, false) ?: false
+                    val purpose = intent?.getStringExtra(EXTRA_VIDEO_PURPOSE).orEmpty()
+                    val seq = intent?.getLongExtra(EXTRA_VIDEO_SEQ, 0L) ?: 0L
+                    val eventWall = intent?.getLongExtra(EXTRA_EVENT_WALL_MS, 0L) ?: 0L
+                    if (timeSec >= 0.0 && eventWall > 0L) {
+                        val replyWall = System.currentTimeMillis()
+                        val eventVideoSec = if (paused) {
+                            timeSec
+                        } else {
+                            timeSec - (replyWall - eventWall).coerceAtLeast(0L) / 1000.0
+                        }
+                        try {
+                            when (purpose) {
+                                "marker" -> tracker?.setMarkerVideoTime(seq, eventVideoSec)
+                                "burst" -> tracker?.onBurstVideoTime(seq, eventVideoSec)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "tracker video time failed", e)
+                        }
+                    }
+                    return START_NOT_STICKY
+                }
                 ACTION_ADJUST_DELAY -> {
                     // v1.0.7 — manual "Trễ −1s / +1s" nudge: shift the
                     // tracker's EMA at once (it broadcasts TYPE_HUD, so
@@ -797,6 +847,19 @@ class DubbingService : Service() {
                     AudioAttributes.USAGE_MEDIA
                 } else {
                     AudioAttributes.USAGE_VOICE_COMMUNICATION
+                },
+                // v1.0.17 — per-burst play reports (VoicePlayer
+                // thread): the tracker measures the playback
+                // pipeline + the closed-loop sync error from the
+                // real sound, and the frame check asks the activity
+                // for the video's currentTime at this play start.
+                onBurstPlayed = { seq, playWallMs, pipelineMs, estimated ->
+                    try {
+                        tracker?.onBurstPlayed(seq, playWallMs, pipelineMs, estimated)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "tracker burstPlayed failed", e)
+                    }
+                    requestVideoTime("burst", seq, playWallMs)
                 }
             ).also {
                 it.start()
@@ -852,6 +915,7 @@ class DubbingService : Service() {
         currentUtteranceStartMs = 0L
         lastUtteranceStartMs = 0L
         firstAudioSentAtMs = 0L
+        lastNotedBurstSeq = 0L
         delayEnabled = true
         captureIsStereo48k = false
         comboFailures.clear()
@@ -1040,6 +1104,20 @@ class DubbingService : Service() {
                         }
                         try { voicePlayer?.setVoiceHoldMs(holdMs) } catch (e: Exception) {
                             Log.w(TAG, "setVoiceHoldMs failed", e)
+                        }
+                        // v1.0.17 — a new burst started (the tracker
+                        // bumped its seq): note it to the VoicePlayer
+                        // BEFORE this first chunk is enqueued, so the
+                        // player thread measures this burst's real
+                        // play start (pipeline + closed-loop sync).
+                        try {
+                            val seq = tracker?.lastBurstSeq ?: 0L
+                            if (seq != 0L && seq != lastNotedBurstSeq) {
+                                lastNotedBurstSeq = seq
+                                voicePlayer?.noteBurstStart(seq, nowMs, holdMs)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "noteBurstStart failed", e)
                         }
                         try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
                             Log.w(TAG, "playAudio failed", e)
@@ -1564,9 +1642,17 @@ class DubbingService : Service() {
                     // The ALDA first-audio seed also starts its clock
                     // here: the first source audio of the session.
                     val now = System.currentTimeMillis()
-                    currentUtteranceStartMs = now
-                    lastUtteranceStartMs = now
-                    if (firstAudioSentAtMs == 0L) firstAudioSentAtMs = now
+                    // v1.0.17 — VAD DETECTION LAG: the speaker really
+                    // started ~180 ms BEFORE this trigger (the 160 ms
+                    // head that triggered the utterance + one 20 ms
+                    // frame hop). The marker wall and the utterance
+                    // stamps use the TRUE start; the head audio itself
+                    // still ends at `now` (its slice wall is a
+                    // capture time, not a recognition time).
+                    val utteranceWallMs = now - DubDelayTracker.VAD_DETECTION_LAG_MS
+                    currentUtteranceStartMs = utteranceWallMs
+                    lastUtteranceStartMs = utteranceWallMs
+                    if (firstAudioSentAtMs == 0L) firstAudioSentAtMs = utteranceWallMs
                     // v1.0.11 (hotfix) — the 160 ms head that triggered
                     // this utterance is sent to Live (below) but was
                     // NEVER counted as speech time: onSpeechMs is only
@@ -1589,9 +1675,21 @@ class DubbingService : Service() {
                     // audio position is the speech position at the
                     // turn start.
                     try {
-                        tracker?.onSpeechTurnStart(now)
+                        tracker?.onSpeechTurnStart(utteranceWallMs)
                     } catch (e: Exception) {
                         Log.w(TAG, "tracker turnStart failed", e)
+                    }
+                    // v1.0.17 — frame check: ask the activity for the
+                    // video's currentTime at this (true) turn start,
+                    // so the burst-play residual has a marker video
+                    // time to compare against.
+                    try {
+                        val markerSeq = tracker?.lastMarkerSeq ?: 0L
+                        if (markerSeq != 0L) {
+                            requestVideoTime("marker", markerSeq, utteranceWallMs)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "marker video time request failed", e)
                     }
                     try {
                         val headMs = minOf(160L, (preRollAndHead.size / 16).toLong())
@@ -2456,6 +2554,27 @@ class DubbingService : Service() {
         val buf = ByteBuffer.allocate(len * 2).order(ByteOrder.LITTLE_ENDIAN)
         for (i in 0 until len) buf.putShort(samples[i])
         return buf.array()
+    }
+
+    /**
+     * v1.0.17 — frame check: ask the activity for the main video's
+     * currentTime belonging to one event wall (a turn marker or a
+     * burst play). The activity answers with ACTION_VIDEO_TIME.
+     * No-op in mic mode (no WebView) and when not capturing; a
+     * missing reply simply leaves the frame residual blank.
+     */
+    private fun requestVideoTime(purpose: String, seq: Long, eventWallMs: Long) {
+        if (micOnly || !capturing) return
+        try {
+            val intent = Intent(ACTION_DUB_EVENT).setPackage(packageName)
+            intent.putExtra(EXTRA_TYPE, TYPE_VIDEO_TIME_REQUEST)
+            intent.putExtra(EXTRA_VIDEO_PURPOSE, purpose)
+            intent.putExtra(EXTRA_VIDEO_SEQ, seq)
+            intent.putExtra(EXTRA_EVENT_WALL_MS, eventWallMs)
+            sendBroadcast(intent)
+        } catch (e: Exception) {
+            Log.w(TAG, "video time request failed", e)
+        }
     }
 
     private fun broadcast(type: String, text: String? = null, delayMs: Long? = null,

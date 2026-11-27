@@ -87,8 +87,21 @@ class DelayedBackgroundPlayer(private val context: Context) {
     @Volatile private var muted: Boolean = false
 
     /** Playback delay in ms (0 = live). Read live by the playback
-     * loop, so a delay change takes effect immediately. */
-    @Volatile private var delayMs: Long = 0L
+     * loop, so a delay change takes effect immediately.
+     *
+     * v1.0.17 — the delay GLIDES to its target instead of jumping:
+     * the queue's due time is (arrival + delay), so a 1 s jump
+     * silences the original music for ~1 s (delay up) or drops up
+     * to 1 s of it (delay down, the 500 ms stale drop). The loop
+     * now steps the EFFECTIVE delay toward the target by at most
+     * 10 ms every 10 ms (slew rate 1x real time: a 1 s D change
+     * takes 1 s to settle, with gaps of at most one 10 ms step —
+     * essentially inaudible), instead of applying the jump at once.
+     * [setDelayMs] sets the target; [currentDelayMs] reports the
+     * effective (actually playing) value. */
+    @Volatile private var targetDelayMs: Long = 0L
+    private var effectiveDelayMs: Long = 0L
+    private var lastDelayStepAtMs: Long = 0L
 
     private val delayQueue = DelayedAudioQueue()
     /** Plain thread (not coroutines — this project has no
@@ -98,11 +111,11 @@ class DelayedBackgroundPlayer(private val context: Context) {
     @Volatile private var playbackRunning = false
 
     fun setDelayMs(ms: Long) {
-        delayMs = ms.coerceIn(0L, 25000L)
+        targetDelayMs = ms.coerceIn(0L, 25000L)
     }
 
     /** Current delay, for the duck ticker / status. */
-    fun currentDelayMs(): Long = delayMs
+    fun currentDelayMs(): Long = effectiveDelayMs
 
     // Scratch buffers, reused every chunk (capture delivers 100 ms chunks).
     private val shortIn = ShortArray(CHUNK_BYTES / 2)
@@ -185,7 +198,20 @@ class DelayedBackgroundPlayer(private val context: Context) {
                     }
                     continue
                 }
-                var block = delayQueue.pollDue(SystemClock.elapsedRealtime(), delayMs)
+                // v1.0.17 — glide the effective delay toward the
+                // target (at most 10 ms per 10 ms tick): a D jump
+                // must not silence/drop the original music.
+                val nowLoop = SystemClock.elapsedRealtime()
+                if (nowLoop - lastDelayStepAtMs >= 10L) {
+                    lastDelayStepAtMs = nowLoop
+                    val target = targetDelayMs
+                    if (effectiveDelayMs < target) {
+                        effectiveDelayMs = minOf(target, effectiveDelayMs + 10L)
+                    } else if (effectiveDelayMs > target) {
+                        effectiveDelayMs = maxOf(target, effectiveDelayMs - 10L)
+                    }
+                }
+                var block = delayQueue.pollDue(nowLoop, effectiveDelayMs)
                 while (block != null) {
                     try {
                         track.write(block, 0, block.size)
@@ -193,7 +219,7 @@ class DelayedBackgroundPlayer(private val context: Context) {
                         Log.w(TAG, "Background write failed", e)
                         break
                     }
-                    block = delayQueue.pollDue(SystemClock.elapsedRealtime(), delayMs)
+                    block = delayQueue.pollDue(SystemClock.elapsedRealtime(), effectiveDelayMs)
                 }
                 try {
                     Thread.sleep(5)

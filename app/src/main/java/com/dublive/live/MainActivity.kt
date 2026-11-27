@@ -381,6 +381,41 @@ class MainActivity : AppCompatActivity() {
                         diagView.text = msg
                     }
                 }
+                DubbingService.TYPE_VIDEO_TIME_REQUEST -> {
+                    // v1.0.17 — frame check: the service wants the
+                    // MAIN video's currentTime belonging to one event
+                    // wall (a turn marker or a burst play). Read it
+                    // from the page (TapJs best video, else the
+                    // largest visible video) and answer the service
+                    // with ACTION_VIDEO_TIME. The JS returns
+                    // "seconds|paused(0/1)"; "-1|0" means no video.
+                    val purpose = intent.getStringExtra(DubbingService.EXTRA_VIDEO_PURPOSE).orEmpty()
+                    val seq = intent.getLongExtra(DubbingService.EXTRA_VIDEO_SEQ, 0L)
+                    val eventWall = intent.getLongExtra(DubbingService.EXTRA_EVENT_WALL_MS, 0L)
+                    try {
+                        webView.evaluateJavascript(
+                            """(function(){var v=window.__dubLiveTapBest;if(!v||!document.contains(v)){var best=null,bs=-1;document.querySelectorAll('video').forEach(function(x){try{var r=x.getBoundingClientRect();if(r.width<100||r.height<60)return;if(x.readyState<2||!isFinite(x.duration)||x.duration<=0)return;var s=r.width*r.height;if(!x.paused&&!x.ended)s*=10;if(s>bs){bs=s;best=x;}}catch(e){}});v=best;}if(!v)return '-1|0';return v.currentTime+'|'+(v.paused?1:0);})()"""
+                        ) { value ->
+                            try {
+                                val raw = value?.trim()?.trim('"')?.replace("\\\"", "\"") ?: "-1|0"
+                                val parts = raw.split("|")
+                                val timeSec = parts.getOrNull(0)?.toDoubleOrNull() ?: -1.0
+                                val paused = parts.getOrNull(1) == "1"
+                                val reply = Intent(this@MainActivity, DubbingService::class.java).apply {
+                                    action = DubbingService.ACTION_VIDEO_TIME
+                                    putExtra(DubbingService.EXTRA_VIDEO_TIME_SEC, timeSec)
+                                    putExtra(DubbingService.EXTRA_VIDEO_PAUSED, paused)
+                                    putExtra(DubbingService.EXTRA_VIDEO_PURPOSE, purpose)
+                                    putExtra(DubbingService.EXTRA_VIDEO_SEQ, seq)
+                                    putExtra(DubbingService.EXTRA_EVENT_WALL_MS, eventWall)
+                                }
+                                startService(reply)
+                            } catch (_: Exception) {
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
                 DubbingService.TYPE_STATE -> {
                     val state = intent.getStringExtra(DubbingService.EXTRA_STATE)
                     if (state == DubbingService.STATE_RUNNING) {

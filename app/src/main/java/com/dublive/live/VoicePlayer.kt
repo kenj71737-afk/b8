@@ -4,9 +4,11 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.media.audiofx.LoudnessEnhancer
 import android.os.Bundle
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -46,13 +48,44 @@ import kotlin.math.roundToInt
  * subtitle still shows when the voice STARTS PLAYING (the
  * onSpeechStarted callback fires when the first chunk is TAKEN from
  * the queue, i.e. after its hold), not when the chunk arrives.
+ *
+ * v1.0.17 — PLAY-START MEASUREMENT (the old delay was anchored on
+ * ARRIVAL, not on sound). A chunk taken from the hold queue is
+ * written to the AudioTrack, but it only SOUNDS once the hardware
+ * drains the frames already queued ahead of it — the pipeline
+ * (buffer backlog + hardware latency, typically 100–300 ms). The
+ * old measurement assumed that pipeline was 0 and hid it inside a
+ * fixed 2000 ms margin; the voice therefore always played
+ * (pipeline) late against the picture, and no D could fix it
+ * (the hold moves the voice by exactly as much as D moves the
+ * picture). Now every burst's first chunk is measured: the service
+ * calls [noteBurstStart] before the burst's first [playAudio], and
+ * the player thread reports the real play start through
+ * [onBurstPlayed] (burst seq, wall time the first frame sounded,
+ * pipeline = play − due, estimated flag). Measurement uses
+ * AudioTrack.getTimestamp(): at write time it predicts when the
+ * chunk's first frame will render, then the thread polls the
+ * playhead every loop tick until the frame position passes that
+ * frame and reports the observed wall time (accurate to the ~5 ms
+ * poll). If getTimestamp is unavailable (some OEM builds), the
+ * fallback is due + queued audio + 30 ms hardware estimate, flagged
+ * estimated=true so the diagnostics do not present it as measured.
+ * TTS turns are not measured (no AudioTrack PCM for them) — the
+ * tracker keeps its last pipeline value for those turns.
  */
 class VoicePlayer(
     context: Context,
     private val onSpeechStarted: () -> Unit,
     private val onTtsStarted: () -> Unit = {},
     /** v1.0.11 — output stream for this session (see class doc). */
-    initialUsage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION
+    initialUsage: Int = AudioAttributes.USAGE_VOICE_COMMUNICATION,
+    /**
+     * v1.0.17 — per-burst play report: (burst seq, wall time the
+     * burst's first frame actually sounded, pipeline ms =
+     * play − (arrival + hold), true when the value is the
+     * queue-based fallback instead of a getTimestamp measurement).
+     */
+    private val onBurstPlayed: (Long, Long, Long, Boolean) -> Unit = { _, _, _, _ -> }
 ) {
     companion object {
         private const val TAG = "DubLive-Voice"
@@ -141,6 +174,45 @@ class VoicePlayer(
      * the original sound again.
      */
     @Volatile private var lastDubAudioAtMs = 0L
+
+    // ---- v1.0.17 — per-burst play measurement ----
+    /**
+     * The service calls [noteBurstStart] before the burst's first
+     * [playAudio]; the note is attached to the next chunk enqueued
+     * (chunks are FIFO, so the burst's first chunk is identified by
+     * its enqueue index). The player thread confirms the play start
+     * by polling the AudioTrack playhead until the chunk's first
+     * frame has rendered. All three structures are touched from the
+     * Live thread (note/playAudio) and the player thread (take/
+     * confirm) — guarded by [measureLock].
+     */
+    private val measureLock = Any()
+    private data class BurstStartInfo(
+        val seq: Long,
+        val arrivalWallMs: Long,
+        val holdMs: Long,
+        val chunkIndex: Long
+    )
+    private data class PendingConfirm(
+        val seq: Long,
+        val dueWallMs: Long,
+        val firstFrame: Long,
+        val queuedAtWallMs: Long,
+        val predictedPlayWallMs: Long?,
+        val predictedEstimated: Boolean
+    )
+    private var chunksAdded = 0L
+    private var chunksTaken = 0L
+    private var totalFramesWritten = 0L
+    private var pendingBurstNote: BurstStartInfo? = null
+    private val burstStartQueue = ArrayDeque<BurstStartInfo>()
+    private var pendingConfirm: PendingConfirm? = null
+    /** A playhead confirmation not seen within this long falls back
+     * to the timestamp prediction made at write time. */
+    private val CONFIRM_TIMEOUT_MS = 2000L
+    /** Hardware latency assumed by the fallback estimate (no
+     * getTimestamp available). */
+    private val FALLBACK_HW_MS = 30L
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -269,11 +341,10 @@ class VoicePlayer(
         playerThread = Thread({
             while (running) {
                 try {
-                    // v1.0.9 — poll the hold queue instead of blocking
-                    // on take(): a chunk is only written once its hold
-                    // has elapsed. pollDue(now, 0): the 0 is ignored
-                    // for fixed-hold blocks (their due time was stored
-                    // at enqueue time).
+                    // v1.0.17 — even with no chunk due, poll the
+                    // playhead: a burst-start confirmation may be
+                    // waiting for its first frame to render.
+                    confirmPlayStart()
                     val chunk = holdQueue.pollDue(System.currentTimeMillis(), 0L)
                     if (chunk == null) {
                         try {
@@ -288,12 +359,138 @@ class VoicePlayer(
                         speechStartedSignalled = true
                         try { onSpeechStarted() } catch (_: Exception) { }
                     }
-                    try { audioTrack?.write(chunk, 0, chunk.size) } catch (_: Exception) { }
+                    // v1.0.17 — is this chunk a burst's first one?
+                    // Its enqueue index matches the burst-start note
+                    // the service attached before playAudio().
+                    val chunkIndex = synchronized(measureLock) {
+                        val idx = chunksTaken
+                        chunksTaken++
+                        idx
+                    }
+                    val burstStart = synchronized(measureLock) {
+                        // Drop notes for chunks that never arrived
+                        // (e.g. a burst noted but never played).
+                        while (burstStartQueue.isNotEmpty() &&
+                            burstStartQueue.first().chunkIndex < chunkIndex
+                        ) {
+                            burstStartQueue.removeFirst()
+                        }
+                        if (burstStartQueue.isNotEmpty() &&
+                            burstStartQueue.first().chunkIndex == chunkIndex
+                        ) {
+                            burstStartQueue.removeFirst()
+                        } else {
+                            null
+                        }
+                    }
+                    val track = audioTrack
+                    val firstFrame = totalFramesWritten
+                    try { track?.write(chunk, 0, chunk.size) } catch (_: Exception) { }
+                    totalFramesWritten += (chunk.size / 2).toLong()
+                    if (burstStart != null && track != null) {
+                        beginPlayMeasurement(burstStart, firstFrame)
+                    }
                 } catch (_: InterruptedException) {
                     break
                 }
             }
         }, "DubLive-AudioOut").apply { start() }
+    }
+
+    /**
+     * v1.0.17 — the AudioTrack playhead, as (framePosition,
+     * wall time the timestamp was taken). AudioTimestamp.nanoTime
+     * shares the CLOCK_MONOTONIC base with elapsedRealtimeNanos,
+     * so the wall time is currentTimeMillis shifted by the
+     * nanoTime/elapsedRealtime offset. Null when the track cannot
+     * report (not playing yet, OEM build without the path).
+     */
+    private fun readPlayhead(): Pair<Long, Long>? {
+        val track = audioTrack ?: return null
+        return try {
+            val ts = AudioTimestamp()
+            if (!track.getTimestamp(ts)) return null
+            if (ts.framePosition < 0L) return null
+            val wallNow = System.currentTimeMillis()
+            val tsWall = wallNow +
+                (ts.nanoTime - SystemClock.elapsedRealtimeNanos()) / 1_000_000L
+            ts.framePosition to tsWall
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * v1.0.17 — a burst's first chunk was just written: its first
+     * frame is [firstFrame] in the track's frame stream and it was
+     * due at (arrival + hold). Predict when it will sound from the
+     * playhead now, then confirm by polling: the prediction is
+     * exact only if the playhead keeps advancing at real-time rate.
+     * When getTimestamp is unavailable, the fallback predicts
+     * due + audio already queued ahead + 30 ms hardware.
+     */
+    private fun beginPlayMeasurement(start: BurstStartInfo, firstFrame: Long) {
+        val dueWall = start.arrivalWallMs + start.holdMs
+        val (predicted, estimated) = try {
+            val head = readPlayhead()
+            if (head == null) {
+                // No timestamp on this device: no way to know the
+                // backlog ahead of this chunk. The honest estimate
+                // is due + hardware latency (a burst start usually
+                // follows an idle track, so the backlog is ~0);
+                // flagged estimated so the diagnostics say so.
+                (dueWall + FALLBACK_HW_MS) to true
+            } else {
+                val (pos, tsWall) = head
+                if (firstFrame <= pos) {
+                    // Already rendering (underrun / tiny backlog).
+                    tsWall to false
+                } else {
+                    tsWall + ((firstFrame - pos) * 1000L) / 24000L to false
+                }
+            }
+        } catch (_: Exception) {
+            (dueWall + FALLBACK_HW_MS) to true
+        }
+        synchronized(measureLock) {
+            pendingConfirm = PendingConfirm(
+                seq = start.seq,
+                dueWallMs = dueWall,
+                firstFrame = firstFrame,
+                queuedAtWallMs = System.currentTimeMillis(),
+                predictedPlayWallMs = predicted,
+                predictedEstimated = estimated
+            )
+        }
+    }
+
+    /**
+     * v1.0.17 — called every player-loop tick: if a burst-start
+     * confirmation is pending, check whether its first frame has
+     * rendered yet. On confirmation report the OBSERVED wall time
+     * (accurate to the ~5 ms poll); on timeout report the
+     * prediction made at write time, flagged estimated.
+     */
+    private fun confirmPlayStart() {
+        val confirm = synchronized(measureLock) { pendingConfirm } ?: return
+        val nowWall = System.currentTimeMillis()
+        val head = try { readPlayhead() } catch (_: Exception) { null }
+        if (head != null && head.first >= confirm.firstFrame) {
+            synchronized(measureLock) {
+                if (pendingConfirm === confirm) pendingConfirm = null
+            }
+            val pipeline = (nowWall - confirm.dueWallMs).coerceAtLeast(0L)
+            try { onBurstPlayed(confirm.seq, nowWall, pipeline, false) } catch (_: Exception) { }
+            return
+        }
+        if (nowWall - confirm.queuedAtWallMs >= CONFIRM_TIMEOUT_MS) {
+            synchronized(measureLock) {
+                if (pendingConfirm === confirm) pendingConfirm = null
+            }
+            val playWall = confirm.predictedPlayWallMs ?: nowWall
+            val pipeline = (playWall - confirm.dueWallMs).coerceAtLeast(0L)
+            try { onBurstPlayed(confirm.seq, playWall, pipeline, true) } catch (_: Exception) { }
+        }
     }
 
     /** Stop the track + thread, keep the hold queue (mode switch). */
@@ -302,6 +499,15 @@ class VoicePlayer(
         playerThread?.interrupt()
         try { playerThread?.join(500) } catch (_: Exception) { }
         playerThread = null
+        // v1.0.17 — a rebuilt track starts a new frame stream: any
+        // pending play measurement refers to the dead track's frames
+        // and must not report against the new one.
+        synchronized(measureLock) {
+            pendingConfirm = null
+            pendingBurstNote = null
+            burstStartQueue.clear()
+            totalFramesWritten = 0L
+        }
         try { loudnessEnhancer?.release() } catch (_: Exception) { }
         loudnessEnhancer = null
         try { audioTrack?.stop() } catch (_: Exception) { }
@@ -350,9 +556,40 @@ class VoicePlayer(
     }
 
     /** Queue Gemini Live PCM (24 kHz, mono, 16-bit) behind the
-     * current burst hold — it plays at arrival + hold, not at once. */
+     * current burst hold — it plays at arrival + hold, not at once.
+     * v1.0.17 — if the service noted a burst start before this
+     * chunk, the note attaches to it (its enqueue index): the
+     * player thread will measure this chunk's real play start. */
     fun playAudio(pcm24k: ByteArray) {
-        if (running) holdQueue.add(System.currentTimeMillis(), pcm24k, currentHoldMs)
+        if (!running) return
+        synchronized(measureLock) {
+            pendingBurstNote?.let { note ->
+                burstStartQueue.addLast(
+                    note.copy(chunkIndex = chunksAdded)
+                )
+                pendingBurstNote = null
+            }
+            chunksAdded++
+        }
+        holdQueue.add(System.currentTimeMillis(), pcm24k, currentHoldMs)
+    }
+
+    /**
+     * v1.0.17 — the service calls this BEFORE the first [playAudio]
+     * of a burst (burst seq from the tracker, arrival wall + the
+     * hold this burst was given). The next chunk enqueued carries
+     * the note; the player thread measures when that chunk's first
+     * frame actually sounds and reports it via [onBurstPlayed].
+     */
+    fun noteBurstStart(seq: Long, arrivalWallMs: Long, holdMs: Long) {
+        synchronized(measureLock) {
+            pendingBurstNote = BurstStartInfo(
+                seq = seq,
+                arrivalWallMs = arrivalWallMs,
+                holdMs = holdMs,
+                chunkIndex = -1L
+            )
+        }
     }
 
     /**

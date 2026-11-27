@@ -327,7 +327,13 @@ object TapJs {
     window.DubLiveTapDelaySec = n;
     window.__dubLiveTapStates.forEach(function (s) {
       if (s.failed || s.blocked) return;
-      try { s.delay.delayTime.setTargetAtTime(n, s.ctx.currentTime, 0.025); } catch (e) {}
+      // v1.0.17 — D must GLIDE, not jump: a DelayNode delayTime
+      // change retimes the audio already in flight, so a 1 s jump
+      // is a 1 s skip/repeat of the original music. setTargetAtTime
+      // with tau 0.3 s settles in ~1 s (95% in 3*tau) — the music
+      // stretches almost inaudibly instead of jumping. (The old
+      // tau 0.025 s settled in ~100 ms: effectively a jump.)
+      try { s.delay.delayTime.setTargetAtTime(n, s.ctx.currentTime, 0.3); } catch (e) {}
     });
   };
   window.DubLiveTapSetDuck = function (vol) {

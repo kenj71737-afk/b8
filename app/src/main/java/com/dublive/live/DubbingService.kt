@@ -308,6 +308,11 @@ class DubbingService : Service() {
     /** v1.0.17 — last burst seq noted to the VoicePlayer (the
      * player measures that burst's real play start). */
     private var lastNotedBurstSeq = 0L
+    /** v1.0.21 (21b) — true once any output-transcription fragment
+     * has ever arrived. While false, the model-turn text groups
+     * are used as the tx-out signal instead (the fallback when
+     * the server never sends output transcription). */
+    @Volatile private var txOutSeen = false
 
     private var keyIndex = 0
     private var modelIndex = 0
@@ -998,6 +1003,10 @@ class DubbingService : Service() {
         // start block).
         audioPlayedThisTurn = false
         lastNotedBurstSeq = 0L
+        // v1.0.21 (21b) — a fresh session has seen no output
+        // transcription yet, so the model-turn text fallback is
+        // armed until the first real one arrives.
+        txOutSeen = false
         delayEnabled = true
         captureIsStereo48k = false
         comboFailures.clear()
@@ -1211,6 +1220,47 @@ class DubbingService : Service() {
                         lastOutputAtMs = System.currentTimeMillis()
                         pendingText.append(text)
                         showSubtitle(pendingText.toString())
+                        // v1.0.21 (21b) — FALLBACK tx-out: when the
+                        // server never sends output transcription,
+                        // the model-turn text groups stand in for
+                        // it (the tx anchor fires on the first text
+                        // fragment of a burst; the tracker guards
+                        // against applying twice to one burst).
+                        // Once real output transcription has been
+                        // seen, this path stays off so a burst is
+                        // never anchored twice from two sources.
+                        if (!txOutSeen) {
+                            try {
+                                val seq = tracker?.lastBurstSeq ?: 0L
+                                if (seq != 0L) {
+                                    val nowMs = System.currentTimeMillis()
+                                    tracker?.noteTxOutFragment(seq, nowMs)
+                                    tracker?.applyTxAnchor(nowMs, seq)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "tx anchor (text fallback) failed", e)
+                            }
+                        }
+                    }
+
+                    override fun onOutputTranscription(text: String) {
+                        if (!isCurrent()) return
+                        // v1.0.21 (21b) — a translated sentence for
+                        // the current burst: the tx anchor applies
+                        // post-hoc (the burst is confirmed to be a
+                        // real translation). The tracker dedups
+                        // (one application per burst).
+                        txOutSeen = true
+                        try {
+                            val seq = tracker?.lastBurstSeq ?: 0L
+                            if (seq != 0L) {
+                                val nowMs = System.currentTimeMillis()
+                                tracker?.noteTxOutFragment(seq, nowMs)
+                                tracker?.applyTxAnchor(nowMs, seq)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "tx anchor failed", e)
+                        }
                     }
 
                     override fun onTurnComplete() {
@@ -1272,6 +1322,16 @@ class DubbingService : Service() {
                     override fun onInputText(text: String) {
                         if (!isCurrent()) return
                         Log.i(TAG, "Heard (source): $text")
+                        // v1.0.21 (21b) — an input-transcription
+                        // fragment arrived during a line: the
+                        // tracker groups it into a tx sentence
+                        // (for the tx anchor's line-start estimate)
+                        // and calibrates the asrLag from it.
+                        try {
+                            tracker?.noteTxInFragment(System.currentTimeMillis())
+                        } catch (e: Exception) {
+                            Log.w(TAG, "tx in-fragment failed", e)
+                        }
                     }
 
                     override fun onError(message: String) {
@@ -1860,6 +1920,22 @@ class DubbingService : Service() {
                         tracker?.onSpeechTurnEnd()
                     } catch (e: Exception) {
                         Log.w(TAG, "tracker turnEnd failed", e)
+                    }
+                    // v1.0.21 (21b) — finalize this VAD turn's tx
+                    // source record (its fragments streamed during
+                    // the turn; the tracker keys it by the turn
+                    // onSpeechTurnEnd just completed). Guarded on
+                    // a turn actually being open, so a stray end
+                    // cannot overwrite the previous turn's entry.
+                    if (currentUtteranceStartMs != 0L) {
+                        try {
+                            tracker?.noteTxSource(
+                                lastUtteranceStartMs,
+                                System.currentTimeMillis()
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "tracker tx source failed", e)
+                        }
                     }
                     // v1.0.9 — this sentence ended. The Live stream is
                     // NOT cut here (endTurn below only tells the model
@@ -2719,7 +2795,15 @@ class DubbingService : Service() {
             sample.turns - first.turns,
             sample.fedMs - first.fedMs,
             sample.gateRejects - first.gateRejects
-        )
+        ) + try {
+            // v1.0.21 (21d) — dubbed-voice chunks dropped by the
+            // hold queue this session (overdue >700 ms, or evicted
+            // past the cap).
+            val dropped = voicePlayer?.droppedChunks ?: 0
+            " · bỏ chunk giọng %d".format(dropped)
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     /** v1.0.5 — RMS of one PCM chunk, for the noise gate in onSpeechChunk. */

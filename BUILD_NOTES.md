@@ -1,3 +1,423 @@
+# DubLive v1.0.21 — NEO BẰNG TRANSCRIPTION AI + SỬA TẬN GỐC KHAN HIẾM MARKER (28/11/2026, ĐANG LÀM — chưa build)
+
+Thử v1.0.20 trên máy thật cho 3 ảnh chẩn đoán (28/11 07:07, 07:32,
+07:35). Giọng liên tục ĐÃ sửa được (triệu chứng số 1 xong) nhưng môi
+vẫn chưa khớp, và phép đo vẫn thưa — lần thứ 4 liên tiếp sim hứa mà
+máy không đạt. Bản này sửa tận gốc sự khan hiếm marker + triển khai
+neo bằng transcription AI (không còn là phương án dự phòng), mô phỏng
+với thế giới đã hiệu chuẩn lại theo máy thật (phiên 10 phút), rồi
+build + giao. GIỮ NGUYÊN toàn bộ còn lại của v1.0.20. KHÔNG mang lại
+share target v1.0.15, KHÔNG mang lại sửa probe/watchdog v1.0.16.
+
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.21.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.21.apk`) — CHƯA CÓ,
+  đang cài đặt Kotlin, sẽ điền run/commit/MD5 sau khi build xong.
+- versionCode 22, versionName 1.0.21 (bump từ 21 / 1.0.20).
+
+## Kết quả thử v1.0.20 trên máy — 3 ảnh (ghi nguyên văn)
+
+**Ảnh 1 — 07:07, cuối video** (18dj.tv, tập 3/3 tập, video đã chạy
+hết 05:49/05:49, đang tạm dừng ở cuối, pin 17% đang sạc; user không
+kèm chữ): "— Chẩn đoán trễ — D 3,1 s · mẫu cuối 0,8 s (7 s trước) ·
+5 mẫu/60 s · cặp mốc 1/60 s · chờ 0 lát · hold 1,0 s · VAD: nghỉ ·
+bỏ 16 lát/97 mẫu (nhỏ 55 hoãn/lớn 97) · lệch hình +101 ms · phát
+~340 ms (TB 363 ms, chờ 387 ms) · giọng/gốc 1,36× · khung hình
++97 ms · burst 75 ok 28 no-mk 28 cons 19 fb 10 · tách 4 · mốc 2
+(mới nhất 10214 ms trước) · tách thử 85/được 0 · stall 4 · tốc độ
+1,25× · lượt VAD 2/60 s · lời nói 33300 ms/60 s · gate loại 538
+khung/60 s". Log Live: "Chưa có lỗi Live nào" (0 lỗi). HUD sau hộp
+thoại: "…cặp mốc 1/60 s · chờ 0 lát · hold 1,0 s · VAD:…".
+
+**Ảnh 2 — 07:32, giữa phiên dài, PHIÊN MỚI XEM LÂU** (user nhắn
+"Đoạn mới mở lồng tiếng xem lâu nè"; video khác, ô địa chỉ
+"A%B9-2119723093739507714", phụ đề Việt "Cái con búp bê đó, là con
+búp bê đầu tiên cô ấy gặp được…", VAD: đang nói, giữa lúc phát):
+"D 8,0 s · mẫu cuối 1,6 s (0 s trước) · 43 mẫu/60 s · cặp mốc 2/60 s
+· chờ 1 lát · hold 0,5 s · VAD: đang nói · bỏ 40 lát/97 mẫu (nhỏ 74
+hoãn/lớn 97) · lệch hình +930 ms · phát ~372 ms (TB 373 ms, chờ
+427 ms) · giọng/gốc 1,37× · khung hình +1086 ms · burst 258 ok 69
+no-mk 132 cons 57 fb 38 · tách 8 · mốc 12 (mới nhất 2138 ms trước)
+· tách thử 200/được 8 · stall 16 · tốc độ 1,25× · lượt VAD 11/60 s
+· lời nói 37760 ms/60 s · gate loại 662 khung/60 s". HUD sau hộp
+thoại: "s · cặp mốc 0/60 s · chờ 0 lát · hold 0,2 s · VAD:…".
+
+**Ảnh 3 — 07:35, PHIÊN MỚI VỪA KHỞI ĐỘNG LẠI** (user nhắn "Mới tắt
+lồng tiếng lại"; cùng video với ảnh 07:32, cảnh khác, phụ đề "Cô ơi,
+ngày mai chuyển nhượng cổ phần của guitar lại…", VAD: đang nói):
+"D 5,3 s · mẫu cuối 4,6 s (0 s trước) · 89 mẫu/60 s · cặp mốc 0/60 s
+· chờ 0 lát · hold 0,8 s · VAD: đang nói · bỏ 0 lát/0 mẫu (nhỏ 8
+hoãn/lớn 0) · lệch hình — · phát ~387 ms (TB 356 ms, chờ 440 ms) ·
+giọng/gốc 1,11× · khung hình — · burst 2 ok 0 no-mk 2 · mốc 2 (mới
+nhất 11396 ms trước) · tách thử 1/được 0 · stall 0 · tốc độ 1,25× ·
+lượt VAD 2/60 s · lời nói 49120 ms/60 s · gate loại 123 khung/60 s".
+HUD sau hộp thoại: "60 s · cặp mốc 0/60 s · chờ 0 lát · hold 0,8 s
+· …".
+
+## Phán quyết của user + đọc số
+
+- User 07:11: **"Giọng hết đứng hình, môi chưa khớp giọng"** —
+  GIỌNG LIÊN TỤC ĐÃ SỬA ĐƯỢC (triệu chứng số 1 xong), nhưng MÔI VẪN
+  CHƯA KHỚP.
+- User 07:13 (trả lời câu hỏi hướng lệch): **"Chậm hơn môi, tùy
+  thời điểm lệnh khoảng vài s"** (đọc "lệnh" là "lệch") — GIỌNG
+  CHẬM HƠN MÔI, lệch khoảng VÀI GIÂY, THAY ĐỔI THEO THỜI ĐIỂM.
+  Đây là đáp án phân biệt: KHÔNG phải lệch cố định (không bù
+  offset là xong) mà là TRÔI DẦN — lỗi lớn dần/thay đổi trong lúc
+  xem, tới vài giây.
+- Mâu thuẫn +101 ms cuối phiên (ảnh 07:07) vs user thấy môi lệch:
+  ảnh chụp ở CUỐI video, hàng đợi đã xả hết nên số cuối nhỏ; giữa
+  phiên (ảnh 07:32) lệch hình +930 ms / khung hình +1086 ms —
+  gấp ~10 lần. Số cuối phiên che lỗi giữa phiên. Số đo giữa phiên
+  ~1 s vẫn có thể đánh giá thấp vì neo theo D đã ghim trần.
+- Ảnh 07:32 xác nhận trôi dần bằng số đo giữa phiên: D = 8,0 s —
+  GHIM TRẦN TRỞ LẠI giữa phiên (D 3,1 s ở ảnh 07:07 chỉ vì video
+  đã hết); bỏ lát 40/97 mẫu (~41%, trước 16%) mà giọng vẫn chậm
+  vài giây — bỏ lát kiểu hiện tại KHÔNG đủ giữ đồng bộ; burst 258
+  thì ok chỉ 69 (27%), no-mk 132 (51%!), cons 57 (22%), fb 38
+  (15%); tách thử 200 chỉ được 8 (4%).
+- Ảnh 07:35 là bằng chứng SẠCH NHẤT cho lỗi ghép cặp: MẪU CHẢY
+  TỐT (89 mẫu/60 s, mẫu cuối 4,6 s mới 0 s trước) NHƯNG CẶP = 0
+  (cặp mốc 0/60 s, lệch hình/khung hình "—"). Lần đầu tiên tách
+  bạch được hai thứ: mẫu (slice pairing) chảy được, còn ghép cặp
+  ranh giới (turn/burst pairing) thì chết hẳn. Nguyên nhân trơ
+  trẽn: lượt VAD chỉ 2/60 s mà lời nói tới 49120 ms/60 s — mỗi
+  lượt dài ~24,5 s; marker chỉ có 2, mới nhất đã 11,4 s trước;
+  burst mới khởi động lại được 2 cái thì cả 2 đều no-mk.
+- D = 5,3 s NGAY TỪ ĐẦU PHIÊN MỚI (ảnh 07:35), mẫu cuối 4,6 s:
+  độ trễ nền đã ~5 s ngay khi vừa bật lại (không phải tích lũy
+  dần). Lag nền ~4,6 s này là thật (vòng Gemini Live + TTS +
+  phát) — D ~5 s là đúng nền, phần vượt lên 8 s giữa phiên mới
+  là backlog. (Xem mục seed bên dưới: seed đo từ lần gửi tiếng
+  đầu có thể phồng nếu tiếng gửi đầu là nhạc trước câu đầu.)
+
+## Tiến bộ đã xác nhận trên máy v1.0.20 (ghi nhận, đừng phá)
+
+- D = 3,1 s cuối phiên — RỜI TRẦN 8 s (sim hứa 3,7–4,5 s).
+  Mẫu cuối 0,8 s, mới 7 s trước — tracker còn sống.
+- lệch hình +101 ms, khung hình +97 ms cuối phiên — SỐ THẬT, NHỎ
+  (mục tiêu |.| < 500 ms), số rác -37,5 giờ đã hết. Hai số nhất
+  quán nhau.
+- phát TB 363 ms (ổn định, gần 355 ms của v1.0.19); giọng/gốc
+  1,36× (hết kẹp 2,00×, gần thật ~1,51×); stall 4 (từ 159);
+  burst 75 cả phiên (từ 5) — giọng đang chảy; stretch 1,25× vẫn
+  ăn; hold 1,0 s.
+- Giữa phiên (07:32): mẫu chảy được (43 mẫu/60 s, mẫu cuối 1,6 s
+  mới 0 s trước) — tracker ĐO ĐƯỢC giữa phiên, chỉ cặp mốc vẫn
+  chỉ 2/60 s.
+
+## Vấn đề còn lại — phép đo vẫn thưa (lần 4 liên tiếp sim hứa mà máy không đạt)
+
+- 5 mẫu/60 s, 1 cặp mốc/60 s (07:07) — sim1020 hứa 136–153 mẫu
+  và 9–11 cặp. Tracker vẫn không đo được dù giọng đang chảy.
+- Lượt VAD chỉ 2/60 s mà lời nói tới 33300 ms/60 s — mỗi lượt
+  dài ~16,5 s, VAD vẫn gộp mọi thứ thành lượt khổng lồ. Tách thử
+  85 lần chỉ được 4 — cơ chế tách gần như không chạy.
+- Marker khan hiếm: chỉ 2 mốc, mới nhất đã 10,2 s trước — nên
+  burst 75 thì ok 28, no-mk 28 (37%), cons 19 (25%), fb 10 (13%):
+  63% burst bị loại.
+- Bỏ 16 lát/97 mẫu (~16%, sim hứa 0%); gate loại 538 khung/60 s.
+
+## Điều tra tận gốc (đọc code + sim, không đoán)
+
+**Khung hình user nhìn có trễ đúng D không? (câu hỏi từ mâu thuẫn
++101 ms)** — ĐÃ KIỂM CHỨNG BẰNG CODE (`DelayJs.kt`): canvas vẽ
+snapshot ở thời điểm now−D (snapshot mỗi ≥30 ms, vẽ theo rAF),
+nên khung hình đang hiện trễ D tới D+~50 ms theo thời gian thực;
+theo thời gian video thì trễ đúng D khi video chạy 1,0× không
+khựng. Số "khung hình" +97 ms (07:07) xác nhận thực nghiệm.
+KẾT LUẬN: phía HÌNH đúng — lệch là phía GIỌNG, không phải do
+canvas/presentation latency hay video đệm thêm. "lệch hình" chỉ đo
+sai số ở ranh giới burst (lúc bắt đầu burst), KHÔNG thấy độ trôi
+TRONG burst (playDriftMs đã tính trong `onBurstPlayed` nhưng không
+hiện) — vì vậy bản này thêm chẩn đoán max/p90 lệch hình + trễ cuối
+burst (xem (21d)).
+
+**Vì sao tách thất bại 81/85 lần — tách CHẾT DO CẤU TẠO trong
+v1.0.20:** `SPLIT_SILENCE_MS` = 300 ms, nhưng luật kết thúc lượt
+VAD (có gate) cũng kết thúc lượt sau 15 khung không-giống-thoại
+dưới START = 300 ms; khoảng lặng ≥300 ms trong lượt sẽ kết thúc
+luôn lượt trước khi tách kịp chạy. Tách chỉ chạy được nhờ hiccup
+đồng hồ của luồng feed. 85 lần thử phần lớn là đầu lượt mới:
+`onSpeechMs` kiểm tra tách TRƯỚC khi cộng ms của chunk hiện tại
+vào marker mới (countedMs==0), mà mỗi lần bắt đầu lượt đều theo
+sau một khoảng ≥300 ms — nên mỗi lần bắt đầu lượt lãng phí 1 lần
+thử. 4 lần tách thành công là các khoảng lặng hiếm giữa lượt.
+Nhạc nền lấp khoảng lặng cũng góp phần (cổng feed trả END 240 —
+nhạc RMS 300–800 vẫn đi qua thành "lời nói"), nhưng nguyên nhân
+CHÍNH là luật kết thúc lượt 300 ms nuốt mất khoảng lặng trước.
+Sửa (21c): chỉ đếm lần thử khi countedMs>0 (khi đó số lần thử ==
+số lần tách theo cấu tạo; chẩn đoán thành thật: bộ tách gần như
+không thấy khoảng lặng trong lượt vì lượt kết thúc trước).
+
+**Cơ chế trôi neo (anchor drift):** tc không bao giờ tới (tcRecv=0)
+nên neo chỉ dựa vào burst; burst chấp nhận thưa (28/75); neo
+trôi theo tỉ lệ giữa các lần chấp nhận; sai số tỉ lệ ~5–10% làm
+neo trôi; lựa chọn theo neo đã trôi hoặc không tìm được marker
+(no-mk) hoặc chọn NHẦM marker kề, rồi D-check bắt lại (cons 19).
+
+**Burst giữa lượt:** burst của dòng 2/3/4 trong một lượt 16–24 s
+có lat = lag thật + offset trong lượt (tới ~10–20 s) so với marker
+ĐẦU lượt — D-check (|lat − dBased| ≤ 1500) loại nó thành cons.
+Đây là vì sao ảnh 07:35 có burst 2, cả 2 đều no-mk: burst là của
+dòng giữa lượt, marker duy nhất là đầu lượt cách ~24 s, cửa sổ
+seed (3000 ms) không với tới dòng giữa lượt. Chỉ marker mức DÒNG
+mới sửa được — đó chính là neo transcription.
+
+**Vòng lặp phản hồi của D (tìm thấy ở sim run4):** lựa chọn/chuẩn
+theo D (D nuôi chính các mẫu tạo ra nó). Khi D sập về sàn 3000,
+mục tiêu trượt ~2,5 s muộn, lựa chọn lấy dòng SAU, mẫu trả về nhỏ
+hơn ~2,4 s, D sập thêm (run4: boundary err median −2358 ms, D
+ghim sàn 3000 cả 60 s cuối). Hình ảnh đối xứng trên máy là D ghim
+ở 8000 do mẫu giữa lượt phồng (07:32: D 8,0 s, 97 mẫu bị bỏ vì
+quá lớn). Sửa (21f): lag dùng để chọn/kiểm tra PHẢI ĐỘC LẬP VỚI D.
+
+**Nhạc nền làm phồng độ dài giọng (sim run3):** luồng fed trong
+một lượt VAD khổng lồ gồm cả khoảng lặng có nhạc nền giữa các dòng
+(gửi 134% thời lượng thoại thật), nên dub_dur = fed × 1,51 thổi
+phồng output của model ~34% và hàng đợi serial của model tích
+~1,4 s backlog (lag thật 6,0 s vs lag0 4,6 s). Model chỉ dịch
+thoại, không dịch nhạc. Sửa trong sim: độ dài giọng tính từ ms
+THOẠI ĐÃ FED của từng dòng (khung trong khoảng dòng đó, lid là
+chính dòng đó, trong đoạn đã gửi, rms ≥ END).
+
+**Seed lag sai (tìm thấy ở sim run7, debug trace):** seed =
+(lần giọng đầu tới − lần gửi tiếng đầu) = 7080 ms trong khi lag
+thật ~4600 ms. Tiếng gửi đầu là NHẠC trước câu đầu ~2,5 s (dòng 0
+bắt đầu ở 0 nhưng bị skip ngẫu nhiên 5% nên giọng đầu là của dòng
+1, bắt đầu ở 2591 ms). Seed ghép giọng đầu với mốc của dòng 0,
+lệch đúng 1 dòng. Trên v6 seed còn tệ hơn: 66 ms (lag thật
+~1400 ms). Seed KHÔNG BAO GIỜ đáng tin đủ làm neo tuyệt đối.
+Sửa (21g): neo seed theo wall của MARKER ĐẦU TIÊN (đầu lượt ≈
+đầu dòng), fallback lần gửi tiếng đầu nếu chưa có marker.
+
+**Lỗi +1 dòng của nhóm gộp (sim run7–run10):** nhóm tx gộp nhiều
+dòng (khoảng lặng ngắn < 800 ms không tách nhóm); burst của dòng
+2 trong nhóm gộp dùng startEst của dòng 1 → mẫu lệch +3,4 s.
+EMA bị các mẫu này kéo trôi dần (cửa sổ cập nhật ±800 ms chỉ làm
+chậm trôi, không chặn được — mỗi mẫu lệch kéo EMA lên một ít,
+cửa sổ D-check đi theo lên). Trung vị cũng không cứu được khi mẫu
+lệch là ĐA SỐ các mẫu chấp nhận (run9: boundary err +4048 ms).
+Sửa (21i/21k): neo = tâm CỤM DÀY NHẤT (cửa sổ 1200 ms) trong các
+mẫu biên đã chấp nhận + pool ứng viên lúc bootstrap; và giới hạn
+residual ±1200 ms khi chọn nhóm (chỉ nhận dòng đầu nhóm / nhóm
+đơn dòng, ~76% burst) — burst dòng giữa nhóm gộp bị loại an toàn
+(tx_no_mk) thay vì chấp nhận sai dòng. Phân biệt dòng sau: nhóm
+của dòng k+1 vẫn MỞ lúc burst của dòng k tới (fragment đầu vừa
+tới), còn nhóm của dòng k đã ĐÓNG — chỉ chọn nhóm ĐÃ ĐÓNG (21k).
+
+**Ý nghĩa thật của "(nhỏ 55 hoãn/lớn 97)" (đọc code):** "nhỏ" =
+số lát bị hoãn vì quá nhỏ (dưới ngưỡng mẫu — các lát <500 ms bị
+giữ lại chờ đủ, "hoãn"); "lớn" = số mẫu bị bỏ vì quá lớn (vượt
+ngưỡng D-check / mẫu > 20 s hoặc lệch khỏi lag ước lượng quá xa).
+"bỏ 16 lát/97 mẫu" = 16 lát bị bỏ trên 97 mẫu đã xét. Con số này
+phản ánh hàng đợi hold xả khi lag thật vượt xa lag ước lượng
+(giữa phiên D ghim 8 s, mẫu thật ~6–8 s trong khi lag ước lượng
+chỉ ~2 s).
+
+## Cách sửa (v1.0.21) — mirror sim `NewTracker21` trong `sim1021.py`
+
+- **(21a) Chọn marker bằng lag tham chiếu + đơn điệu làm đường
+  chính** cho burst/tc: marker gần nhất với (now − refLag) trong
+  số marker có seq > seq marker đã chấp nhận lần cuối, residual
+  ≤ 1500 ms; rồi mới tới đường anchor-implied, rồi seed.
+- **(21b) Neo transcription AI (bắt buộc):** service giữ các câu
+  tx nguồn có thứ tự (finalize ở cuối lượt VAD, chỉ lượt có
+  input-tx text không rỗng) + nhóm fragment input-tx thành câu
+  theo khoảng trống ≥ 800 ms (chỉ nhóm ĐÃ ĐÓNG mới được chọn) +
+  nhóm fragment output-tx theo burst; burst #g map với câu #g
+  theo thứ tự; kiểm tra bằng cửa sổ thời gian; không khớp thì thử
+  lệch ±1, ±2; 3 lần loại liên tiếp thì re-sync theo thời gian.
+  Mẫu = burstArrival − lineStartEst, với lineStartEst =
+  firstFrag − asrLagEma − 500 ms (KHÔNG cần marker VAD — marker
+  chỉ là fallback cho re-anchor). Re-anchor bằng vị trí thoại nội
+  suy của điểm bắt đầu (`_audio_at`, nghịch đảo của `_wall_at`);
+  đơn điệu trên vị trí thoại; đồng thuận |marker VAD − startEst|
+  ≤ 500 ms thì đếm tx_agree, không cho mẫu kép; guard chống áp
+  dụng 2 lần cho cùng burst. Client: `outputTranscription` tách ra
+  callback RIÊNG `onOutputTranscription` (hiện trộn vào
+  `onTranslatedText`); service fallback sang nhóm text model turn
+  nếu outTx không bao giờ tới. asrLag hiệu chuẩn theo lượt ngắn
+  (end−start ≤ 5000 ms): first post-end fragment − turn end wall
+  + 300 ms; EMA khởi 600 ms.
+  - Giới hạn đã biết (ghi rõ cách xử lý từng cái): transcription
+    đo TRỄ CHỮ (không phải trễ phát âm) — mẫu dùng wall của
+    fragment đầu (đã trừ asrLag EMA + 500 ms fragDelay) nên trễ
+    chữ được hiệu chuẩn ra khỏi mẫu; cần CĂN MỜ XUYÊN NGÔN NGỮ —
+    căn bằng THỨ TỰ + THỜI GIAN (burst #g ↔ câu #g, kiểm tra cửa
+    sổ thời gian, thử lệch ±1/±2), không dịch ngược hay khớp từ;
+    timestamp tới có TRỄ RIÊNG (asrLag ~600 ms ±200 ms) — hiệu
+    chuẩn asrLag theo lượt ngắn, chỉ tin nhóm đã đóng; nhóm gộp
+    nhiều dòng có thể cho lỗi +1 dòng — D-check + giới hạn
+    residual + cụm dày nhất hấp thụ (neo phải đúng thường xuyên
+    hơn sai). Giữ nguyên kênh VAD marker như cũ (không thay thế,
+    chỉ bổ sung).
+- **(21c) Sửa đếm tách:** chỉ đếm lần thử khi countedMs>0.
+- **(21d) Chẩn đoán max/p90:** max/p90 |lệch hình| cả phiên +
+  slice-play steady + trễ cuối burst (END lateness); tỉ lệ D ghim
+  trần; cặp mốc 60 s đầu + thời điểm đo đồng bộ đầu tiên; bộ đếm
+  tx; bộ đếm chunk bị drop (DelayedAudioQueue/VoicePlayer).
+- **(21f/21h/21i/21j/21k/21n/21o) Lag tham chiếu độc lập với D:**
+  tâm cụm dày nhất (cửa sổ 1200 ms) của các mẫu biên đã chấp nhận
+  (30 mẫu gần nhất) + pool ứng viên lúc bootstrap (lat của MỌI
+  nhóm trong cửa sổ cho mỗi burst); seed từ marker đầu tiên; tách
+  2 tham chiếu — `_dBasedLag()` của code cha (burst/tc/slice
+  D-check, ratio gate, re-anchor) CHỈ trả tham chiếu cụm khi neo
+  tx đã chứng minh được nó chạy (tx_ok > 0), trước đó giữ D −
+  margin như cũ; `_selLag()` (đường chọn tx) dùng cụm/pool/seed
+  ngay cả lúc bootstrap; D-check tx ±2000 ms (rộng ±6000 ms lúc
+  bootstrap).
+- **KHÔNG LÀM trong bản này:** E1 (level cap 1.5 — sim cho thấy
+  không cải thiện trễ), E2 (tx-hold), E3 (stale skip — không bao
+  giờ kích hoạt); hold-decay trong burst (21p — đã thử, làm hold
+  về 0, sim1018 rớt 35,9%, v6 FAIL, đã revert); BURST_GAP 150 ms
+  (21r — đã thử, phá logic burst của tracker cha, hold bão hòa
+  125 lần, đã revert).
+
+## Mô phỏng trước khi build (sim1021.py, chạy `python3 sim1021.py`)
+
+Thế giới hiệu chuẩn lại theo máy thật (world21 v2): lines 1,5–3,0 s;
+pause 100–400 ms (60%) / 1500–3500 ms (40%), nhạc 80% số pause;
+nhạc theo từng pause (50% tonal level 300–800 gate qua 0,40 / 50%
+atonal level 150–500 gate qua 0,05); thoại mềm 80% (300–550 RMS);
+`GATE_SPEECH_P=0,70`; tỉ lệ giọng/gốc 1,51×; lag thật lag0 = 4600 ms
+(ảnh 07:35: mẫu cuối 4,6 s, D 5,3 s); tc OFF (máy tcRecv=0); giọng
+xây THEO DÒNG (không theo lượt VAD — model nói từng câu, pause
+200–400 ms giữa câu, nên burst là theo dòng ngay cả khi VAD gộp
+các dòng thành một lượt khổng lồ); độ dài giọng tính từ ms THOẠI
+ĐÃ FED của từng dòng; transcription fragment THEO DÒNG (1–3
+fragment, fragment đầu ở lineStart + U(300,700) + asrLag ~ N(600,
+200) ms; 5% dòng không có fragment; dòng bị skip dịch vẫn có
+fragment); PHIÊN 10 PHÚT (600.000 ms) cho các run chính.
+Gate v1.0.21: các vạch v1.0.20 + cặp mốc/60 s ≥ 5, mẫu/60 s ≥ 40,
+slice-play steady |err| p90 < 1000 ms và max < 2000 ms, trễ cuối
+burst p90 < 1000 ms, cặp trong 60 s đầu > 0, đo được đồng bộ trong
+60 s đầu (không "—"), D ghim < 20% phiên 10 phút, bỏ audio steady
+< 5%. Hồi quy: v6 (fresh-hold median < 300, line-start steady NEW
+≤ OLD, cặp/60 s NEW ≥ OLD) + sim1018 (cặp NEW ≥ OLD, line-start
+NEW ≤ OLD, bỏ audio NEW ≤ OLD, slice rớt NEW ≤ OLD+2 — vạch
+line-start đã nới từ NEW ≤ 500 thành NEW ≤ OLD vì OLD vốn đã
+1574 ms trên thế giới stress speed 2,5 đó).
+
+- **Run 1–4** (thế giới v1 rồi v2, lag0 2400→4600, tonal 0,75/0,85,
+  giọng theo lượt → theo dòng, sửa cửa sổ 60 s): REPRO tái hiện
+  gần đúng máy (burst 113/181 dòng, no-mk 38%, cặp 0/60 s, tách 0,
+  mẫu 50/60 s, tỉ lệ 1,33×). FIX V21a+tx run3: cặp 6/60 s, mẫu
+  144/60 s, cặp 60 s đầu 7, D 4,2–8,0 s, ghim 1%, tỉ lệ 1,49×.
+  Còn FAIL: burst sync median +1332 ms, line-start steady 1933 ms,
+  slice-play steady median 735 ms / p90 2643 ms. Run4 tìm ra vòng
+  lặp phản hồi của D (D sập sàn 3000, boundary err −2358 ms) và
+  nhạc phồng độ dài giọng (+34%).
+- **Run 5–7** (21f: lag chọn độc lập với D — EMA chậm 0,1, kẹp
+  [seed−1500, seed+5000]): run5 EMA bị mẫu +1,9 s kéo trôi
+  (boundary +3377 ms, D ~7,2 s); run6 thêm chuyển đường anchor-first
+  khi neo tươi → hồi quy v6 PASS nhưng D-based 0 lần chọn, cặp
+  tụt; run7 override `_d_based_lag` về lag seed → tệ hơn (boundary
+  +3637 ms, D ghim 18%) vì SEED SAI (7080 ms, xem mục seed).
+- **Run 8–10** (21g seed theo marker đầu + 21h trung vị mẫu biên +
+  21i cụm dày nhất + giới hạn residual): run8 seed marker sửa được
+  v6 nhưng world21 vẫn seed 7080 (marker đầu cũng là nhạc); run9
+  trung vị không cứu được (mẫu lệch là đa số, boundary +4048 ms);
+  run10 cụm + residual bound + chỉ nhóm đã đóng → cặp PASS nhưng
+  D vẫn ghim (cụm bị pool ứng viên dòng sau ở ~1200 ms kéo).
+- **Run 11–12** (21j pool ứng viên bootstrap + 21k chỉ nhóm đã
+  đóng): run11 bias đảo chiều (D sập sàn 3000, boundary −2674 ms)
+  vì pool chứa nhóm dòng sau (~1200 ms); run12 thêm lọc nhóm đã
+  đóng → **ĐỘT PHÁ**: boundary err median +0 ms (p90 758 ms),
+  D 4,5–8,0 s (60 s cuối ~5,2 s), burst sync +301 ms, line-start
+  steady 475 ms, cặp 5/60 s, mẫu 70/60 s, D ghim PASS, inter-render
+  gap PASS, combined unpaired PASS. Chỉ còn FAIL 4 vạch trễ
+  trong-burst.
+- **Run 13–15** (21l metric slice-play theo mốc dòng + 21m/21n/21o
+  tách tham chiếu): run13 (21m bỏ pool sau thiết lập) làm world21
+  tệ đi; run14 tách `_dBasedLag` (chỉ dùng cụm khi tx thiết lập)
+  → sim1018 cải thiện mạnh (line-start 5379→754, cặp 26=26) nhưng
+  world21 tụt (boundary +2527 ms — đường VAD lúc bootstrap dùng
+  D-based từ seed sai); run15 chuyển khi tx_ok > 0 (chấp nhận tx
+  đầu tiên) → **về trạng thái run12 tốt nhất** + sim1018 giữ
+  754/cặp 26.
+- **Run 16–18** (21p hold-decay + 21q + 21r BURST_GAP 150 ms):
+  hold-decay làm hold về 0, sim1018 rớt 35,9%, v6 FAIL; BURST_GAP
+  150 ms phá logic burst của tracker cha (hold bão hòa 125 lần).
+  Cả hai đã REVERT. Kết luận: trễ trong-burst là giới hạn kiến
+  trúc hiện tại (hold cố định cả burst trong khi model stream
+  1,0×, giọng dài 1,51×) — cần thiết kế lại hold/queue hoặc
+  per-chunk stale-skip, để dành v1.0.22.
+- **Run 17/19 (trạng thái giao — sau khi revert 21p/21r):**
+  v6 PASS; sim1018 PASS (cặp 26=26, line-start NEW 754 ≤ OLD 1574,
+  bỏ audio 7,5% ≤ 8,3%, slice rớt 0); world21 V21a+tx (cap 1,25):
+  cặp mốc 5/60 s PASS, mẫu 70/60 s PASS, combined unpaired PASS,
+  line-start steady 475 ms PASS, D ghim PASS, inter-render gap
+  PASS, cặp 60 s đầu 5–6 PASS, đo được đồng bộ
+  trong 60 s đầu PASS, bỏ audio 0% PASS; boundary err median +0 ms
+  (p90 758 ms), D 4,5–8,0 s (60 s cuối ~5,2 s), burst sync median
+  +301 ms (p90 1489 ms), mẫu cuối 3,1 s, tx ok 39 / no-mk 69 /
+  cons 0 / agree 19, asrLag EMA 537 ms. **OVERALL GATE: FAIL —
+  chỉ 4 vạch trễ trong-burst không đạt:** slice-play steady
+  median 1580 ms / p90 2884 ms / max 4071 ms (cần <500/<1000/
+  <2000), trễ cuối burst p90 3791 ms (cần <1000). E1/E2/E3 không
+  cải thiện các vạch này (E1: slice-play 1588 ms; FULL: 1768 ms).
+  Các biến thể V21a+tx / +E1 / FULL / FULL+E3 đều giống nhau ở 4
+  vạch này — bản giao là V21a+tx (cap 1,25), ít thay đổi nhất,
+  số burst/line-start tốt nhất.
+- **REPRO (v1.0.20) trên world21 v2** (fit speed=1,4 tonal=0,85,
+  score 5,7): burst 113/181 dòng, burst 36/44/31/24 (ok/no-mk/
+  cons/fb), mẫu 52/60 s, cặp 3/60 s, cặp 60 s đầu 2, D cuối 5380 ms,
+  ghim 2%, mẫu cuối 4,7 s, tách 0, lần thử 37, lát rớt 39, mẫu rớt
+  32, stall 0, lượt 3/60 s, lời nói 52400 ms/60 s, gate loại
+  ~110/60 s, tỉ lệ 1,11× — khớp khá với máy (07:32: burst 258,
+  no-mk 51%, cặp 2/60 s, D ghim trần, tách 8/200). Điểm sim chưa
+  tái hiện: D ghim trần 8 s (sim chỉ 2% thời gian), tách 4–8 lần
+  trên máy vs 0 trong sim (feed sim đều đặn mỗi 20 ms nên không
+  bao giờ có khoảng ≥300 ms trong lượt — tách trên máy tới từ
+  hiccup feed thật; mức ưu tiên thấp, neo tx không cần tách).
+
+## Đo độ trễ bằng AI (đã trả lời user 04:35, nhắc lại cho v1.0.21)
+
+App VỐN đã tự đo độ trễ theo từng câu (đó chính là D). Vấn đề
+trước đây là phép đo chết trên máy thật (marker khan hiếm), không
+phải thiếu đo. v1.0.21 thêm kênh đo thứ hai bằng transcription AI
+(Gemini Live trả sẵn input/output transcription): căn câu gốc với
+câu dịch theo thứ tự + thời gian, tạo anchor độc lập với VAD. Đây
+là kênh đo, không phải AI "nhìn môi" — nhìn môi là phương án dự
+phòng xa hơn (tốn pin/CPU), chưa làm.
+
+## Giới hạn đã biết của v1.0.21 (nói thẳng với user khi giao)
+
+- Giọng bắt đầu mỗi câu KHỚP môi (~+300 ms ở đầu burst, line-start
+  ~475 ms trong sim) nhưng TRÔI DẦN trong câu dài / burst gộp
+  nhiều dòng: cuối burst có thể chậm tới ~2–4 s trong sim (slice-
+  play p90 ~2,9 s, trễ cuối burst p90 ~3,8 s). Đây là giới hạn của
+  hold cố định cả burst + model stream 1,0× trong khi giọng dài
+  1,51×. Hai cách sửa đã thử đều thất bại trong sim (hold-decay
+  làm hold về 0 và rớt chunk; tách burst theo dòng phá logic burst
+  của tracker cha) — cần thiết kế lại hold/queue hoặc per-chunk
+  stale-skip, để dành v1.0.22. Trên máy thật mức trôi có thể khác
+  sim (burst trên máy có thể ngắn hơn) — nhờ user báo lại mức trôi
+  cuối câu dài.
+- Tách marker vẫn ~0 trong sim (và 4–8 lần trên máy): neo tx không
+  cần tách nữa, nhưng số "tách thử/được" sẽ vẫn thấp — đó là bình
+  thường, không phải lỗi.
+- D có thể vẫn chạm trần 8 s trong đoạn thoại rất dày (sim: D tối
+  đa 8000, ghim < 20% phiên) — trần 8 s là giới hạn an toàn, không
+  phải lỗi.
+
+## Checklist thử lại trên máy (xem 3–5 phút phim thoại nhiều, 18dj.tv)
+
+- D bao nhiêu (có còn ghim 8 s giữa phiên không)? Mẫu/60 s và cặp
+  mốc/60 s bao nhiêu — mục tiêu tăng rõ so với 5 mẫu/1 cặp
+  (07:07) và 43 mẫu/2 cặp (07:32)? lệch hình/khung hình bao nhiêu
+  (cả giữa phiên lẫn cuối phiên — chụp cả 2 lúc để đối chiếu)?
+- Burst ok/no-mk/cons/fb (mục tiêu no-mk giảm rõ so với 51% ở
+  07:32)? Lượt VAD/60 s và tách thử/được bao nhiêu?
+- Mở lồng tiếng lại từ đầu (như ảnh 07:35): cặp mốc/60 s trong
+  60 s đầu có > 0 không, lệch hình/khung hình có hiện số (không
+  "—") không?
+- Môi có khớp không — ĐẶC BIỆT: đầu câu có khớp không, và cuối
+  câu dài có trôi chậm lại không (trôi bao nhiêu giây)? Giọng còn
+  đứng/lúc dịch lúc không không? Giọng có méo khi bắt kịp không
+  (stretch tối đa vẫn 1,25× như v1.0.20)?
+
+---
 # DubLive v1.0.20 — GIỌNG LIÊN TỤC TRƯỚC TIÊN + SỬA SỐ RÁC ĐỒNG HỒ + SỬA ĐÓI TRACKER (28/11/2026)
 
 Thử v1.0.19 trên máy thật (user, trang 18dj.tv, 04:28 ngày 28/11,
@@ -8,15 +428,25 @@ giữa burst, robust hold giữ nguyên). KHÔNG mang lại share target
 v1.0.15, KHÔNG mang lại sửa probe/watchdog v1.0.16.
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.20.apk`
   (symlink `~/workspace/your_files/DubLive-v1.0.20.apk`)
-- Kích thước: TBD bytes. MD5: TBD.
+- Kích thước: 9.555.202 bytes (9,1 MB). MD5: e74910aa61ef510301b803a7f819f998.
 - aapt2: package `com.dublive.live`, versionCode 21, versionName 1.0.20.
-  Dex xác nhận logic mới: TBD.
-- Actions run TBD (job "Build APK" completed/success; job "Create
-  GitHub Release" FAIL — bình thường ở run trigger bằng tag),
-  commit TBD trên nhánh `dublive-v1` (repo `kenj71737-afk/b8`, PR #1
-  vẫn mở, KHÔNG merge), artifact `alad-apks` (id TBD, bản Debug), tag
-  `v1.0.20-dublive`. Tải artifact bằng `gh.py download-artifact <id>
-  <outfile>` (2 tham số vị trí; tải trực tiếp qua API bị 401).
+  Dex xác nhận logic mới (classes3.dex, đếm byte trực tiếp — code app
+  nằm ở classes3.dex, classes.dex là thư viện Media3): `garbage sync
+  error dropped`, `garbage frame residual dropped`, `burst D-check
+  bypassed`, `video time reply dropped`, `lượt VAD` (×2), `gate loại`
+  (×2); logic v1.0.19 còn nguyên: `setPlaybackParams`, `noteBurstRatio`,
+  `robustHoldMs`, `reanchorToDMarker`, `belowStartFramesToEnd`,
+  `noteLateness`, `onPipelineSample`. (Lưu ý: `strings`/`grep -a` trên
+  classes.dex/classes2.dex cho 0 — phải kiểm tra đủ 4 dex; APK có
+  classes.dex–classes4.dex.)
+- Actions run **46076114086** (job "Build APK" completed/success; job
+  "Create GitHub Release" FAIL — bình thường ở run trigger bằng tag),
+  commit `4ea3ff553cc582e1c7f8fb4dd3a4eb8a742a5ac7` trên nhánh
+  `dublive-v1` (repo `kenj71737-afk/b8`, PR #1 vẫn mở, KHÔNG merge),
+  artifact `alad-apks` (id 15234916522, bản Debug), tag
+  `v1.0.20-dublive`. Build 1 lần đậu ngay (không lỗi biên dịch).
+  Tải artifact bằng `gh.py download-artifact <id> <outfile>` (2 tham số
+  vị trí; tải trực tiếp qua API bị 401).
 
 ## Kết quả thử v1.0.19 trên máy (28/11 04:28, 18dj.tv, pin 3%)
 

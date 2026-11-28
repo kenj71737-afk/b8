@@ -41,11 +41,22 @@ class DelayedAudioQueue(
 
     private val queue = ArrayDeque<Block>()
 
+    /** v1.0.21 (21d) — blocks dropped: overdue (>staleMs) at poll
+     * time, or evicted when the queue exceeds [maxBlocks]. The
+     * VoicePlayer exposes this as [droppedChunks] for the
+     * diagnostics HUD. */
+    private var droppedBlocksCount = 0
+    val droppedBlocks: Int
+        @Synchronized get() = droppedBlocksCount
+
     /** Live-delay mode: due once (now − arrival) >= delayMs at poll time. */
     @Synchronized
     fun add(arrivalMs: Long, data: ByteArray) {
         queue.addLast(Block(arrivalMs, null, data))
-        while (queue.size > maxBlocks) queue.removeFirst()
+        while (queue.size > maxBlocks) {
+            queue.removeFirst()
+            droppedBlocksCount++
+        }
     }
 
     /** Fixed-hold mode: due at arrivalMs + holdMs, whatever the live
@@ -53,7 +64,10 @@ class DelayedAudioQueue(
     @Synchronized
     fun add(arrivalMs: Long, data: ByteArray, holdMs: Long) {
         queue.addLast(Block(arrivalMs, arrivalMs + holdMs.coerceAtLeast(0L), data))
-        while (queue.size > maxBlocks) queue.removeFirst()
+        while (queue.size > maxBlocks) {
+            queue.removeFirst()
+            droppedBlocksCount++
+        }
     }
 
     /**
@@ -80,6 +94,7 @@ class DelayedAudioQueue(
             val overdue = nowMs - dueAt
             if (overdue > staleMs) {
                 queue.removeFirst()
+                droppedBlocksCount++
                 continue
             }
             if (overdue < 0) return null
@@ -92,5 +107,10 @@ class DelayedAudioQueue(
     fun size(): Int = queue.size
 
     @Synchronized
-    fun clear() = queue.clear()
+    fun clear() {
+        queue.clear()
+        // v1.0.21 — the drop count is per session (clear runs on
+        // stop); a fresh session starts at 0.
+        droppedBlocksCount = 0
+    }
 }

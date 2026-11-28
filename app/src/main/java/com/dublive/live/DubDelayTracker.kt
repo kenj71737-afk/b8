@@ -355,6 +355,48 @@ class DubDelayTracker(
         const val HOLD_SLEW_MS = 300L
         /** v1.0.19 — lateness threshold for the stretch raise. */
         const val LATENESS_STRETCH_MS = 200L
+        /** v1.0.21 (21a) — D-based + monotone marker selection:
+         * a marker is picked only when its boundary is this close
+         * to (now − selection lag); the same window the burst
+         * D-check uses, so a D-based pick can never fail the
+         * D-check for the wrong reason. */
+        const val DBASED_RES_MS = 1500L
+        /** v1.0.21 (21b) — transcription anchor: a tx sentence's
+         * estimated start must fall inside this window before the
+         * burst arrival. */
+        const val TX_WIN_MS = 10000L
+        /** v1.0.21 (21b/21i) — tx D-check window once the
+         * reference is established; the bootstrap window while
+         * it is not. */
+        const val TX_DCHECK_MS = 2000L
+        const val TX_BOOT_WIN_MS = 6000L
+        /** v1.0.21 (21b/21i) — tx selection residual bound once
+         * the reference is established (off during bootstrap,
+         * when the target is wrong while the seed is wrong). */
+        const val TX_RES_MS = 1200L
+        /** v1.0.21 (21b) — gap between input-transcription
+         * fragments that closes a tx sentence (a new sentence
+         * starts). */
+        const val TX_GAP_MS = 800L
+        /** v1.0.21 (21b) — mean delay of a line's first
+         * transcription fragment into the line (lineStart ≈
+         * firstFrag − asrLagEma − this). */
+        const val TX_FRAG_DELAY_MS = 500L
+        /** v1.0.21 (21b) — asrLag calibration sample range. */
+        const val TX_ASR_CAL_MAX_MS = 3000L
+        /** v1.0.21 (21h/21j) — densest-cluster window for the
+         * independent lag reference, and the boundary-sample /
+         * bootstrap-candidate pool caps. */
+        const val CLUSTER_WINDOW_MS = 1200L
+        const val MAX_BND_SAMPLES = 30
+        const val MAX_SEED_CAND = 200
+        /** v1.0.21 (21d) — sync-error history caps (per burst /
+         * per slice-play unit, oldest dropped). */
+        const val MAX_SYNC_ERR_HISTORY = 600
+        const val MAX_SLICE_PLAY_HISTORY = 1200
+        /** v1.0.21 (21d) — D pinned at/above this counts as
+         * pinned (the 8 s hard cap is 8000 ms). */
+        const val D_PINNED_MS = 7900L
     }
 
     /** One 500 ms slice of counted speech: its wall span and its
@@ -377,7 +419,12 @@ class DubDelayTracker(
         val wallMs: Long,
         var countedMs: Long,
         var done: Boolean,
-        val seq: Long
+        val seq: Long,
+        /** v1.0.21 — the VAD turn ordinal this marker belongs to
+         * (split markers share their turn's ordinal; the tx
+         * anchor keys its source entries by it, like the sim's
+         * turn_idx). */
+        val turnIdx: Long
     )
 
     private val latencyEma = LatencyEma(maxDelayMs = maxDelayMs)
@@ -552,6 +599,118 @@ class DubDelayTracker(
      * service's /60 s fed-speech diagnostic). */
     val totalSpeechMs: Long get() = cumSpeechMs
 
+    // ---- v1.0.21 (21a) — D-based + monotone selection ----
+    /** Sequence of the last marker an accepted burst/tc paired
+     * with; the D-based selection only considers newer markers
+     * (monotone — the anchor must never jump backwards). */
+    private var lastAcceptedSeq: Long? = null
+    /** Bursts/tcs whose marker came from the D-based path. */
+    private var dBasedSel = 0
+
+    // ---- v1.0.21 (21c) — split-attempt counting, both ways ----
+    /** Attempts counted the v1.0.20 way (before the counted>0
+     * guard — every turn start wastes one); [splitAttempts]
+     * is the fixed count (only counted>0, == splits). */
+    private var splitAttemptsOld = 0
+
+    // ---- v1.0.21 (21b) — transcription anchor ----
+    /** One finalized VAD turn's tx source record, keyed by the
+     * VAD turn ordinal (the sim's turn_idx). [sentMs] is the
+     * turn's counted speech (its marker's countedMs). */
+    private data class TxSourceEntry(
+        val startWallMs: Long,
+        val endWallMs: Long,
+        val sentMs: Long,
+        var firstFragMs: Long?,
+        var lastFragMs: Long?,
+        var nFrag: Int
+    )
+    /** One input-transcription sentence (fragments grouped by a
+     * >=800 ms arrival gap). Only CLOSED groups may be selected
+     * — an open group is a future line, never this burst's. */
+    private data class TxGroup(
+        val firstMs: Long,
+        var lastMs: Long,
+        var closed: Boolean
+    )
+    private val txSrc = HashMap<Long, TxSourceEntry>()
+    private val txPendingFrags = HashMap<Long, MutableList<Long>>()
+    private val txGroups = ArrayList<TxGroup>()
+    private var txCurGroup: TxGroup? = null
+    private var txLastFragAtMs: Long? = null
+    /** asrLag EMA (ms, seeded 600) + calibration samples from
+     * short turns only (a merged turn's end wall belongs to its
+     * LAST line, not to this fragment's line). */
+    private var txAsrEmaMs = 600.0
+    private var txAsrSamples = 0
+    private val txCalibratedTurns = HashSet<Long>()
+    private val txOutFrags = HashMap<Long, Int>()
+    private var txOk = 0
+    private var txNoMk = 0
+    private var txCons = 0
+    private var txAgree = 0
+    private var txGroupsSeen = 0
+    private var txLastMarkerSeq: Long? = null
+    private var txLastAudioPos: Long? = null
+    private var txAnchoredBurst: Long? = null
+    /** VAD turn ordinal bookkeeping for the tx source keys:
+     * incremented at every VAD turn start; the completed
+     * turn's ordinal + counted ms are captured at turn end. */
+    private var currentTurnIdx = 0L
+    private var lastCompletedTurnIdx: Long? = null
+    private var lastCompletedTurnCountedMs = 0L
+    /** Wall of the completed turn's start (its marker's wall —
+     * the true start, VAD-lag-corrected). Used as the tx source
+     * entry's start: the service's lastUtteranceStartMs can
+     * already belong to the NEXT turn when an end arrives after
+     * the next start (pause shorter than the VAD tail). */
+    private var lastCompletedTurnWallMs = 0L
+
+    // ---- v1.0.21 (21h/21j) — independent lag reference ----
+    /** Accepted boundary samples (tx + VAD burst + tc), most
+     * recent 30 — the reference is the centre of their densest
+     * 1200 ms cluster, NOT an EMA (an EMA creeps toward a
+     * systematic bias) and NOT a median (a majority of accepts
+     * can be +1-line errors). */
+    private val bndSamples = ArrayList<Long>()
+    /** Bootstrap candidate pool: lat of EVERY in-window tx
+     * group per burst (recorded only while the reference is not
+     * established). Each burst contributes one correct candidate
+     * (clustering at the true lag) and a few wrong ones spread
+     * out, so the densest cluster is the true lag even when the
+     * seed is a whole line off. */
+    private val seedCand = ArrayList<Long>()
+    /** Last VAD burst the tracker paired (arrival wall, seq,
+     * whether the VAD path paired it, its marker) — the tx
+     * anchor applies post-hoc to this burst when its first
+     * output-transcription fragment arrives. */
+    private var lastBurstArrivalMs: Long? = null
+    private var lastBurstSeqTx: Long? = null
+    private var lastBurstPaired = false
+    private var lastBurstMarker: TurnMarker? = null
+
+    // ---- v1.0.21 (21d) — sync-error history ----
+    /** Burst-start sync errors ((play − marker wall) − D), one
+     * per burst that played with a marker. */
+    private val syncErrs = ArrayDeque<Long>()
+    /** Slice-play errors ((play-anchored sample) − D) for every
+     * paired 500 ms unit of every played burst. */
+    private val slicePlayErrs = ArrayDeque<Long>()
+    /** Per-burst END lateness: the last slice-play error of
+     * each burst (the voice lateness at the END of the
+     * sentence — what the user hears as drift). */
+    private val endLatenessErrs = ArrayDeque<Long>()
+    /** D samples (now, D) recorded by [diagnostics] (~1/s) for
+     * the D-pinned fraction. */
+    private val dHistory = ArrayDeque<Pair<Long, Long>>()
+    /** All accepted turn-boundary pair times this session (for
+     * the pairs-in-first-60-s count). */
+    private val turnPairTimesAll = ArrayList<Long>()
+    /** Session start wall (first VAD turn start) and the first
+     * measured sync error's wall, for the "first sync" time. */
+    private var sessionStartMs = 0L
+    private var firstSyncAtMs: Long? = null
+
     // ---- diagnostics ----
     private var lastSampleMs = 0L
     private var lastSampleAtMs = 0L
@@ -711,8 +870,72 @@ class DubDelayTracker(
      * EMA of the accepted boundary/slice samples + margin, so D −
      * margin is the best available estimate of the current lag
      * whenever the slice median is untrustworthy. */
-    private fun dBasedLagMs(): Long =
+    private fun parentDBasedLagMs(): Long =
         maxOf(MIN_SAMPLE_MS, delayMs - dynamicMarginMs())
+
+    /** v1.0.21 (21h/21j) — centre (median) of the densest
+     * [CLUSTER_WINDOW_MS] window of the values. */
+    private fun clusterCentre(vals: List<Long>): Long {
+        val s = vals.sorted()
+        var bestI = 0
+        var bestN = 0
+        for (i in s.indices) {
+            val v = s[i]
+            var n = 0
+            for (u in s) if (u in v..v + CLUSTER_WINDOW_MS) n++
+            if (n > bestN) {
+                bestI = i
+                bestN = n
+            }
+        }
+        val lo = s[bestI]
+        val cluster = s.filter { it in lo..lo + CLUSTER_WINDOW_MS }
+        return cluster[cluster.size / 2]
+    }
+
+    /** v1.0.21 (21h/21j/21n/21o) — independent lag reference.
+     * Once the tx anchor is established (tx_ok > 0 and >= 5
+     * boundary samples): the centre of the densest cluster of
+     * the accepted boundary samples + the bootstrap candidates.
+     * During bootstrap: the densest cluster of the candidate
+     * pool (every in-window tx group per burst). Then the seed
+     * lag; then the parent's D-based lag. */
+    private fun refLagMs(): Long {
+        if (txOk > 0 && bndSamples.size >= 5) {
+            return clusterCentre(bndSamples + seedCand)
+        }
+        if (seedCand.size >= 8) {
+            return clusterCentre(seedCand)
+        }
+        seedLagMs?.let { return it }
+        return parentDBasedLagMs()
+    }
+
+    /** v1.0.21 (21h) — the reference is established once the tx
+     * anchor has accepted and >= 5 boundary samples exist. */
+    private fun refEstablished(): Boolean =
+        txOk > 0 && bndSamples.size >= 5
+
+    /** v1.0.21 (21n/21o) — the D-based lag the VAD/tc/slice
+     * D-checks, the ratio gate and the re-anchors read. It
+     * returns the cluster reference ONLY once the tx anchor is
+     * established (tx_ok > 0 — one accepted tx sample proves
+     * the tx path works on this world); before that, including
+     * on VAD-only worlds where the tx anchor never accepts, it
+     * keeps the parent's D-based lag. The seed must never leak
+     * into the VAD path. */
+    private fun dBasedLagMs(): Long =
+        if (txOk > 0) refLagMs() else parentDBasedLagMs()
+
+    /** v1.0.21 (21f/21h) — lag used to SELECT sentences/markers
+     * and to validate tx samples. The cluster reference (seed
+     * as bootstrap) — independent of D. D is deliberately NOT
+     * used here: D is fed by the samples these selections
+     * produce, so steering the selection by D is a feedback
+     * loop. Falls back to the parent's D-based lag when no seed
+     * exists yet (the sim's _selLag fallback — this keeps it
+     * from recursing). */
+    private fun selLagMs(): Long = refLagMs()
 
     /** v1.0.19 — D is ALWAYS a trusted second opinion now. The
      * v1.0.18 gate disabled the D-check exactly when it was most
@@ -836,6 +1059,44 @@ class DubDelayTracker(
         return best
     }
 
+    /** v1.0.21 (21a) — D-BASED + MONOTONE selection (the PRIMARY
+     * path for bursts and turnCompletes): the marker whose
+     * boundary (start for a burst, end for a turnComplete) is
+     * nearest (now − selection lag), among markers NEWER than
+     * the last accepted one, residual ≤ 1500 ms. The
+     * anchor-implied path is self-referential when the anchor
+     * drifts (device: no-mk 28/75, cons 19/75) — the selection
+     * lag is absolute. Null when nothing qualifies. */
+    private fun selectDBased(nowMs: Long, isTc: Boolean): TurnMarker? {
+        val dlag = selLagMs()
+        val target = if (isTc) nowMs - TURN_COMPLETE_GAP_MS - dlag else nowMs - dlag
+        var best: TurnMarker? = null
+        var bestResidual: Long? = null
+        for (marker in markers) {
+            if (isTc && (!marker.done || marker.countedMs <= 0L)) continue
+            val lastAcc = lastAcceptedSeq
+            if (lastAcc != null && marker.seq <= lastAcc) continue
+            val pos = if (isTc) marker.wallMs + marker.countedMs else marker.wallMs
+            val residual = kotlin.math.abs(pos - target)
+            if (bestResidual == null || residual < bestResidual) {
+                best = marker
+                bestResidual = residual
+            }
+        }
+        if (best == null || (bestResidual ?: Long.MAX_VALUE) > DBASED_RES_MS) {
+            return null
+        }
+        return best
+    }
+
+    /** v1.0.21 (21a) — record an accepted marker's sequence so
+     * later D-based selections only consider newer markers. */
+    private fun noteAccepted(seq: Long?) {
+        if (seq != null && (lastAcceptedSeq == null || seq > lastAcceptedSeq!!)) {
+            lastAcceptedSeq = seq
+        }
+    }
+
     /**
      * Stall reset, shared by [onSpeechTurnStart] and [pairDubSlices].
      * After >10 s without a new speech slice the model has caught up,
@@ -925,14 +1186,21 @@ class DubDelayTracker(
         // lets the split fire (the head chunk's marker was just
         // created with counted 0). Attempts vs splits tells a
         // merged-turn screenshot apart from a no-silence one.
+        // v1.0.21 (21c) — SPLIT-ATTEMPT COUNTING, both ways: the
+        // v1.0.20 code counted BEFORE the counted>0 guard, so
+        // every turn start wasted one attempt (device: 85
+        // attempts, 4 splits). The fixed count only counts when
+        // counted>0 (then attempts == splits by construction);
+        // both are kept for comparison.
         if (lastMarker != null && !lastMarker.done &&
             lastLoudAtMs > 0L && nowMs - lastLoudAtMs >= SPLIT_SILENCE_MS
         ) {
-            splitAttempts++
+            splitAttemptsOld++
         }
         if (lastMarker != null && !lastMarker.done && lastMarker.countedMs > 0L &&
             lastLoudAtMs > 0L && nowMs - lastLoudAtMs >= SPLIT_SILENCE_MS
         ) {
+            splitAttempts++
             lastMarker.done = true
             markerSeq++
             markers.addLast(
@@ -941,7 +1209,8 @@ class DubDelayTracker(
                     wallMs = nowMs,
                     countedMs = 0L,
                     done = false,
-                    seq = markerSeq
+                    seq = markerSeq,
+                    turnIdx = lastMarker.turnIdx
                 )
             )
             while (markers.size > MAX_MARKERS) markers.removeFirst()
@@ -1010,6 +1279,11 @@ class DubDelayTracker(
             // flag. The turn start itself proves speech is flowing.
             stalled = false
         }
+        // v1.0.21 — session start (for the first-60-s pair count
+        // and the first-sync time) and the VAD turn ordinal (the
+        // tx anchor keys its source entries by it).
+        if (sessionStartMs == 0L) sessionStartMs = nowMs
+        currentTurnIdx++
         markerSeq++
         markers.addLast(
             TurnMarker(
@@ -1017,7 +1291,8 @@ class DubDelayTracker(
                 wallMs = nowMs,
                 countedMs = 0L,
                 done = false,
-                seq = markerSeq
+                seq = markerSeq,
+                turnIdx = currentTurnIdx
             )
         )
         while (markers.size > MAX_MARKERS) markers.removeFirst()
@@ -1062,6 +1337,12 @@ class DubDelayTracker(
         for (marker in markers) {
             if (!marker.done) {
                 marker.done = true
+                // v1.0.21 (21b) — the completed turn's ordinal +
+                // counted ms: noteTxSource (called by the service
+                // right after this) keys its entry by them.
+                lastCompletedTurnIdx = marker.turnIdx
+                lastCompletedTurnCountedMs = marker.countedMs
+                lastCompletedTurnWallMs = marker.wallMs
                 break
             }
         }
@@ -1105,7 +1386,17 @@ class DubDelayTracker(
         if (!firstAudioSeeded && firstAudioSentAtMs > 0L) {
             firstAudioSeeded = true
             applyDynamicMargin()
-            val elapsed = (nowMs - firstAudioSentAtMs).coerceIn(0L, 18000L)
+            // v1.0.21 (21g) — seed anchored to the FIRST MARKER
+            // wall (first turn start ~= first line start — the
+            // same reference every sample uses), NOT to the first
+            // sent audio: the first sent audio can be MUSIC before
+            // the first line (~2.5 s in on the device world, so
+            // the old seed was ~7080 ms vs a true lag ~4600 ms).
+            // A wrong seed poisons every (21f) reference. Falls
+            // back to the first sent audio when no marker exists
+            // yet (e.g. a stall reset cleared them).
+            val seedRefMs = markers.firstOrNull()?.wallMs ?: firstAudioSentAtMs
+            val elapsed = (nowMs - seedRefMs).coerceIn(0L, 18000L)
             // v1.0.18 — the seed lag (first dub arrival − first
             // line start ≈ true lag L0) is the bootstrap reference
             // for the first boundary (see seedMarker): it points at
@@ -1136,9 +1427,18 @@ class DubDelayTracker(
         var burstMarker: TurnMarker? = null
         if (isBurst) {
             burstSeq++
+            // v1.0.21 (21b) — remember this burst for the post-hoc
+            // tx anchor: its arrival wall, its seq, and whether
+            // the VAD path paired it (the tx anchor only adds a
+            // pair when the VAD path did not).
+            val burstOkBefore = burstOk
             val (burstHold, marker) = onDubBurst(nowMs)
             hold = burstHold
             burstMarker = marker
+            lastBurstArrivalMs = nowMs
+            lastBurstSeqTx = burstSeq
+            lastBurstPaired = burstOk > burstOkBefore
+            lastBurstMarker = marker
         } else if (isFirstChunk) {
             // v1.0.17 — the session's (or post-reconnect) first
             // chunk is not a burst by the old test, but it still
@@ -1270,6 +1570,14 @@ class DubDelayTracker(
             } else {
                 syncErr
             }
+            // v1.0.21 (21d) — keep the sync error for the
+            // max/p90 diagnostics (the end-of-session photo hides
+            // mid-session drift; these numbers do not).
+            if (lastSyncErrorMs != null) {
+                syncErrs.addLast(lastSyncErrorMs!!)
+                while (syncErrs.size > MAX_SYNC_ERR_HISTORY) syncErrs.removeFirst()
+                if (firstSyncAtMs == null) firstSyncAtMs = playWallMs
+            }
             // Play-anchored slice samples for this burst.
             val slices = pairingLog.filter { it.burstSeq == seq }
                 .sortedBy { it.dubCumMs }
@@ -1285,6 +1593,17 @@ class DubDelayTracker(
                 } else {
                     0L
                 }
+                // v1.0.21 (21d) — slice-play errors ((play sample)
+                // − D) and the per-burst END lateness (the last
+                // slice-play error of this burst — the voice
+                // lateness at the END of the sentence).
+                val sliceErrs = samples.map { it - delayMs }
+                for (e in sliceErrs) {
+                    slicePlayErrs.addLast(e)
+                }
+                while (slicePlayErrs.size > MAX_SLICE_PLAY_HISTORY) slicePlayErrs.removeFirst()
+                endLatenessErrs.addLast(sliceErrs.last())
+                while (endLatenessErrs.size > MAX_SYNC_ERR_HISTORY) endLatenessErrs.removeFirst()
             }
         }
         // Pairing-log entries of this burst and older are spent.
@@ -1525,6 +1844,16 @@ class DubDelayTracker(
             acceptTurnComplete(marker, nowMs, viaSeed = true, sPos = null)
             return
         }
+        // v1.0.21 (21a) — D-BASED + MONOTONE selection FIRST: the
+        // marker nearest (now − selection lag) among markers newer
+        // than the last accepted one. Then the anchor-implied path,
+        // then the seed-lag fallback.
+        val dBased = selectDBased(nowMs, isTc = true)
+        if (dBased != null) {
+            dBasedSel++
+            acceptTurnComplete(dBased, nowMs, viaSeed = false, sPos = null, viaDBased = true)
+            return
+        }
         val (marker, sPos) = selectByAnchor(nowMs, isTc = true)
         if (marker == null) {
             // Anchor path found nothing (stale anchor): recover from
@@ -1553,7 +1882,8 @@ class DubDelayTracker(
         marker: TurnMarker,
         nowMs: Long,
         viaSeed: Boolean,
-        sPos: Long?
+        sPos: Long?,
+        viaDBased: Boolean = false
     ): Boolean {
         val anchorSpeechNew = marker.audioMs + marker.countedMs
         // A bootstrap (approximate) anchor must never veto an exact
@@ -1573,7 +1903,7 @@ class DubDelayTracker(
             tcConsistency++
             return false
         }
-        if (!viaSeed) {
+        if (!viaSeed && !viaDBased) {
             // Anchor path: consistency against the anchor-implied
             // lag (wall of S, interpolated from the slices), not
             // the floor-pinned slice median.
@@ -1582,10 +1912,14 @@ class DubDelayTracker(
                 tcConsistency++
                 return false
             }
-        } else if (isDTrusted(nowMs)) {
+        } else if (viaSeed) {
             // Seed-lag fallback recovery: cross-check against D
             // when D is trusted (a transient lag would make the
             // seed lag wrong by seconds).
+            // (v1.0.21: a D-BASED marker gets neither check — the
+            // sim's _accept_tc likewise checks only 'anchor' and
+            // 'seed-fb'; the D-based pick is itself bounded by
+            // the 1500 ms residual against the selection lag.)
             if (kotlin.math.abs(latency - dBasedLagMs()) > SEED_FB_D_CHECK_MS) {
                 tcConsistency++
                 return false
@@ -1614,6 +1948,9 @@ class DubDelayTracker(
         lastTcSeq = marker.seq
         lastTcDubMs = cumDubMs
         tcOk++
+        // v1.0.21 (21a) — the D-based selection only considers
+        // markers newer than this one from now on.
+        noteAccepted(marker.seq)
         recordTurnPair(nowMs)
         feedSample(latency, nowMs, boundary = true)
         reanchor(anchorSpeechNew, nowMs, exact = true)
@@ -1678,6 +2015,10 @@ class DubDelayTracker(
             burstDCheckStreak = 0
             lastBoundarySampleMs = latency
             lastBoundaryAtMs = nowMs
+            // v1.0.21 (21a/21b) — monotone record + the marker
+            // the tx anchor's agreement check reads.
+            noteAccepted(marker.seq)
+            lastBurstMarker = marker
             recordTurnPair(nowMs)
             feedSample(latency, nowMs, boundary = true)
             reanchor(marker.audioMs, nowMs, exact = true)
@@ -1685,23 +2026,39 @@ class DubDelayTracker(
             // v1.0.19 — ROBUST HOLD + SLEW (see robustHoldMs).
             return robustHoldMs(nowMs, prevHoldMs) to marker
         }
-        val (anchorMarker, sPos) = selectByAnchor(nowMs, isTc = false)
+        // v1.0.21 (21a) — D-BASED + MONOTONE selection FIRST: the
+        // marker nearest (now − selection lag) among markers newer
+        // than the last accepted one. Then the anchor-implied path,
+        // then the seed-lag fallback.
         var viaSeed = false
-        val marker: TurnMarker = if (anchorMarker != null) {
-            anchorMarker
+        var viaDBased = false
+        val dBasedMarker = selectDBased(nowMs, isTc = false)
+        val marker: TurnMarker
+        val sPos: Long?
+        if (dBasedMarker != null) {
+            dBasedSel++
+            viaDBased = true
+            marker = dBasedMarker
+            sPos = null
         } else {
-            // Fallback: seed-lag marker (independent reference).
-            // A wide anchor net only catches stale markers.
-            val seed = seedMarker(nowMs, isTc = false)
-            if (seed == null) {
-                burstNoMarker++
-                // v1.0.19 — NO-MARKER RE-ANCHOR (see 5b below).
-                reanchorToDMarker(nowMs)
-                return lastHoldMs to null
+            val (anchorMarker, anchorSPos) = selectByAnchor(nowMs, isTc = false)
+            sPos = anchorSPos
+            marker = if (anchorMarker != null) {
+                anchorMarker
+            } else {
+                // Fallback: seed-lag marker (independent reference).
+                // A wide anchor net only catches stale markers.
+                val seed = seedMarker(nowMs, isTc = false)
+                if (seed == null) {
+                    burstNoMarker++
+                    // v1.0.19 — NO-MARKER RE-ANCHOR (see 5b below).
+                    reanchorToDMarker(nowMs)
+                    return lastHoldMs to null
+                }
+                viaSeed = true
+                burstFallback++
+                seed
             }
-            viaSeed = true
-            burstFallback++
-            seed
         }
         // A marker older than the anchor (a late burst for an old
         // turn) or inconsistent with the anchor: no sample, and no
@@ -1719,7 +2076,7 @@ class DubDelayTracker(
             burstDCheckStreak = 0
             return lastHoldMs to null
         }
-        if (!viaSeed) {
+        if (!viaSeed && !viaDBased) {
             val ref = impliedLagMs(nowMs, sPos)
             if (kotlin.math.abs(latency - ref) > SAMPLE_CONSISTENCY_MS) {
                 burstConsistency++
@@ -1755,6 +2112,10 @@ class DubDelayTracker(
             burstOk++
             lastBoundarySampleMs = latency
             lastBoundaryAtMs = nowMs
+            // v1.0.21 (21a/21b) — monotone record + the marker
+            // the tx anchor's agreement check reads.
+            noteAccepted(marker.seq)
+            lastBurstMarker = marker
             recordTurnPair(nowMs)
             feedSample(latency, nowMs, boundary = true)
             reanchor(marker.audioMs, nowMs, exact = true)
@@ -1764,6 +2125,11 @@ class DubDelayTracker(
         } else if (isDTrusted(nowMs) &&
             kotlin.math.abs(latency - dBasedLagMs()) > SEED_FB_D_CHECK_MS
         ) {
+            // v1.0.21: this 2500 ms D-check is the sim's burst
+            // path for BOTH the seed-fb and the d-based marker
+            // (the d-based pick itself is bounded by the 1500 ms
+            // residual, the implied-consistency check is skipped
+            // for it — like the sim's _accept_tc for tc).
             burstConsistency++
             burstDCheckStreak = 0
             return lastHoldMs to null
@@ -1772,6 +2138,10 @@ class DubDelayTracker(
         burstDCheckStreak = 0
         lastBoundarySampleMs = latency
         lastBoundaryAtMs = nowMs
+        // v1.0.21 (21a/21b) — monotone record + the marker the
+        // tx anchor's agreement check reads.
+        noteAccepted(marker.seq)
+        lastBurstMarker = marker
         recordTurnPair(nowMs)
         feedSample(latency, nowMs, boundary = true)
         reanchor(marker.audioMs, nowMs, exact = true)
@@ -1887,6 +2257,287 @@ class DubDelayTracker(
         if (exact) everExactAnchor = true
     }
 
+    // ---- v1.0.21 (21b) — transcription anchor ----
+    /**
+     * The service finalizes one VAD turn's tx source record at
+     * its end ([startWallMs]/[endWallMs] are the turn's walls;
+     * the counted speech comes from the completed marker, which
+     * [onSpeechTurnEnd] captured). Fragments that arrived before
+     * the turn ended were parked in [txPendingFrags] and are
+     * attached now (which is also when the asrLag calibration
+     * can run for them).
+     */
+    @Synchronized
+    fun noteTxSource(startWallMs: Long, endWallMs: Long) {
+        val turnIdx = lastCompletedTurnIdx ?: return
+        // The completed marker's own start wall is the turn's
+        // true start; the service-passed start is only a fallback
+        // (it can already be the NEXT turn's start when the end
+        // arrives late).
+        val startMs = if (lastCompletedTurnWallMs > 0L) lastCompletedTurnWallMs else startWallMs
+        val entry = TxSourceEntry(
+            startWallMs = startMs,
+            endWallMs = endWallMs,
+            sentMs = lastCompletedTurnCountedMs,
+            firstFragMs = null,
+            lastFragMs = null,
+            nFrag = 0
+        )
+        txSrc[turnIdx] = entry
+        val pending = txPendingFrags.remove(turnIdx)
+        if (pending != null) {
+            for (arrival in pending) attachTxFrag(entry, turnIdx, arrival)
+        }
+    }
+
+    /** asrLag calibration + fragment bookkeeping for one source
+     * entry. The first fragment arriving AFTER the turn ended is
+     * (approximately) the line's last fragment: sample =
+     * arrival − turnEnd + 300 ms (the VAD end rule fires ~300 ms
+     * after the last speech frame). Only for short turns (a
+     * merged turn's end wall belongs to its LAST line, not to
+     * this fragment's line). */
+    private fun attachTxFrag(entry: TxSourceEntry, turnIdx: Long, arrival: Long) {
+        if (entry.firstFragMs == null) entry.firstFragMs = arrival
+        entry.lastFragMs = arrival
+        entry.nFrag++
+        if (arrival > entry.endWallMs &&
+            entry.endWallMs - entry.startWallMs <= 5000L &&
+            !txCalibratedTurns.contains(turnIdx)
+        ) {
+            val sample = arrival - entry.endWallMs + 300L
+            if (sample in 0L..TX_ASR_CAL_MAX_MS) {
+                txAsrEmaMs = 0.7 * txAsrEmaMs + 0.3 * sample.toDouble()
+                txAsrSamples++
+                txCalibratedTurns.add(turnIdx)
+            }
+        }
+    }
+
+    /** The VAD turn an input-transcription fragment belongs to:
+     * the currently open turn while one is open, else the last
+     * completed turn (a fragment can arrive just after its turn
+     * ended). Null only before the first turn. */
+    private fun currentTxTurnIdx(): Long? {
+        val last = markers.lastOrNull()
+        if (last != null && !last.done) return currentTurnIdx
+        return lastCompletedTurnIdx ?: if (markers.isNotEmpty()) currentTurnIdx else null
+    }
+
+    /**
+     * One input-transcription fragment arrived (Gemini Live
+     * streams them DURING each line). Grouping: a new tx
+     * sentence starts when a fragment arrives >=800 ms after
+     * the previous fragment (any turn). Groups merge across
+     * short-pause lines — the anchor's time-based selection
+     * handles that. Also attaches the fragment to its turn's
+     * source entry for the asrLag calibration (or parks it
+     * until the turn finalizes).
+     */
+    @Synchronized
+    fun noteTxInFragment(arrivalMs: Long) {
+        if (txLastFragAtMs != null && arrivalMs - txLastFragAtMs!! >= TX_GAP_MS) {
+            closeTxGroup()
+        }
+        txLastFragAtMs = arrivalMs
+        val cur = txCurGroup
+        if (cur == null) {
+            val g = TxGroup(firstMs = arrivalMs, lastMs = arrivalMs, closed = false)
+            txCurGroup = g
+            txGroups.add(g)
+            txGroupsSeen++
+            while (txGroups.size > 500) txGroups.removeAt(0)
+        } else {
+            cur.lastMs = arrivalMs
+        }
+        val turnIdx = currentTxTurnIdx()
+        if (turnIdx == null) return
+        val entry = txSrc[turnIdx]
+        if (entry == null) {
+            val list = txPendingFrags.getOrPut(turnIdx) { ArrayList() }
+            list.add(arrivalMs)
+        } else {
+            attachTxFrag(entry, turnIdx, arrivalMs)
+        }
+    }
+
+    private fun closeTxGroup() {
+        txCurGroup?.let { it.closed = true }
+        txCurGroup = null
+    }
+
+    /** One output-transcription fragment arrived for a burst
+     * (counted per burst seq; a burst has 1–2). */
+    @Synchronized
+    fun noteTxOutFragment(burstSeq: Long, arrivalMs: Long) {
+        txOutFrags[burstSeq] = (txOutFrags[burstSeq] ?: 0) + 1
+    }
+
+    /** Inverse of [wallAtSpeech]: counted-speech position of a
+     * wall time, interpolated from the slices. Null when no
+     * slice covers it. */
+    private fun audioAt(wallMs: Long): Long? {
+        for (slice in speechSlices) {
+            if (wallMs in slice.startWallMs..slice.endWallMs) {
+                val spanWall = maxOf(1L, slice.endWallMs - slice.startWallMs)
+                val spanAudio = maxOf(1L, slice.endAudioMs - slice.startAudioMs)
+                return slice.startAudioMs +
+                    (wallMs - slice.startWallMs) * spanAudio / spanWall
+            }
+        }
+        return null
+    }
+
+    /** Estimated start wall of a tx sentence: its first fragment
+     * arrived at lineStart + fragDelay + asrLag. */
+    private fun txSentenceStartMs(group: TxGroup): Long =
+        (group.firstMs - txAsrEmaMs - TX_FRAG_DELAY_MS).toLong()
+
+    /**
+     * v1.0.21 (21b) — POST-HOC tx anchor for a burst, called
+     * when the first output-transcription fragment of that burst
+     * arrives (the burst is confirmed to be a real translation).
+     * [nowMs] is the fragment arrival; the burst arrival wall is
+     * the stored [lastBurstArrivalMs].
+     *
+     * MARKER-FREE: with VAD turns ~24 s long, the only VAD
+     * markers are turn starts ~24 s apart — a mid-turn burst has
+     * NO marker within 2.5 s, so requiring a VAD marker makes
+     * the anchor fail exactly when it is needed most. The sample
+     * is therefore computed against the LINE start estimated from
+     * the transcription (firstFrag − asrLagEma − 500 ms), and the
+     * re-anchor uses the interpolated speech position of that
+     * start ([audioAt]); a VAD marker is only a fallback for the
+     * re-anchor when no slice covers the start. The monotone
+     * check is on the audio position, not the marker seq. A
+     * merged tx group (several lines) can still give a +1-line
+     * error — the D-check and the cluster reference absorb it
+     * (the anchor must be right more often than wrong).
+     *
+     * NOT implemented (reverted in the sim, see the task): the
+     * tx-hold (E2) and the staleness skip (E3).
+     */
+    @Synchronized
+    fun applyTxAnchor(nowMs: Long, burstSeq: Long) {
+        if (lastBurstSeqTx != burstSeq || lastBurstArrivalMs == null) return
+        // One application per burst: a burst has 1–2 output-tx
+        // fragments, and each one calls this — without the guard
+        // a rescued burst counted 2 pairs / 2 tx_ok.
+        if (txAnchoredBurst == burstSeq) return
+        val burstArrival = lastBurstArrivalMs!!
+        val dlag = selLagMs()
+        val target = burstArrival - dlag
+        // Select the tx sentence whose estimated start is nearest
+        // the selection-lag target, inside the window. During
+        // bootstrap, record EVERY in-window candidate's lat into
+        // the pool: each burst contributes one correct candidate
+        // (its own line) and a few wrong ones spread out, so the
+        // densest cluster is the true lag even when the seed is a
+        // whole line off.
+        var best: TxGroup? = null
+        var bestRes: Long? = null
+        for (g in txGroups) {
+            // CLOSED groups only: the next line's group is still
+            // OPEN when this burst arrives (its first fragment
+            // just arrived), while this burst's own line group
+            // closed ~1.5 s ago. An open group is a future line,
+            // never this burst's line.
+            if (!g.closed) continue
+            val startEst = txSentenceStartMs(g)
+            if (startEst !in (burstArrival - TX_WIN_MS)..(burstArrival - 300L)) continue
+            if (!refEstablished()) {
+                seedCand.add(burstArrival - startEst)
+                while (seedCand.size > MAX_SEED_CAND) seedCand.removeAt(0)
+            }
+            val res = kotlin.math.abs(startEst - target)
+            if (bestRes == null || res < bestRes) {
+                best = g
+                bestRes = res
+            }
+        }
+        if (best == null) {
+            txNoMk++
+            return
+        }
+        // Residual bound once the reference is established: a
+        // mid-turn burst in a merged group is ~3.4 s from its
+        // group's start — it cannot be attributed to that start,
+        // so reject it instead of feeding a +1-line sample. OFF
+        // during bootstrap (the target is wrong while the seed is
+        // wrong).
+        if (refEstablished() && bestRes != null && bestRes > TX_RES_MS) {
+            txNoMk++
+            return
+        }
+        val startEst = txSentenceStartMs(best)
+        val latTx = burstArrival - startEst
+        if (latTx !in 0L..20000L) {
+            txCons++
+            return
+        }
+        // Wide window while bootstrapping (both clusters get in,
+        // the clustering sorts them out); tight once the cluster
+        // reference is established.
+        val txWin = if (refEstablished()) TX_DCHECK_MS else TX_BOOT_WIN_MS
+        if (kotlin.math.abs(latTx - dlag) > txWin) {
+            txCons++
+            return
+        }
+        // The VAD path already paired this burst to the marker
+        // whose wall is the same line start: agreement, no double
+        // sample.
+        val lastMarker = lastBurstMarker
+        if (lastMarker != null &&
+            kotlin.math.abs(lastMarker.wallMs - startEst) <= 500L
+        ) {
+            txAgree++
+            txAnchoredBurst = burstSeq
+            return
+        }
+        // Re-anchor position: interpolated speech position of the
+        // line start; nearest VAD marker only as a fallback.
+        var audioPos = audioAt(startEst)
+        var mBest: TurnMarker? = null
+        var mRes: Long? = null
+        for (m in markers) {
+            val res = kotlin.math.abs(m.wallMs - startEst)
+            if (mRes == null || res < mRes) {
+                mBest = m
+                mRes = res
+            }
+        }
+        if (audioPos == null) {
+            if (mBest == null || (mRes ?: Long.MAX_VALUE) > 2500L) {
+                txNoMk++
+                return
+            }
+            audioPos = mBest.audioMs
+        }
+        // Monotone in speech position (not marker seq): the
+        // anchor must not jump backwards.
+        val lastAudio = txLastAudioPos
+        if (lastAudio != null && audioPos < lastAudio) {
+            txCons++
+            return
+        }
+        lastBoundarySampleMs = latTx
+        lastBoundaryAtMs = nowMs
+        feedSample(latTx, nowMs, boundary = true)
+        reanchor(audioPos, nowMs, exact = true)
+        if (!lastBurstPaired) {
+            recordTurnPair(nowMs)
+        }
+        txOk++
+        txAnchoredBurst = burstSeq
+        txLastAudioPos = audioPos
+        if (mBest != null && (mRes ?: Long.MAX_VALUE) <= 2500L) {
+            txLastMarkerSeq = mBest.seq
+            lastBurstMarker = mBest
+            noteAccepted(mBest.seq)
+        }
+        burstDCheckStreak = 0
+    }
+
     private fun recordTurnPair(nowMs: Long) {
         turnPairTimes60s.addLast(nowMs)
         while (turnPairTimes60s.isNotEmpty() &&
@@ -1894,6 +2545,9 @@ class DubDelayTracker(
         ) {
             turnPairTimes60s.removeFirst()
         }
+        // v1.0.21 (21d) — all-time list for the pairs-in-first-
+        // 60-s count.
+        turnPairTimesAll.add(nowMs)
     }
 
     /**
@@ -1929,6 +2583,13 @@ class DubDelayTracker(
                 return (delayMs - sampleMs).coerceAtLeast(0L)
             }
             sliceDStreak = 0
+        }
+        // v1.0.21 (21h) — every accepted boundary sample feeds
+        // the independent lag reference (most recent 30, tx +
+        // VAD burst + tc alike).
+        if (boundary) {
+            bndSamples.add(sampleMs)
+            while (bndSamples.size > MAX_BND_SAMPLES) bndSamples.removeAt(0)
         }
         lastSampleMs = sampleMs
         lastSampleAtMs = nowMs
@@ -2228,15 +2889,60 @@ class DubDelayTracker(
         val newestAgePart = markers.lastOrNull()?.let {
             "%d ms trước".format((nowMs - it.wallMs).coerceAtLeast(0L))
         } ?: "—"
-        val markerPart = " · mốc %d (mới nhất %s) · tách thử %d/được %d · stall %d · tốc độ %.2f×".format(
-            markers.size, newestAgePart, splitAttempts, splitMarkers,
+        val markerPart = " · mốc %d (mới nhất %s) · tách thử cũ %d/mới %d/được %d · stall %d · tốc độ %.2f×".format(
+            markers.size, newestAgePart, splitAttemptsOld, splitAttempts, splitMarkers,
             stallEpisodes, targetSpeed
         )
-        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s".format(
+        // v1.0.21 (21d) — the end-of-session photo hides
+        // mid-session drift, so the max/p90 over the whole
+        // session are reported: burst-start sync error, slice-play
+        // error, per-burst END lateness, the D-pinned fraction,
+        // pairs in the first 60 s, the first measurable sync time,
+        // and the tx-anchor counters + the D-based pick count.
+        // (Slice-play here is all-session, not the sim's "steady"
+        // window — the tracker has no steady-window concept.)
+        dHistory.addLast(nowMs to delayMs)
+        while (dHistory.size > 7200) dHistory.removeFirst()
+        val diag21Part = run {
+            val syncMax = maxAbsErr(syncErrs)
+            val syncP90 = p90AbsErr(syncErrs)
+            val sliceMax = maxAbsErr(slicePlayErrs)
+            val sliceP90 = p90AbsErr(slicePlayErrs)
+            val endMax = maxAbsErr(endLatenessErrs)
+            val endP90 = p90AbsErr(endLatenessErrs)
+            val pinnedPct = if (dHistory.isEmpty()) 0 else
+                dHistory.count { it.second >= D_PINNED_MS } * 100 / dHistory.size
+            val firstBase = if (sessionStartMs > 0L) sessionStartMs
+                else turnPairTimesAll.firstOrNull() ?: nowMs
+            val pairsFirst60 = turnPairTimesAll.count { it - firstBase <= 60_000L }
+            val firstSyncPart = firstSyncAtMs?.let { fs ->
+                val base = if (sessionStartMs > 0L) sessionStartMs else fs
+                "%d s".format(((fs - base).coerceAtLeast(0L)) / 1000L)
+            } ?: "—"
+            " · lệch max %s/p90 %s (n=%d) · lát-phát max %s/p90 %s (n=%d) · cuối-burst max %s/p90 %s (n=%d) · D ghim %d%% · cặp 60 s đầu %d · đồng bộ đầu %s · tx ok %d/no-mk %d/cons %d/agree %d asr %d ms (n=%d) · chọn-D %d".format(
+                syncMax?.toString() ?: "—", syncP90?.toString() ?: "—", syncErrs.size,
+                sliceMax?.toString() ?: "—", sliceP90?.toString() ?: "—", slicePlayErrs.size,
+                endMax?.toString() ?: "—", endP90?.toString() ?: "—", endLatenessErrs.size,
+                pinnedPct, pairsFirst60, firstSyncPart,
+                txOk, txNoMk, txCons, txAgree, txAsrEmaMs.toInt(), txAsrSamples, dBasedSel
+            )
+        }
+        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s%s".format(
             delaySec, samplePart, sampleTimes60s.size, turnPairTimes60s.size,
             speechSlices.size, lastHoldMs / 1000.0, vadPart, droppedPart,
-            syncPart, pipePart, ratioPart, framePart, rejectPart, markerPart
+            syncPart, pipePart, ratioPart, framePart, rejectPart, markerPart, diag21Part
         )
+    }
+
+    /** v1.0.21 (21d) — max / p90 of the absolute values. */
+    private fun maxAbsErr(errs: List<Long>): Long? =
+        errs.maxOfOrNull { kotlin.math.abs(it) }
+
+    private fun p90AbsErr(errs: List<Long>): Long? {
+        if (errs.isEmpty()) return null
+        val sorted = errs.map { kotlin.math.abs(it) }.sorted()
+        val idx = (sorted.size * 0.9).toInt().coerceAtMost(sorted.size - 1)
+        return sorted[idx]
     }
 
     /** Fresh pairing after a (re)connect: the slice state restarts;
@@ -2371,6 +3077,45 @@ class DubDelayTracker(
         stalled = false
         stallEpisodes = 0
         burstDCheckStreak = 0
+        // v1.0.21 — D-based selection, split counting, tx anchor,
+        // lag reference, burst memory and sync-error history.
+        lastAcceptedSeq = null
+        dBasedSel = 0
+        splitAttemptsOld = 0
+        txSrc.clear()
+        txPendingFrags.clear()
+        txGroups.clear()
+        txCurGroup = null
+        txLastFragAtMs = null
+        txAsrEmaMs = 600.0
+        txAsrSamples = 0
+        txCalibratedTurns.clear()
+        txOutFrags.clear()
+        txOk = 0
+        txNoMk = 0
+        txCons = 0
+        txAgree = 0
+        txGroupsSeen = 0
+        txLastMarkerSeq = null
+        txLastAudioPos = null
+        txAnchoredBurst = null
+        currentTurnIdx = 0L
+        lastCompletedTurnIdx = null
+        lastCompletedTurnCountedMs = 0L
+        lastCompletedTurnWallMs = 0L
+        bndSamples.clear()
+        seedCand.clear()
+        lastBurstArrivalMs = null
+        lastBurstSeqTx = null
+        lastBurstPaired = false
+        lastBurstMarker = null
+        syncErrs.clear()
+        slicePlayErrs.clear()
+        endLatenessErrs.clear()
+        dHistory.clear()
+        turnPairTimesAll.clear()
+        sessionStartMs = 0L
+        firstSyncAtMs = null
         targetSpeed = 1.0
         levelRaiseAtMs = null
         lastStretchUpdateMs = 0L

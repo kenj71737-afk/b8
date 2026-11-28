@@ -177,6 +177,10 @@ class VoicePlayer(
      * gets 700 ms — the background player's queue keeps 500 ms.
      */
     private val holdQueue = DelayedAudioQueue(staleMs = 700L)
+    /** v1.0.21 (21d) — dubbed-voice chunks dropped by the hold
+     * queue (overdue >700 ms, or evicted past the cap) this
+     * session, for the diagnostics HUD. */
+    val droppedChunks: Int get() = holdQueue.droppedBlocks
     @Volatile private var currentHoldMs = 0L
     private var audioTrack: AudioTrack? = null
     /**

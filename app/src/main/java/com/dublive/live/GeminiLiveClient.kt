@@ -67,6 +67,16 @@ class GeminiLiveClient(
         fun onClosed(code: Int, reason: String)
         /** Source-language transcript (debug only; the service logs it). */
         fun onInputText(text: String) {}
+        /**
+         * v1.0.21 — output (translated) transcription, as its OWN
+         * callback. It used to be folded into [onTranslatedText]
+         * together with the model turn's text parts, so the service
+         * could not tell a real translated sentence (which the tx
+         * anchor needs, per burst) apart from the model-turn text.
+         * The service falls back to the model-turn text groups when
+         * output transcription never arrives.
+         */
+        fun onOutputTranscription(text: String) {}
     }
 
     companion object {
@@ -512,7 +522,11 @@ class GeminiLiveClient(
                 val outTx = optObj(content, "outputTranscription", "output_transcription")
                 if (outTx != null) {
                     val t = outTx.optString("text")
-                    if (t.isNotEmpty()) listener.onTranslatedText(t, false)
+                    // v1.0.21 — own callback (see Listener): the
+                    // service needs the translated sentence per
+                    // burst for the tx anchor; it must not be mixed
+                    // with the model turn's text parts.
+                    if (t.isNotEmpty()) listener.onOutputTranscription(t)
                 }
                 if (optBool(content, "turnComplete", "turn_complete")) {
                     listener.onTurnComplete()

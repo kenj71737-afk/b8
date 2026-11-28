@@ -438,12 +438,30 @@ class DubbingService : Service() {
                 }
                 // v1.0.19 — push the tracker's time-stretch target
                 // to the player (also pushed at every burst play):
-                // 1.0x when caught up, up to 1.5x when the dub is
-                // falling behind the picture.
+                // 1.0x when caught up, up to 1.25x when the dub is
+                // falling behind the picture (v1.0.23: trần 1,25×,
+                // was 1,5× — user 12:11 "Giọng bị méo khi bắt kịp").
                 try {
                     voicePlayer?.setPlaybackSpeed(tracker?.currentStretchSpeed ?: 1.0)
                 } catch (e: Exception) {
                     Log.w(TAG, "setPlaybackSpeed failed", e)
+                }
+                // v1.0.23 — thiết bị đo tốc độ áp dụng THẬT: đẩy
+                // readback + tốc độ đo bằng độ dốc playhead + cờ
+                // hỗ trợ stretch vào tracker mỗi giây để HUD hiện
+                // "tốc độ <target>× (thật <đo>×)" thay vì chỉ in
+                // target như trước.
+                try {
+                    val vp = voicePlayer
+                    if (vp != null) {
+                        tracker?.noteAppliedSpeed(
+                            vp.appliedSpeed,
+                            vp.measuredSpeed ?: 0.0,
+                            vp.isStretchSupported
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "noteAppliedSpeed failed", e)
                 }
             }
             // Silence diagnosis: capturing but nothing heard for a while.
@@ -903,9 +921,13 @@ class DubbingService : Service() {
                 // for the video's currentTime at this play start.
                 // v1.0.18 — fifth value: the backlog ahead of the
                 // burst's first frame at write time.
-                onBurstPlayed = { seq, playWallMs, pipelineMs, estimated, backlogMs ->
+                // v1.0.23 — sixth value: the MEASURED applied
+                // stretch speed (playhead slope, 0.0 = unmeasured)
+                // — the tracker divides the in-burst dub offset by
+                // this, not by the target.
+                onBurstPlayed = { seq, playWallMs, pipelineMs, estimated, backlogMs, trueSpeed ->
                     try {
-                        tracker?.onBurstPlayed(seq, playWallMs, pipelineMs, estimated, backlogMs)
+                        tracker?.onBurstPlayed(seq, playWallMs, pipelineMs, estimated, backlogMs, trueSpeed)
                     } catch (e: Exception) {
                         Log.w(TAG, "tracker burstPlayed failed", e)
                     }
@@ -923,9 +945,10 @@ class DubbingService : Service() {
                 // thread). The mid-burst pipeline sample feeds the
                 // tracker's EMA with the TYPICAL pipeline (the
                 // burst-first one under-measures it ~10x); the
-                // write lateness raises the stretch to 1.5x when
-                // the player loop is >200 ms behind; the track
-                // level raises it when the buffer is filling.
+                // write lateness raises the stretch to 1.25x when
+                // the player loop is >200 ms behind (v1.0.23: trần
+                // 1,25×, was 1,5×); the track level raises it when
+                // the buffer is filling.
                 onPipelineSample = { pipelineMs, backlogMs ->
                     try {
                         tracker?.onPipelineSample(pipelineMs, backlogMs)

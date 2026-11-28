@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.SurfaceTexture
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
@@ -35,6 +36,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import java.io.ByteArrayOutputStream
 
 /**
  * Local-file player (ExoPlayer) with the same dub pipeline as the WebView.
@@ -45,6 +47,14 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
  * When delay is off, the overlay hides and the TextureView shows directly.
  * Frame snapshots are capped at 960 px wide by the TextureView size; this
  * costs CPU, so v1 snapshots at 15 fps on purpose.
+ *
+ * v1.0.23 — TRỄ CỐ ĐỊNH 40 s: the queue stores JPEG bytes, not live
+ * Bitmaps — 40 s of 960x540 ARGB Bitmaps is ~626 × 2,07 MB ≈ 1,30 GB
+ * (same OOM wall as the web canvas); JPEG q70 is ~630 × 40–60 KB ≈
+ * 25–38 MB, decoded only when the frame is due. While the 40 s
+ * buffer fills, a wait overlay covers the live TextureView
+ * ("Đang chuẩn bị lồng tiếng… 0:12 / 0:40"), like the web pre-roll;
+ * seeking / changing file restarts the 40 s wait.
  *
  * Audio (v1.0.11): the film sound reaches the service through a tap
  * processor on the player's audio pipeline (LocalTapProcessor), so the
@@ -62,11 +72,16 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private lateinit var delayedFrameView: ImageView
     private lateinit var subtitleView: TextView
     private lateinit var hudView: TextView
+    private lateinit var waitView: TextView
     private var player: ExoPlayer? = null
     private var currentUri: Uri? = null
     private var dubbing = false
     private var delayOn = true
-    private var currentDelayMs = 5000L
+    private var currentDelayMs = 40000L
+    /** v1.0.23 — wall time the current 40 s buffer started filling
+     * (first snapshot of this dubbing run); 0 = not filling. Drives
+     * the pre-roll wait overlay's 0:XX / 0:40 counter. */
+    private var bufferStartMs = 0L
     private val uiHandler = Handler(Looper.getMainLooper())
     private var pendingMicAfterPermission = false
     /** v1.0.11 — the tap processor on the player's audio pipeline. */
@@ -97,7 +112,7 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         }
     }
 
-    private val frameQueue = ArrayDeque<Pair<Long, Bitmap>>()
+    private val frameQueue = ArrayDeque<Pair<Long, ByteArray>>()
     private val pumpHandler = Handler(Looper.getMainLooper())
     private var lastSnapshotAt = 0L
     private var shownBitmap: Bitmap? = null
@@ -118,6 +133,29 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
                 startService(intent)
             } catch (_: Exception) { }
         }
+
+        // v1.0.23 — seek / skip / new timeline position: pre-seek
+        // frames must never play after a seek (at D = 40 s the
+        // stale queue would show up to 40 s of the old scene).
+        // Clear the buffer and restart the 40 s pre-roll wait.
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            clearDelayBuffer()
+        }
+    }
+
+    /** v1.0.23 — drop the delay buffer and restart the pre-roll
+     * (seek / new file / new timeline position). */
+    private fun clearDelayBuffer() {
+        synchronized(frameQueue) { frameQueue.clear() }
+        bufferStartMs = 0L
+        shownBitmap?.recycle()
+        shownBitmap = null
+        delayedFrameView.setImageBitmap(null)
+        delayedFrameView.visibility = View.GONE
     }
 
     private val pickFileLauncher = registerForActivityResult(
@@ -262,6 +300,7 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         delayedFrameView = findViewById(R.id.delayedFrameView)
         subtitleView = findViewById(R.id.localSubtitleView)
         hudView = findViewById(R.id.localHudView)
+        waitView = findViewById(R.id.localWaitView)
         textureView.surfaceTextureListener = this
 
         // v1.0.11 — the tap processor sits on the player's audio
@@ -298,6 +337,9 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
 
     private fun openVideo(uri: Uri) {
         currentUri = uri
+        // v1.0.23 — new file: drop the old delay buffer, the 40 s
+        // pre-roll restarts from the new file's first frames.
+        clearDelayBuffer()
         try {
             contentResolver.takePersistableUriPermission(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -500,17 +542,34 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         val now = System.currentTimeMillis()
         if (now - lastSnapshotAt < 66L) return
         lastSnapshotAt = now
+        if (bufferStartMs == 0L) bufferStartMs = now
         val bmp = textureView.bitmap ?: return
+        // v1.0.23 — JPEG bytes, not the live Bitmap: 40 s of raw
+        // Bitmaps is ~1,3 GB; JPEG q70 is ~25–38 MB. The temp
+        // Bitmap is recycled at once (only the bytes are kept).
+        val bytes = try {
+            ByteArrayOutputStream().use { out ->
+                bmp.compress(Bitmap.CompressFormat.JPEG, 70, out)
+                out.toByteArray()
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try { bmp.recycle() } catch (_: Exception) { }
+        }
+        if (bytes == null || bytes.isEmpty()) return
         synchronized(frameQueue) {
-            frameQueue.addLast(now to bmp)
+            frameQueue.addLast(now to bytes)
             val cap = (currentDelayMs / 66L).toInt() + 20
-            while (frameQueue.size > cap) frameQueue.removeFirst().second.recycle()
+            while (frameQueue.size > cap) frameQueue.removeFirst()
         }
     }
 
     private fun pumpFrame() {
         if (!dubbing || !delayOn) {
             if (delayedFrameView.visibility != View.GONE) delayedFrameView.visibility = View.GONE
+            if (waitView.visibility != View.GONE) waitView.visibility = View.GONE
+            bufferStartMs = 0L
             return
         }
         val now = System.currentTimeMillis()
@@ -518,7 +577,12 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         synchronized(frameQueue) {
             while (frameQueue.isNotEmpty() && frameQueue.first().first <= now - currentDelayMs) {
                 due?.recycle()
-                due = frameQueue.removeFirst().second
+                val bytes = frameQueue.removeFirst().second
+                due = try {
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                } catch (_: Exception) {
+                    null
+                }
             }
         }
         if (due != null) {
@@ -526,6 +590,20 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
             shownBitmap = due
             delayedFrameView.setImageBitmap(due)
             delayedFrameView.visibility = View.VISIBLE
+            if (waitView.visibility != View.GONE) waitView.visibility = View.GONE
+        } else {
+            // v1.0.23 — pre-roll: no frame old enough yet — cover
+            // the live TextureView with the wait overlay (same
+            // wording as the web pre-roll). The film keeps playing
+            // underneath; the delay starts from the first snapshot.
+            val totalSec = (currentDelayMs / 1000L).coerceAtLeast(1L)
+            val elapsedSec = if (bufferStartMs > 0L) {
+                ((now - bufferStartMs) / 1000L).coerceIn(0L, totalSec)
+            } else {
+                0L
+            }
+            waitView.text = "Đang chuẩn bị lồng tiếng… 0:%02d / 0:%02d".format(elapsedSec, totalSec)
+            if (waitView.visibility != View.VISIBLE) waitView.visibility = View.VISIBLE
         }
     }
 
@@ -547,7 +625,6 @@ class LocalPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     override fun onDestroy() {
         pumpHandler.removeCallbacks(pump)
         synchronized(frameQueue) {
-            frameQueue.forEach { it.second.recycle() }
             frameQueue.clear()
         }
         shownBitmap?.recycle()

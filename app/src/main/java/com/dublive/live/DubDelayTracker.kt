@@ -323,11 +323,19 @@ class DubDelayTracker(
         /** v1.0.18 — seed-lag fallback D-based cross-check (looser:
          * the fallback IS the recovery). */
         const val SEED_FB_D_CHECK_MS = 2500L
-        /** v1.0.19 — hard D cap: the device lag maxed at 8.3 s;
-         * D must never chase a runaway backlog again. */
-        const val MAX_DELAY_CAP_MS = 8000L
-        /** v1.0.19 — time-stretch ceiling (error-driven path only). */
-        const val MAX_STRETCH_SPEED = 1.5
+        /** v1.0.23 — TRỄ CỐ ĐỊNH (sim1028 GATE PASS, ship config
+         * (e)): D = 40 s cố định, KHÔNG còn D thích ứng, KHÔNG còn
+         * seed/Sa2/S-b lái D. D chỉ đổi khi user bấm nút ±1 s
+         * (35–45 s). Mọi chỗ cũ gán delayMs từ mẫu/seed/EMA đã bị
+         * gỡ — delayMs khởi tạo ở D cố định và chỉ [adjustManual]
+         * mới đổi nó. */
+        const val FIXED_DELAY_MS = 40000L
+        /** v1.0.23 — trần stretch 1,25× (KHÔNG 1,5×: user 12:11
+         * "Giọng bị méo khi bắt kịp"; KHÔNG 1,35×: sim chứng minh
+         * 1,35 không hơn gì 1,25 mà mạo hiểm ngưỡng méo chưa
+         * biết). Mọi đường nâng tốc độ (error-driven, level,
+         * lateness, ratio floor) đều kẹp ở đây. */
+        const val MAX_STRETCH_SPEED = 1.25
         /** v1.0.19 — level-driven stretch ceiling: a full buffer
          * alone does not justify the fastest stretch. */
         const val STRETCH_LEVEL_CAP = 1.25
@@ -410,24 +418,36 @@ class DubDelayTracker(
         const val MAX_SYNC_ERR_HISTORY = 600
         const val MAX_SLICE_PLAY_HISTORY = 1200
         /** v1.0.21 (21d) — D pinned at/above this counts as
-         * pinned (the 8 s hard cap is 8000 ms). */
-        const val D_PINNED_MS = 7900L
-        /** v1.0.22 — ratio-baseline stretch (V-a) + catch-up
-         * (V-b) + tail valve (V-c, round-2 tuned V2000cap500):
-         * the stretch floor is the measured dub/speech ratio so
-         * the steady-state drift is ~0; the catch-up multiplies
-         * it by (1 + endLag/5000) on the corrected in-burst lag;
-         * the valve drops at most 500 ms of stale head-audio at
-         * the next burst when the corrected end-lag exceeds
-         * 2000 ms with the stretch already at the 1.5x ceiling.
-         * Sim rounds 1–4 (sim1022–sim1025): the 1.25 level cap
-         * is BELOW the measured 1.42x ratio, so drift accumulated
-         * at 13.6% of burst length; CHASE was measured and
-         * rejected (dense end-p90 3120 vs 1667 shipped). */
-        const val CATCHUP_GAIN_MS = 5000.0
-        const val VALVE_THRESH_MS = 2000L
-        const val VALVE_KEEP_MS = 1500L
-        const val VALVE_MAX_DROP_MS = 500L
+         * pinned. v1.0.23: D cố định 40 s, "ghim" chỉ còn nghĩa
+         * khi user nudge tay lên trần 45 s. */
+        const val D_PINNED_MS = 44900L
+        /** v1.0.22 — ratio-baseline stretch (V-a) + tail valve
+         * (V-c, round-2 tuned V2000cap500): the stretch floor is
+         * the measured dub/speech ratio so the steady-state drift
+         * is ~0; the valve drops at most 500 ms of stale
+         * head-audio at the next burst when the corrected
+         * end-lag exceeds 2000 ms with the stretch already at
+         * the 1.5x ceiling. Sim rounds 1–4 (sim1022–sim1025).
+         *
+         * v1.0.23 (sim1028 ship config (e), STRONG valve):
+         * ngưỡng 1000 ms / giữ 500 ms / xả tối đa 2000 ms mỗi
+         * lần + skip-ahead đầu burst tối đa 2000 ms khi burst
+         * bắt đầu trễ >1000 ms. Van là lưới an toàn, chỉ nổ khi
+         * lỗi — trên-nominal sim nó không nổ lần nào (0 fires).
+         * V-b (catch-up ×(1+endLag/5000)) ĐÃ GỠ: chính sách tốc
+         * độ ship là tốc độ = độ dài giọng / cửa sổ còn lại tới
+         * cuối câu nguồn, kẹp 1,25× — tức đúng ratio floor, không
+         * nhân thêm hệ số trôi. */
+        const val VALVE_THRESH_MS = 1000L
+        const val VALVE_KEEP_MS = 500L
+        const val VALVE_MAX_DROP_MS = 2000L
+        /** v1.0.23 — skip-ahead đầu burst (sim1028 STRONG valve):
+         * burst bắt đầu trễ hơn lịch >1000 ms thì bỏ tối đa
+         * 2000 ms (và tối đa 50% độ dài giọng ước tính của
+         * burst) ở ĐẦU burst để phần còn lại kịp về đúng giờ. */
+        const val SKIP_AHEAD_THRESH_MS = 1000L
+        const val SKIP_AHEAD_KEEP_MS = 500L
+        const val SKIP_AHEAD_MAX_MS = 2000L
         /** v1.0.22 — tx sub-split (T-a): anchor groups close on
          * a >=300 ms fragment gap (dense dialogue never leaves
          * an 800 ms gap, so groups never closed); the SENTENCE
@@ -780,11 +800,11 @@ class DubDelayTracker(
     private var rfMeas = 0
     /** Corrected end-lag of the most recently PLAYED burst
      * (play-anchored, stretch-corrected: playWall +
-     * offset/speed − sourceWall − D). Drives V-b catch-up and
-     * the V-c tail valve; 0 when the burst had no pairing
-     * entries. The sim computes it for every burst; Kotlin
-     * only for bursts with a record (marker-less bursts get 0
-     * — conservative: no false valve arms). */
+     * offset/speed − sourceWall − D). Drives the STRONG tail
+     * valve (v1.0.23); 0 when the burst had no pairing entries.
+     * The sim computes it for every burst; Kotlin only for
+     * bursts with a record (marker-less bursts get 0 —
+     * conservative: no false valve arms). */
     private var lastCorrectedEndLagMs = 0L
     /** Tail valve (V-c): ms of stale head-audio to drop at the
      * next burst(s); the last played burst's seq and the seq
@@ -792,8 +812,25 @@ class DubDelayTracker(
     private var pendingTailDropMs = 0L
     private var tailDroppedMs = 0L
     private var tailValveFires = 0
+    /** v1.0.23 — skip-ahead đầu burst (sim1028 STRONG valve):
+     * số lần + tổng ms đã bỏ ở ĐẦU burst vì burst bắt đầu trễ
+     * >1000 ms so với lịch (utterance start + D). Cùng cơ chế
+     * drop với tail valve (pendingTailDropMs) — chỉ khác lý do
+     * arm. Hiển thị gộp vào "xả … ms" trên HUD. */
+    private var skipHeadFires = 0
+    private var skipHeadDroppedMs = 0L
     private var vbPlaySeq: Long? = null
     private var vbValveUsedSeq: Long? = null
+    /** v1.0.23 — thiết bị đo tốc độ stretch THẬT (xem
+     * VoicePlayer): tốc độ target của tracker, tốc độ đọc lại
+     * từ track (readback), tốc độ thật đo bằng độ dốc playhead
+     * (slope), và cờ stretch có được hỗ trợ không. Service đẩy
+     * vào đây mỗi giây (level ticker) + mỗi lần burst phát
+     * (onBurstPlayed). HUD hiện cả target lẫn thật để vạch mặt
+     * trường hợp HUD cũ in 1,50× trong khi track kẹt 1,0×. */
+    private var lastAppliedReadback: Double? = null
+    private var lastMeasuredSpeed: Double? = null
+    private var lastStretchSupported: Boolean? = null
     /** Sa2 seed v2: arrival wall of the session's first dub
      * chunk; the first paired slice sample re-seeds from it.
      * Set once per session (stop() clears it; reconnect/stall
@@ -1001,14 +1038,13 @@ class DubDelayTracker(
         }
     }
 
-    /** v1.0.19 — hard D cap: a delay set from a measurement is
-     * clamped to [MAX_DELAY_CAP_MS] (8000 ms) as well as
-     * [maxDelayMs]. The device lag maxed at 8.3 s; D must never
-     * chase a runaway backlog again. NOT used by [adjustManual]
-     * (the user's explicit ±1 s button stays uncapped up to
-     * maxDelayMs). */
-    private fun capDelayMs(v: Long): Long =
-        v.coerceIn(Prefs.MIN_DELAY_MS, minOf(maxDelayMs, MAX_DELAY_CAP_MS))
+    // v1.0.23 — TRỄ CỐ ĐỊNH: hàm kẹp D từ đo đạc (capDelayMs)
+    // đã gỡ. D khởi tạo ở giá trị phiên (mặc định 40 s, xem
+    // [Prefs]) và chỉ [adjustManual] (nút ±1 s của user, 35–45 s)
+    // mới đổi nó. Các mẫu trễ/slice/tx vẫn chạy để chẩn đoán +
+    // tính hold, nhưng không bao giờ lái D nữa — đó chính là
+    // điểm sửa gốc của v1.0.23 (D kẹt dưới lag thật + ratchet
+    // ở v1.0.22).
 
     /** v1.0.18 — D-based lag: D − dynamic margin. The delay is the
      * EMA of the accepted boundary/slice samples + margin, so D −
@@ -1578,12 +1614,12 @@ class DubDelayTracker(
             // the right turn while the lag is still near L0.
             seedLagMs = elapsed
             latencyEma.seed(elapsed)
-            // v1.0.19 — hard D cap (see capDelayMs).
-            val newDelay = capDelayMs(elapsed + dynamicMarginMs())
-            if (newDelay != delayMs) {
-                delayMs = newDelay
-                onDelayChanged(delayMs)
-            }
+            // v1.0.23 — TRỄ CỐ ĐỊNH: D KHÔNG đổi theo seed nữa.
+            // Seed lag vẫn là bootstrap reference cho marker
+            // selection (seedMarker), nhưng hold tính từ D cố
+            // định của phiên: hold = D − latency − pipeline, để
+            // giọng đầu tiên đã phát đúng (utterance start + D).
+            val newDelay = delayMs
             hold = (newDelay - elapsed - pipelineMs()).coerceAtLeast(0L)
             lastHoldMs = hold
         }
@@ -1622,6 +1658,39 @@ class DubDelayTracker(
             // No marker yet — the play still yields the pipeline,
             // just no sync sample.
             burstSeq++
+        }
+        // v1.0.23 — SKIP-AHEAD đầu burst (sim1028 STRONG valve):
+        // burst này bắt đầu trễ hơn lịch (utterance start + D)
+        // quá 1000 ms thì bỏ tối đa 2000 ms (và tối đa 50% độ
+        // dài giọng ước tính của burst) ở ĐẦU burst để phần còn
+        // lại kịp về đúng giờ. Với D cố định 40 s, startLate
+        // = latency − D nên bình thường âm sâu (latency chỉ
+        // 4–12 s) — van chỉ nổ khi dịch kẹt >41 s (lỗi), đúng
+        // vai trò lưới an toàn. Arm vào cùng pendingTailDropMs
+        // như tail valve nên chunk đầu burst này (kể cả chunk
+        // hiện tại, vì phép drop ở cuối hàm này chạy sau) bị bỏ.
+        if (isBurst && burstMarker != null) {
+            val startLate = (nowMs + hold) - (burstMarker!!.wallMs + delayMs)
+            if (startLate > SKIP_AHEAD_THRESH_MS) {
+                val r = ratio()
+                val estDubMs = if (r > 0.0) {
+                    (burstMarker!!.countedMs / r).toLong()
+                } else {
+                    0L
+                }
+                val drop = minOf(
+                    startLate - SKIP_AHEAD_KEEP_MS,
+                    SKIP_AHEAD_MAX_MS,
+                    (estDubMs / 2L).coerceAtLeast(0L)
+                )
+                if (drop > 0L) {
+                    pendingTailDropMs += drop
+                    skipHeadDroppedMs += drop
+                    skipHeadFires++
+                    Log.i(TAG, "skip-ahead burst seq=%d startLate=%d ms drop=%d ms (estDub=%d ms)"
+                        .format(burstSeq, startLate, drop, estDubMs))
+                }
+            }
         }
         // v1.0.22 (S-b) — a new burst starts: finalise the
         // previous burst's slice record (its samples are
@@ -1728,7 +1797,21 @@ class DubDelayTracker(
      *     current in-turn sync. Diagnostics only.
      */
     @Synchronized
-    fun onBurstPlayed(seq: Long, playWallMs: Long, pipelineMs: Long, estimated: Boolean, backlogMs: Long = 0L) {
+    fun onBurstPlayed(seq: Long, playWallMs: Long, pipelineMs: Long, estimated: Boolean, backlogMs: Long = 0L, trueSpeed: Double = 0.0) {
+        // v1.0.23 — thiết bị đo tốc độ THẬT: tốc độ đo bằng độ dốc
+        // playhead mà VoicePlayer gửi kèm (0.0 = chưa đo được).
+        // Dùng nó — không dùng target — để chia offset dub khi tính
+        // playSliceWall, và để HUD đối chiếu target vs thật. Nếu
+        // chưa đo được thì rơi về target như cũ (và số cuối-burst
+        // mang cờ "đo bằng tốc độ giả định" qua lastPipelineEstimated
+        // / diagnostics).
+        if (trueSpeed in 0.5..2.0) {
+            lastMeasuredSpeed = trueSpeed
+            if (kotlin.math.abs(trueSpeed - targetSpeed) > 0.05) {
+                Log.w(TAG, "applied speed mismatch: target=%.2f measured=%.2f (burst seq=%d)"
+                    .format(targetSpeed, trueSpeed, seq))
+            }
+        }
         lastPipelineMs = pipelineMs.coerceIn(0L, 2000L)
         lastPipelineEstimated = estimated
         // v1.0.18 — the audio already queued ahead of this burst's
@@ -1764,17 +1847,20 @@ class DubDelayTracker(
         // Default end-lag 0 (no pairing entries → no drift
         // signal, no valve arm — conservative: a marker-less
         // burst never arms the valve on an unmeasurable lag).
-        // The speed used is the tracker's target at this burst's
-        // play (stretchUpdate runs after this block, so it is
-        // the speed in effect during the burst; a mid-burst
-        // speed change is a second-order error on this
-        // diagnostic). The sim measures the same quantity from
-        // true render times, so after the v1.0.22 measurement
-        // fix the device numbers are comparable to the sim.
+        // The speed used is the MEASURED applied speed when the
+        // VoicePlayer managed to measure it (v1.0.23 — the
+        // tracker target is NOT the applied speed: on the 12:00
+        // device photo the HUD printed 1.50x while the track may
+        // have been stuck at 1.0x, which alone explains the
+        // ~1800 ms unexplained within-burst growth: dividing by
+        // 1.5 instead of 1.0 understates end-lag by 33% of the
+        // dub length in the burst). Fall back to the target only
+        // when nothing was measured.
         vbPlaySeq = seq
         lastCorrectedEndLagMs = 0L
         if (record != null) {
-            val playSpeed = targetSpeed.coerceIn(1.0, MAX_STRETCH_SPEED)
+            val playSpeed = (lastMeasuredSpeed?.takeIf { it in 0.5..2.0 }
+                ?: targetSpeed).coerceIn(1.0, 2.0)
             val slices = pairingLog.filter { it.burstSeq == seq }
                 .sortedBy { it.dubCumMs }
             if (slices.isNotEmpty()) {
@@ -1844,6 +1930,22 @@ class DubDelayTracker(
     val currentStretchSpeed: Double get() = targetSpeed
 
     /**
+     * v1.0.23 — THIẾT BỊ ĐO TỐC ĐỘ ÁP DỤNG THẬT (service đẩy vào
+     * mỗi giây + mỗi burst phát): tốc độ đọc lại từ AudioTrack
+     * sau setPlaybackParams ([readback], 0.0 = chưa đọc được),
+     * tốc độ thật đo bằng độ dốc playhead ([measured], 0.0 =
+     * chưa đo được), và cờ stretch có được hỗ trợ trên máy này
+     * không. Chỉ lưu để chẩn đoán/HUD — KHÔNG lái tốc độ target
+     * (target vẫn do [stretchUpdate]/[ratioFloorMs] quyết).
+     */
+    @Synchronized
+    fun noteAppliedSpeed(readback: Double, measured: Double, supported: Boolean) {
+        if (readback in 0.5..2.0) lastAppliedReadback = readback
+        if (measured in 0.5..2.0) lastMeasuredSpeed = measured
+        lastStretchSupported = supported
+    }
+
+    /**
      * v1.0.19 — MID-BURST PIPELINE SAMPLE. The burst-first
      * chunk's pipeline (~50 ms — the loop is idle at burst
      * starts) systematically UNDER-measures the typical pipeline
@@ -1881,9 +1983,9 @@ class DubDelayTracker(
      * Raise-only; the lowering is the hysteresis + decay in
      * [stretchUpdate]. The raise caps at [STRETCH_LEVEL_CAP]
      * (1.25): a full buffer alone does not justify the fastest
-     * stretch (at speed 1.5 the buffer is often >85% full and
-     * 1.5x there breaks sync); only the error-driven path in
-     * [stretchUpdate] may go to 1.5.
+     * stretch. v1.0.23: the error-driven path ALSO caps at 1.25
+     * now ([MAX_STRETCH_SPEED] = 1.25 — 1.5x méo giọng, user
+     * 12:11) — there is no path to 1.5x left in the tracker.
      */
     @Synchronized
     fun noteLevel(levelMs: Long, capMs: Long, nowMs: Long) {
@@ -1906,9 +2008,9 @@ class DubDelayTracker(
      * separates a 2.5x generation burst (median ~330 ms) from a
      * 1.5x one (~40 ms); the sync error and track backlog overlap
      * between the two speeds. When the loop is >200 ms behind,
-     * raise the speed to [MAX_STRETCH_SPEED] (1.5x) so the drain
-     * outruns the burst; the level-raise hold in [stretchUpdate]
-     * keeps it from being lowered again for 5 s.
+     * raise the speed to [MAX_STRETCH_SPEED] (v1.0.23: 1.25x, was
+     * 1.5x) so the drain outruns the burst; the level-raise hold
+     * in [stretchUpdate] keeps it from being lowered again for 5 s.
      */
     @Synchronized
     fun noteLateness(lateMs: Long, nowMs: Long) {
@@ -1960,34 +2062,40 @@ class DubDelayTracker(
         ) {
             targetSpeed = maxOf(1.0, kotlin.math.round((targetSpeed - 0.10) * 100) / 100)
         }
-        // v1.0.22 (V-a/V-b) — ratio-baseline stretch, max-wins:
+        // v1.0.22 (V-a) — ratio-baseline stretch, max-wins:
         // the dub runs ~1.42x the source, so the floor is the
-        // measured ratio (1/ratio(), clamped [1.0, 1.5]),
-        // multiplied by (1 + endLag/5000) while the last played
-        // burst drifted late; it decays to 1.0 when silent >5 s
-        // (no burst play — the floor is a dubbing speed, not an
-        // idle speed). Applied AFTER the base logic (including
-        // the decay above), like the sim's _stretch_update: the
-        // lowering paths may never pull the speed below the
-        // floor while dubbing is active. The 1.25 level cap is
-        // below the measured ratio, so without this floor the
-        // drift accumulated at 13.6% of burst length.
+        // measured ratio (1/ratio(), clamped [1.0, 1.25]);
+        // it decays to 1.0 when silent >5 s (no burst play —
+        // the floor is a dubbing speed, not an idle speed).
+        // Applied AFTER the base logic (including the decay
+        // above), like the sim's _stretch_update: the lowering
+        // paths may never pull the speed below the floor while
+        // dubbing is active. v1.0.23: the V-b catch-up
+        // multiplier is GONE (sim1028 ship policy — speed =
+        // dub length / remaining window to the source line end,
+        // capped 1.25); the floor here IS that policy for an
+        // on-time burst (window = line length, speed = ratio).
+        // v1.0.23: MAX_STRETCH_SPEED is 1.25 (was 1.5 — user
+        // 12:11 "Giọng bị méo khi bắt kịp").
         val floor = ratioFloorMs(nowMs)
         if (floor > targetSpeed) targetSpeed = floor
     }
 
-    /** v1.0.22 — the V-a/V-b stretch floor (see [stretchUpdate]). */
+    /** v1.0.22 — the V-a stretch floor (see [stretchUpdate]).
+     * v1.0.23 — V-b catch-up multiplier ĐÃ GỠ (sim1028 ship
+     * policy: tốc độ = độ dài giọng / cửa sổ còn lại tới cuối
+     * câu nguồn, kẹp 1,25× — với burst bắt đầu đúng giờ thì cửa
+     * sổ còn lại đúng bằng độ dài câu nguồn nên tốc độ = đúng
+     * tỉ lệ giọng/gốc đo được; burst bắt đầu trễ được bù bằng
+     * các dải lỗi của [stretchUpdate] (tối đa 1,25×) + van
+     * skip-ahead, không bằng nhân hệ số trôi. */
     private fun ratioFloorMs(nowMs: Long): Double {
         if (lastBurstPlayWallMs != null &&
             nowMs - lastBurstPlayWallMs!! > 5000L
         ) {
             return 1.0
         }
-        var f = (1.0 / ratio()).coerceIn(1.0, MAX_STRETCH_SPEED)
-        if (lastCorrectedEndLagMs > 0L) {
-            f *= (1.0 + lastCorrectedEndLagMs / CATCHUP_GAIN_MS)
-        }
-        return f.coerceIn(1.0, MAX_STRETCH_SPEED)
+        return (1.0 / ratio()).coerceIn(1.0, MAX_STRETCH_SPEED)
     }
 
     /**
@@ -2277,17 +2385,19 @@ class DubDelayTracker(
      */
     private fun onDubBurst(nowMs: Long): Pair<Long, TurnMarker?> {
         burstRecv++
-        // v1.0.22 — V-c tail valve (round-2 tuned V2000cap500):
+        // v1.0.23 — STRONG tail valve (sim1028 ship config (e)):
         // arm at the next burst boundary when the last PLAYED
-        // burst drifted >2000 ms with the stretch already at the
-        // 1.5x ceiling — the queue cannot drain by speed alone,
-        // so the stale head-audio of this burst is dropped
-        // instead (see the drop in [onDubAudioArrival]). One arm
-        // per play report (a report that already armed never
-        // arms again); the arm reads only the last play's
-        // end-lag + the current speed, so it runs before every
-        // return path below, like the sim's on_dub_burst (which
-        // arms after its anchor work regardless of outcome).
+        // burst drifted >1000 ms with the stretch already at the
+        // 1.25x ceiling — the queue cannot drain by speed alone,
+        // so up to 2000 ms of stale head-audio of this burst is
+        // dropped instead (see the drop in [onDubAudioArrival]),
+        // keeping 500 ms. One arm per play report (a report that
+        // already armed never arms again); the arm reads only the
+        // last play's end-lag + the current speed, so it runs
+        // before every return path below, like the sim's
+        // on_dub_burst (which arms after its anchor work
+        // regardless of outcome). Safety net only: on-nominal
+        // sim1028 (e) never fires it (0 fires).
         if (vbPlaySeq != null && vbPlaySeq != vbValveUsedSeq &&
             lastCorrectedEndLagMs > VALVE_THRESH_MS &&
             targetSpeed >= MAX_STRETCH_SPEED - 0.01
@@ -3044,11 +3154,10 @@ class DubDelayTracker(
         val el = arrival - se
         seedLagMs = el
         latencyEma.seed(el)
-        val newDelay = capDelayMs(el + dynamicMarginMs())
-        if (newDelay != delayMs) {
-            delayMs = newDelay
-            onDelayChanged(delayMs)
-        }
+        // v1.0.23 — TRỄ CỐ ĐỊNH: Sa2 chỉ còn sửa seed lag (reference
+        // cho marker selection); D KHÔNG đổi theo nó nữa. Hold tính
+        // từ D cố định của phiên.
+        val newDelay = delayMs
         lastHoldMs = (newDelay - el - pipelineMs()).coerceAtLeast(0L)
         Log.i(TAG, "Sa2 seed corrected: sliceLag=%d target=%d startEst=%d seed=%d (loop seed was %s)"
             .format(sliceLagMs, target, se, el, loopSeed?.toString() ?: "none"))
@@ -3443,12 +3552,12 @@ class DubDelayTracker(
             } else {
                 (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) / 2
             }
-            val updated = latencyEma.sample(median, delayMs)
-            if (updated != null) {
-                // v1.0.19 — hard D cap (see capDelayMs).
-                delayMs = capDelayMs(updated.toLong())
-                onDelayChanged(delayMs)
-            }
+            // v1.0.23 — TRỄ CỐ ĐỊNH: mẫu vẫn feed EMA (giữ
+            // latencyEma + lag estimate cho hold/chẩn đoán), nhưng
+            // kết quả KHÔNG gán vào delayMs nữa — D cố định cả
+            // phiên, không EMA theo mẫu (đây là đường đã kéo D
+            // kẹt dưới lag thật ở v1.0.22).
+            latencyEma.sample(median, delayMs)
         }
         windowSamples.clear()
         windowStartMs = nowMs
@@ -3512,7 +3621,16 @@ class DubDelayTracker(
                 droppedSlices, droppedSamples, deferredTooSmall, droppedTooLarge,
                 // v1.0.22 (V-c) — total ms the tail valve
                 // discarded (each fired drop is also a "bỏ lát").
-                if (tailDroppedMs > 0L) " · xả %d ms".format(tailDroppedMs) else ""
+                // v1.0.23 — STRONG valve: xả gộp cả tail valve +
+                // skip-ahead đầu burst; số lần skip-ahead hiện
+                // riêng để biết van nổ vì lý do nào.
+                run {
+                    val totalDropped = tailDroppedMs + skipHeadDroppedMs
+                    if (totalDropped > 0L) {
+                        " · xả %d ms".format(totalDropped) +
+                            if (skipHeadFires > 0) " (skip-đầu %d lần)".format(skipHeadFires) else ""
+                    } else ""
+                }
             )
         } else {
             ""
@@ -3592,9 +3710,35 @@ class DubDelayTracker(
         val newestAgePart = markers.lastOrNull()?.let {
             "%d ms trước".format((nowMs - it.wallMs).coerceAtLeast(0L))
         } ?: "—"
-        val markerPart = " · mốc %d (mới nhất %s) · tách thử cũ %d/mới %d/được %d · stall %d · tốc độ %.2f×".format(
+        // v1.0.23 — tốc độ THẬT vs target: HUD in "tốc độ <target>×"
+        // (thật <đo>×)" và gắn cờ CHÊNH! khi lệch >0,05, hoặc cảnh
+        // báo khi stretch không được hỗ trợ (kẹt 1,0× vĩnh viễn).
+        // Đây là thiết bị đo đóng số hạng ~1800 ms chưa giải thích
+        // được trên ảnh 12:00 (HUD cũ in 1,50× = target, không ai
+        // biết track thật chạy bao nhiêu).
+        val speedPart = run {
+            val parts = StringBuilder("tốc độ %.2f×".format(targetSpeed))
+            val measured = lastMeasuredSpeed
+            if (measured != null) {
+                parts.append(" (thật %.2f×".format(measured))
+                if (kotlin.math.abs(measured - targetSpeed) > 0.05) parts.append(" CHÊNH!")
+                parts.append(")")
+            }
+            if (lastStretchSupported == false) {
+                parts.append(" [stretch KHÔNG hỗ trợ — kẹt 1,0×]")
+            } else {
+                val readback = lastAppliedReadback
+                if (readback != null &&
+                    kotlin.math.abs(readback - targetSpeed) > 0.02
+                ) {
+                    parts.append(" [readback %.2f×]".format(readback))
+                }
+            }
+            parts.toString()
+        }
+        val markerPart = " · mốc %d (mới nhất %s) · tách thử cũ %d/mới %d/được %d · stall %d · %s".format(
             markers.size, newestAgePart, splitAttemptsOld, splitAttempts, splitMarkers,
-            stallEpisodes, targetSpeed
+            stallEpisodes, speedPart
         )
         // v1.0.21 (21d) — the end-of-session photo hides
         // mid-session drift, so the max/p90 over the whole
@@ -3640,7 +3784,7 @@ class DubDelayTracker(
         } else {
             ""
         }
-        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s%s%s".format(
+        return "D %s s (cố định) · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s%s%s".format(
             delaySec, samplePart, sampleTimes60s.size, turnPairTimes60s.size,
             speechSlices.size, lastHoldMs / 1000.0, vadPart, droppedPart,
             syncPart, pipePart, ratioPart, framePart, rejectPart, markerPart, diag21Part, sbPart
@@ -3691,11 +3835,14 @@ class DubDelayTracker(
     }
 
     /** Manual nudge from the "Trễ −1s / +1s" buttons: shift D by the
-     * delta and push it out at once. Later automatic samples keep
-     * EMA-ing from this manual value — they never pull it back. */
+     * delta and push it out at once. v1.0.23 — TRỄ CỐ ĐỊNH: nudge
+     * tay chỉ đi trong 35–45 s quanh 40 s chuẩn; KHÔNG còn mẫu tự
+     * động nào kéo D về sau đó. */
     @Synchronized
     fun adjustManual(deltaMs: Long) {
-        delayMs = (delayMs + deltaMs).coerceIn(Prefs.MIN_DELAY_MS, maxDelayMs)
+        delayMs = (delayMs + deltaMs).coerceIn(
+            Prefs.FIXED_DELAY_MIN_SEC * 1000L, Prefs.FIXED_DELAY_MAX_SEC * 1000L
+        )
         onDelayChanged(delayMs)
     }
 

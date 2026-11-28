@@ -49,16 +49,16 @@
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="@string/settings_max_delay" />
         <SeekBar android:id="@+id/maxDelaySeek" android:layout_width="match_parent"
-            android:layout_height="wrap_content" android:max="17" android:progress="17" />
+            android:layout_height="wrap_content" android:max="42" android:progress="37" />
         <TextView android:id="@+id/maxDelayLabel" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="20 giây" />
+            android:layout_height="wrap_content" android:text="40 giây" />
 
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="@string/settings_base_delay" />
         <SeekBar android:id="@+id/baseDelaySeek" android:layout_width="match_parent"
-            android:layout_height="wrap_content" android:max="17" android:progress="2" />
+            android:layout_height="wrap_content" android:max="10" android:progress="5" />
         <TextView android:id="@+id/baseDelayLabel" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="5 giây" />
+            android:layout_height="wrap_content" android:text="40 giây" />
 
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="@string/settings_original_volume" />

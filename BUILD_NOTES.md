@@ -1,4 +1,237 @@
-# DubLive v1.0.22 — THIẾT KẾ LẠI HOLD/QUEUE: HẾT TRÔI CUỐI BURST + SỬA KHUNG HÌNH -52 s + TX KHÔNG TẮT SAU 60 s ĐẦU (28/11/2026, ĐANG LÀM)
+# DubLive v1.0.23 — TRỄ CỐ ĐỊNH 40 s + PROMPT NGẮN GỌN + TRẦN STRETCH 1,25× + THIẾT BỊ ĐO TỐC ĐỘ THẬT (28/11/2026, SIM1028 ĐÃ PASS GATE — BUILD [PENDING: run/commit/MD5 điền sau khi Actions chạy xong])
+
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.23.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.23.apk`).
+- Quyết định: user đề xuất 12:36 trễ cố định 30–40 s để xử lý đoạn dịch rồi đưa giọng về đúng vị trí video trễ; user chốt 12:40: "Lấy thừa cũng được để xem mọi phim đều có thể môi khớp với giọng" — ưu tiên đồng bộ mọi phim, lấy thừa. Bản này THAY THẾ hướng trần 1,25× một mình (sim1027 GATE FAIL 12:25 — mất chữ 25–29% ở phim thoại dày vì tỉ lệ 1,46–1,51 > trần; xem mục "v1.0.23 — SIM GATE FAIL" bên dưới để biết cái gì KHÔNG được lặp lại).
+
+## Cấu hình ship — sim1028 (e), BẮT BUỘC theo đúng
+- Trễ cố định L = 40 s. KHÔNG còn D thích ứng, KHÔNG còn seed/Sa2/S-b lái D (Sa2/S-b/tx-anchor vẫn chạy để chẩn đoán + chọn marker + tính hold, nhưng không bao giờ gán delayMs nữa). D hiển thị cố định 40 s ("D 40,0 s (cố định)"); nút ±1 s nudge tay trong 35–45 s; Settings "Trễ hình cơ bản" giờ là D cố định của phiên (35–45 s, mặc định 40 s).
+- Tỉ lệ giọng/gốc r = 1,35 bằng PROMPT DỊCH NGẮN GỌN (xem dưới). GIỚI HẠN CỨNG r ≤ 1,40.
+- Trần stretch 1,25× (KHÔNG 1,35 — sim chứng minh 1,35 không hơn gì 1,25 mà mạo hiểm ngưỡng méo chưa biết; KHÔNG 1,5× — user 12:11 "Giọng bị méo khi bắt kịp"). V-b catch-up ×(1+endLag/5000) ĐÃ GỠ.
+- Van STRONG làm lưới an toàn (chỉ nổ khi lỗi): ngưỡng 1000 ms / giữ 500 ms / cap xả 2000 ms mỗi lần + skip-ahead đầu burst tối đa 2000 ms (khi burst bắt đầu trễ >1000 ms so với lịch, tối đa 50% độ dài giọng ước tính).
+- Chính sách tốc độ phát: tốc độ = độ dài giọng / (cuối câu nguồn − lúc bắt đầu phát), kẹp ở trần 1,25×, phát xong thì IM LẶNG tới burst sau — KHÔNG lấp cửa sổ tới burst sau (chính sách cũ lấp cửa sổ làm tối đa hóa trôi cuối burst theo cấu tạo; trong Kotlin điều này đúng bằng ratio floor = tỉ lệ đo được kẹp 1,25×, vì burst bắt đầu đúng giờ thì cửa sổ còn lại đúng bằng độ dài câu nguồn).
+- Giữ nguyên: neo transcription song song VAD marker, chẩn đoán (mẫu/cặp mốc, lệch hình/khung hình, lệch max/p90, cuối-burst, burst + tx, lượt VAD, xả ms), spectral gate, watchdog/key rotation, tap/capture routes. KHÔNG mang lại share target v1.0.15, KHÔNG sửa probe/watchdog v1.0.16.
+
+## Bằng chứng sim — sim1028.py (396 run: 6 thế giới × 11 ablation × 6 mức L)
+- Cấu hình ship (e) L=40: cuối-burst p90 THẬT FA46 277 / FA78 277 / DE46 293 / DE78 293 / CH45 121 / LO78 635 ms, bỏ audio 0,0% mọi thế giới; (e2) r1,25: 45 ms mọi thế giới.
+- Ablation DE78: (a) trễ-only r1,47 cap1,5: đồng bộ 0 ms trong mô hình nhưng đòi stretch sustained ~1,48× (đúng mức méo giọng user báo); (b) +prompt r1,35: nhu cầu stretch 1,48→1,35×; (c) +trần 1,25: 0→293 ms; (d) +van mạnh: van KHÔNG nổ lần nào trên-nominal (lưới an toàn); (c0) trần-only r1,47: FAIL 1787 ms (ràng buộc quyết định là r so với trần, không phải trễ).
+- Chọn L=40 (sim-min ~14 s: DE78 pass từ 10 s, LO78 từ 14 s; L=8 s trên DE78 bỏ 49,6%): user ưu tiên đồng bộ mọi phim (12:40); L bất biến trên ngưỡng 15–60 s; bằng chứng phân biệt 30 vs 40: hồi quy v6 có 1 burst tới muộn 12 s — L=30 gây bỏ 3,5% (fail), L=40 chỉ 0,84% (pass); chi phí thêm của 40 vs 15 chỉ là chờ khởi động +25 s và bộ nhớ +6,5 MB.
+- Hồi quy (cùng seed k=0,1,2): v6 3/3 PASS (line-start 0 ms vs OLD 650/460/689; bỏ 0,84/0,71/1,11%; cặp 12,4/12,3/12,1 vs OLD 3/4/9); sim1018 KHÔNG TỤT (line-start 213/0/227 ms vs OLD 1574/408/2348; bỏ 3,28/1,67/2,57% vs OLD 8,3/7,7/10,3% — 3/3 NEW ≤ OLD). Cặp sim1018 không so sánh được do OLD đếm cặp neo-tx (26/60 s vượt số câu/phút ~17) — khác định nghĩa, không phải tụt.
+- Giới hạn mô hình (ghi rõ, đừng hứa quá): tốc độ liên tục + độ dài giọng biết chính xác trước giờ phát ⇒ (a)/(b) cho 0 ms trong mô hình; thực tế kỳ vọng ~±50–100 ms (tốc độ đặt theo chunk 100 ms, biên chunk TTS), vẫn ≪ gate 1 s. Giả định: không jitter mạng, không seek/pause, một đầu ra audio nối tiếp, burst ≤8 s câu. L=40 chính là phần bù cho các giả định này ngoài đời thật.
+
+## Prompt dịch ngắn gọn — cũ vs mới (nguyên văn câu đổi; toàn văn trong GeminiLiveClient.kt)
+- CŨ (translate model): "Translate speech into concise, natural spoken Vietnamese." + "Every translated line must take about the same time to say as the original line it replaces, so the Vietnamese voice finishes when the character's mouth stops moving."
+- MỚI (translate model): "Translate speech into concise, natural spoken Vietnamese — and keep every line SHORT: cut filler words, drop politeness padding and repetitions, use short sentences, say the same meaning in fewer words." + "Every translated line must be SHORTER than the original line it replaces — aim for about three quarters of its length — so the Vietnamese voice finishes BEFORE the character's mouth stops moving. Never make a line longer than the original."
+- CŨ (nhánh Việt): "nói lại bằng tiếng Việt tự nhiên, giọng lồng tiếng truyền hình ấm áp, rõ ràng, khớp đúng lúc nhân vật mở miệng và nói hết trong đúng thời lượng câu gốc."
+- MỚI (nhánh Việt): "nói lại bằng tiếng Việt tự nhiên NGẮN GỌN — bỏ từ đệm, câu ngắn, giữ nguyên nghĩa, câu tiếng Việt chỉ dài khoảng 3/4 câu gốc, không bao giờ dài hơn câu gốc — giọng lồng tiếng truyền hình ấm áp, rõ ràng, khớp đúng lúc nhân vật mở miệng và nói hết TRƯỚC KHI nhân vật ngừng mở miệng."
+- Vách đá sim: LO78 pass tới r=1,40, FAIL ở r=1,42 (bỏ 2,18%); DE78 pass tới 1,42, fail ở 1,45. Trên máy thật, r đo bằng chỉ số giọng/gốc trên HUD — nếu r > 1,40 thì phải rút ngắn prompt thêm (mục tiêu dự phòng r=1,25 đã pass với biên lớn, cuối-burst 45 ms mọi thế giới).
+
+## Thiết bị đo tốc độ áp dụng thật (bắt buộc — sim chẩn đoán: giả thuyết applied<target đủ sinh ra số hạng ~1800 ms chưa giải thích được)
+- VoicePlayer.applyPendingSpeed: sau setPlaybackParams đọc lại track.playbackParams.speed → appliedSpeedReadback, log "playback speed -> target X (readback Y)", cảnh báo khi lệch >0,02.
+- Độ dốc playhead: lấy mẫu readPlayhead() mỗi vòng lặp player (throttle 50 ms), cửa sổ 2 s, tốc độ thật = (dFrames/dWall)/24000 → measuredSpeed (null khi không phát). framePosition đếm frame ĐẦU RA sau stretch nên độ dốc chính là tốc độ thật.
+- stretchSupported=false KHÔNG còn vĩnh viễn: mỗi lần buildTrack (track mới) thử lại một lần; setPlaybackSpeed khi unsupported log cảnh báo một lần/track thay vì return im lặng.
+- HUD: "tốc độ <target>× (thật <đo>×)" + cờ CHÊNH! khi lệch >0,05 + "[stretch KHÔNG hỗ trợ — kẹt 1,0×]" + "[readback X]"; onBurstPlayed dùng tốc độ thật đã đo để chia offset dub (không dùng target nữa) — chia cho 1,5 trong khi track chạy 1,0× làm ĐO THIẾU cuối-burst 33% độ dài dub trong burst (1800 ms ≈ 33% × ~5,4 s dub).
+- Điều kiện kèm theo cần đo trên máy thật: (1) r ≤ 1,40 trên HUD; (2) tốc độ áp dụng thật vs target (readback + slope) + cảnh báo khi applied < target. Nếu van mạnh âm thầm ăn ~16% audio vì player kẹt 1,0× thì HUD sẽ thấy ngay (xả ms tăng + thật 1,00× vs target 1,25×).
+
+## Thay đổi code theo file (v1.0.23)
+- Prefs.kt: base delay mặc định 40 s, dải 35–45 s (FIXED_DELAY_SEC/MIN/MAX); max delay kẹp 3–45 s (mặc định 40).
+- DubDelayTracker.kt: FIXED_DELAY_MS=40000; delayMs KHÔNG còn gán từ seed (onDubAudioArrival) / Sa2 (saCorrect) / EMA 4 s (flushWindowIfDue — mẫu vẫn feed EMA cho hold/chẩn đoán); capDelayMs + MAX_DELAY_CAP_MS (8 s) gỡ; MAX_STRETCH_SPEED 1,5→1,25; VALVE 2000/1500/500 → 1000/500/2000; SKIP_AHEAD 1000/500/2000 (tối đa 50% độ dài giọng ước tính); ratioFloorMs gỡ hệ số V-b; onBurstPlayed thêm trueSpeed (dùng tốc độ thật chia offset dub); noteAppliedSpeed() + HUD tốc độ thật/CHÊNH!/kẹt 1,0×; "xả ms" gộp tail valve + skip-ahead; adjustManual kẹp 35–45 s; D_PINNED_MS 7900→44900 (ghim chỉ còn nghĩa khi nudge tay lên trần 45 s); diagnostics "D … s (cố định)".
+- VoicePlayer.kt: setPlaybackSpeed kẹp 1,25× + log khi unsupported; applyPendingSpeed readback + mismatch; buildTrack thử lại stretch; samplePlayheadForSpeed() (độ dốc, cửa sổ 2 s); onBurstPlayed 6 tham số (thêm trueSpeed).
+- DubbingService.kt: onBurstPlayed forward trueSpeed; level ticker đẩy noteAppliedSpeed mỗi giây.
+- GeminiLiveClient.kt: prompt ngắn gọn (xem trên).
+- DelayJs.kt: snapshot JPEG (toBlob image/jpeg 0,7, 15 fps, 640 px, ~25–38 MB thay vì ~1,29 GB canvas thô ở 40 s); overlay chờ pre-roll "Đang chuẩn bị lồng tiếng… 0:12/0:40" (tiến độ = effDelay/D); DubLiveSetDubbing gate (canvas + overlay chỉ chạy khi đang lồng tiếng — trước đó trang hiện video live); seek/đổi video ramp lại 0→D; fallback canvas thô khi toBlob bị chặn (video cross-origin tainted — 18dj.tv/YouTube dùng MSE/blob, không tainted, đi đường JPEG).
+- TapJs.kt: chuỗi 2 DelayNode (22+22=44 s), DubLiveTapSetDelay kẹp 0..44, chia d1=min(n,22)/d2=n−d1, glide tau 0,3 s; mặc định 40 s.
+- DelayedBackgroundPlayer.kt: setDelayMs kẹp 0..45000 ms + set thẳng hiệu dụng khi chưa chạy/đang 0/tắt trễ (glide 10 ms/10 ms đổi 0→40 s mất 40 s mới ổn định); DelayedAudioQueue maxBlocks 2600→4500 (45 s @10 ms/block).
+- MainActivity.kt: seed/lastApplied 40 s; adjustDelay nudge 35–45 s; DubLiveSetDubbing(true) ở 3 đường bắt đầu (tap/mic/projection), false khi dừng.
+- SettingsActivity.kt + activity_settings.xml: base seek 35–45 s (mặc định 40), max-delay seek 3–45 s (mặc định 40).
+- LocalPlayerActivity.kt: currentDelayMs 40 s; frame queue JPEG bytes (q70, ~25–38 MB thay vì ~1,30 GB Bitmap); overlay chờ pre-roll; seek/đổi file xóa buffer + chờ lại 40 s.
+- app/build.gradle.kts: versionCode 24, versionName 1.0.23.
+
+## Hành vi mới user sẽ thấy (nói rõ trước)
+- Bấm "Bắt đầu lồng tiếng" → màn hình chờ đen "Đang chuẩn bị lồng tiếng… 0:00/0:40" đếm lên 40 s (video vẫn phát ngầm để dịch), rồi hình + giọng + tiếng gốc cùng hiện đồng bộ. Không mất nội dung nào — phim chỉ bị dời 40 s.
+- Đổi tập / seek / đổi file local → chờ lại 40 s (overlay hiện lại, buffer xóa).
+- Trước khi bấm bắt đầu, trang hiện video live bình thường (không còn canvas trễ chạy ngầm).
+- Video dọc/shorts: khung 640×1138 JPEG vẫn ~25–38 MB — không còn nguy cơ 4,1 GB như canvas thô.
+- Giới hạn đã biết: video cross-origin trực tiếp (tainted canvas) rơi về canvas thô — có nguy cơ OOM ở 40 s; 18dj.tv/YouTube không dính (MSE/blob cùng origin). Video pause giữa pre-roll: overlay đứng ở số giây đã đếm (buffer không nạp khi pause).
+
+## Checklist thử lại (xem GIỮA phiên, phim thoại dày 3–5 phút)
+D cố định 40 s · mẫu/cặp mốc · lệch hình/khung hình + max/p90 + cuối-burst · burst + tx · lượt VAD · xả ms · sb thử/nhận · TỐC ĐỘ ÁP DỤNG THẬT vs target · tỉ lệ giọng/gốc r trên HUD (phải ≤1,40) · môi khớp? · cuối câu dài trôi mấy giây · giọng méo không · câu có bị cắt cụt không · chờ khởi động 40 s có chấp nhận được không · đổi tập/seek có chờ lại 40 s không.
+
+# DubLive v1.0.22 — THIẾT KẾ LẠI HOLD/QUEUE: HẾT TRÔI CUỐI BURST + SỬA KHUNG HÌNH -52 s + TX KHÔNG TẮT SAU 60 s ĐẦU (28/11/2026, ĐÃ BUILD — run Actions 46107560258, commit 52f8af68, tag v1.0.22-dublive, MD5 cfc728dba2eb9aa19d1f9b2e66fb4f65, 9.573.890 byte)
+
+- File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.22.apk`
+  (symlink `~/workspace/your_files/DubLive-v1.0.22.apk`) — ĐÃ GIAO
+  28/11 ~11:32 VN, build lần 2 đậu (lần 1 fail compileReleaseKotlin:
+  smart cast `rec.latTx` ở DubDelayTracker.kt:3111 — sửa bằng locals,
+  push lại commit 52f8af68, tag force-update; job Build APK success,
+  job Create GitHub Release fail — dự kiến trên tag run, bỏ qua),
+  commit 52f8af68 (full
+  52f8af680f4c7d1e49f40fffbc944fbeea00ac19), tag v1.0.22-dublive,
+  artifact alad-apks id 15248326976, MD5
+  cfc728dba2eb9aa19d1f9b2e66fb4f65, 9.573.890 byte. aapt2:
+  package com.dublive.live, versionCode 23, versionName 1.0.22. Dex
+  đã grep: saCorrect, sbOnBurstStart, sbFinalise, sbStep,
+  sbStartTrial, sbEndTrial, pauseEstimate, ratioFloorMs, "Sa2 seed
+  corrected", "S-b trial start/ADOPT", "frame residual dropped",
+  "xả %d ms", "sb %d thử/%d nhận" — đủ.
+- Sim thắng: sim1025 `Sa2 + Sb3 + V2000cap500`, GATE25 ex-cold 4/4
+  (end-p90 THẬT 501/726/420/252 ms vs REPRO 1055/1178/1667/961;
+  |D−lag| 979/616/733/285 ms — pass tuyệt đối ≤1000, FAIL vạch cũ
+  ≤REPRO theo cấu tạo, đã nới có ghi rõ; cặp min 6–12/60 s, mẫu min
+  87–106/60 s, bỏ audio 0,3–1,0%). Hồi quy: v6 1/3, sim1018 2/3
+  (xem QUYẾT ĐỊNH GATE trong mục vòng 4 — không giấu).
+
+## Kết quả thử v1.0.22 trên máy — ảnh 12:00 + phán quyết chủ quan 12:11 (28/11)
+
+**12:00, GIỮA PHIÊN** (18dj.tv tập 2/5, dialog nhật ký lỗi Live mở —
+"Chưa có lỗi Live nào", 0 lỗi Live; user gửi ảnh không kèm lời):
+"D 3,3 s · mẫu cuối 4,5 s (0 s trước) · 86 mẫu/60 s · cặp mốc 29/60 s ·
+chờ 0 lát · hold 1,0 s · VAD: đang nói · bỏ 26 lát/0 mẫu (nhỏ 14
+hoãn/lớn 0) · xả 6500 ms · lệch hình -650 ms · phát ~175 ms (TB 374
+ms, chờ 282 ms) · giọng/gốc 1,47× · khung hình +729 ms · burst 166
+ok 90 no-mk 42 ab 11 cons 23 fb 6 · tách 1 · mốc 12 (mới nhất 987 ms
+trước) · tách thử cũ 89/mới 1/được 1 · stall 1 · tốc độ 1,50× · lệch
+max 2518/p90 1660 (n=90) · lát-phát max 4963/p90 3446 (n=251) ·
+cuối-burst max 4941/p90 3446 (n=135) · D ghim 0% · cặp 60 s đầu 19 ·
+đồng bộ đầu 5 s · tx ok 67/no-mk 34/cons 17/agree 36 asr 518 ms
+(n=25) · chọn-D 65 · sb 3 thử/0 nhận · lượt VAD 35/60 s · lời nói
+32880 ms/60 s · gate loại 157 khung/60 s · bỏ chunk giọng 0".
+
+Mặt tốt so với máy thật v1.0.21: cặp mốc 29/60 s (trước 0), mẫu
+86/60 s (trước 8–25), tx ok 67 (trước 6–9, no-mk chỉ còn 34), burst
+ok 90/166 = 54% (trước 19%), đồng bộ đầu 5 s (trước 13 s), mốc mới
+nhất 987 ms (trước 17–30 s), D 3,3 s, D ghim 0%, không lỗi Live, bỏ
+chunk giọng 0. Ghép cặp và neo AI ĐÃ SỐNG LẠI.
+Điểm xấu (đang chẩn đoán, 3 luồng song song 28/11 ~12:02): cuối-burst
+p90 3446 ms (sim1025 hứa 252–726 ms); van xả 6500 ms tích lũy; tốc
+độ ghim 1,50× liên tục; lệch hình -650 ms vs khung hình +729 ms
+(trái dấu ~1,4 s); chế độ choppy (35 lượt/60 s, thoại 32,9 s/60 s)
+trái ngược sim (lượt dài 16–54 s); sb 3 thử/0 nhận; pipeline TB 374
+ms (v1.0.21 là 106–124 ms).
+
+**Phán quyết chủ quan của user về v1.0.22 (12:11): "Giọng bị méo khi
+bắt kịp"** — giọng MÉO khi bắt kịp. Ý nghĩa thiết kế (định hướng
+v1.0.23, ghi rõ để không ai sửa ngược):
+- Xác nhận stretch ghim 1,50× liên tục là NGHE ĐƯỢC và TỆ:
+  time-stretch 1,5× kéo dài làm méo giọng. Đối chiếu: v1.0.21 chạy
+  1,25×, user KHÔNG báo méo (chỉ nói "đỡ hơn", giọng hết đứng).
+  Ngưỡng méo nằm đâu đó giữa 1,25× và 1,5× kéo dài.
+- **CẤM sửa bằng cách stretch mạnh hơn/lâu hơn.** Phương án "nâng
+  trần stretch lên 1,75×" mà luồng chẩn đoán vòng điều khiển xếp
+  hạng 1 (12:11) đã BỊ LOẠI bởi phán quyết này — 1,5× đã méo thì
+  1,75× còn tệ hơn. Biến thể trần cao trong sim chỉ còn giá trị
+  chẩn đoán cơ chế, KHÔNG BAO GIỜ là phương án ship.
+- Hướng sửa đúng cho v1.0.23: GIẢM NHU CẦU BẮT KỊP (seed/D chính
+  xác hơn để lag không tích lũy) + CẶP TRẦN STRETCH THẤP HƠN (ví dụ
+  trần ~1,25× như v1.0.21, phần tụt còn lại xử bằng van xả đuôi thay
+  vì stretch). Stretch 1,5× chỉ nên là nhát ngắn, không phải trạng
+  thái thường trực.
+- Kết hợp với số đo: hệ thống đang đuối mãn tính (xả 6,5 s +
+  stretch ghim max) mà vẫn cuối-burst p90 3,4 s — bắt kịp vừa không
+  đủ vừa méo. Ưu tiên sửa gốc tích lũy lag, không sửa ngọn bằng
+  stretch.
+- Hai câu còn lại CHƯA CÓ đáp án (đã hỏi user 12:11, chờ trả lời):
+  môi khớp không? cuối câu có bị cắt cụt không (van xả 6,5 s)?
+
+## Chẩn đoán v1.0.22 trên máy (3 luồng song song, xong 28/11 ~12:20)
+
+**Kết luận chung: cuối-burst p90 3446 ms là TRÔI THẬT** (luồng đo
+lường: tin cậy ~70%; luồng vòng điều khiển: chờ queue cuối burst
+~3,1 s p90 sau khi trừ pipeline 374 ms — không thể là artifact).
+Sim choppy mới (sim1026) KHÔNG tái hiện được máy: cuối-burst p90
+TRUE 219–242 ms (thấp hơn máy 14–16×), D sim TRÊN lag +831 ms
+(máy DƯỚI lag ~1,2 s — ngược dấu ~2,0 s), van sim 0 lần (máy 13
+lần/6500 ms), S-b sim 0/0 (máy 3/0), tốc độ sim TB 1,46 (máy ghim
+1,50×). Không biến thể choppy nào (trần 2,0×, seed = lag thật, van
+OFF, dub tới dồn 3×/10×) đưa cuối-burst lên gần 3446 ms. Chỉ probe
+bước lag dub-side +2000 ms tại t=120 s mới tái hiện gần máy
+(cuối-burst p90 2302–2342 ms, lệch đầu burst p90 2100–2375 ms, van
+4000–4500 ms/10 phút).
+
+**Nguyên nhân gốc (3 lớp cộng dồn):**
+1. **D kẹt dưới lag thật (đầu mối số 1):** D-check loại đúng mẫu
+   chứng minh D sai (mẫu 4,5 s lệch ref ~2,1 s quá 1500 ms → loại
+   khỏi EMA, tốc độ đuổi qua đường slice = 0); mọi tham chiếu
+   (burst/tx/ref) đều lái bởi ref đang sai (điểm bất động); Rb chặn
+   neo tx có latTx > dlag + 600 (ratchet một chiều); S-b đốt hết 3
+   trial, adopt gần như không thể ở chế độ choppy (tx-ok ~40%, cần
+   3 burst đồng thuận liên tiếp trong trial 5 burst). Trong sim, ref
+   kẹt ~3 phút rồi nhảy lên nhờ pool ứng viên seed đông dần (KHÔNG
+   phải CHASE); trên máy D KHÔNG hồi — vì sao ref máy không nhảy
+   vẫn chưa rõ.
+2. **Thiếu trần theo cấu tạo:** cần 1,47×, trần 1,5× → xả ròng chỉ
+   ~2% (~100 s thoại dày mới xả 3 s backlog); catch-up bão hòa ở
+   endLag ~102 ms. Nhưng sim chứng minh điều kiện ổn định đúng là
+   tốc độ > tỉ lệ × duty (choppy cần >0,79; dense >1,14) — trần
+   1,25× vẫn đủ ở duty ≤80%, chỉ duty 100% mới thua.
+3. **Van xả sai chỗ:** 13 lần × 500 ms vào ĐẦU câu tiếp theo (mất
+   1–2 từ mở đầu), backlog ~3 s vẫn nguyên. Phồng đo do van ≈ 0
+   (ròng −0,013×dropped ≈ −7 ms/500 ms xả).
+**Phân rã số máy (gần đúng):** 3446 ≈ 219 (nền sim choppy) + ~1200
+(D thiếu so với lag) + ~1800 (tăng trôi trong burst — KHÔNG cơ chế
+sim nào tái hiện được, kể cả dub tới 10× dồn cục) + ~200 (pipeline
+máy nặng hơn). Số hạng ~1800 ms chưa có lời giải — ứng viên hàng
+đầu: tốc độ áp dụng thật của ExoPlayer/Sonic < target 1,5× (chưa
+đo được; HUD chỉ hiện target; `setPlaybackParams` throw một lần →
+kẹt 1,0× vĩnh viễn mà không ai đọc lại; `confirmPlayStart` báo
+`playWall` DỰ BÁO khi stretch, sai số chỉ làm số đo thấp hơn thật).
+**Lệch hình vs khung hình:** hai số khác burst, khác đồng hồ — lệch
+hình −650 ms đáng tin hơn (một đồng hồ, cùng burst); khung hình
++729 ms có thanh sai số ~±1 s (2 round-trip JS + chọn element + D
+khác thời điểm). Sửa: ghi seq + tuổi cho cả hai, chỉ hiện residual
+cùng burst với sync error, dùng một snapshot D.
+**Pipeline TB 374 ms:** do tải (86 mẫu/60 s, 35 lượt/60 s, backlog
+282 ms), đã nằm trong 3446 ms, không cộng thêm.
+**Bộ đếm:** bỏ 26 lát = van làm đúng thiết kế; 0 mẫu; nhỏ 14 hoãn
+(không mất); stall 1 lành tính; gate 157 khung = spectral gate chặn
+đúng ~3,1 s nhạc/phút.
+**Phán quyết méo giọng (12:11) loại phương án nâng trần stretch
+(1,75×)** — xem mục trên. D-chase cũng đã bị sim loại từ trước
+(dense end-p90 3120 vs shipped 1667); seed đúng một mình gần như
+không mua được gì trong sim (469 vs 501) — D-dưới-lag trên máy là
+vấn đề đuổi/ref-kẹt, không phải vấn đề seed.
+**→ Quyết định v1.0.23:** làm bản sửa méo giọng + giữ van sống +
+thiết bị đo để tìm gốc D-kẹt. KHÔNG claiming sửa được cuối-burst
+3,4 s / D-kẹt trong bản này. **KẾT QUẢ: SIM GATE FAIL, CHƯA BUILD
+(xem mục ngay dưới).**
+
+## v1.0.23 — SIM GATE FAIL, CHƯA BUILD, CHƯA GIAO APK (28/11 ~12:25)
+
+Builder đã dừng trước bước code/build theo yêu cầu sim-gate-trước
+và "không được tụt dưới nền v1.0.22". Không có code Kotlin nào bị
+sửa, không commit/tag/APK nào được tạo.
+- Biến thể ship (trần 1,25× + van bỏ cổng tốc độ), driver sim1027,
+  10 phút: S1 filmA r1,42: cuối-burst p90 596 ms, bỏ audio 0,8%
+  PASS; S2 filmA r1,51: 884 ms, bỏ audio **4,1% FAIL (>2%)**; S3
+  dense r1,42: 629 ms, 0,8% PASS; S4 lag7,8: 663 ms, 0,6% PASS (D
+  ghim 82% miễn — artifact trần 8 s); S5 choppy r1,47: 325 ms, 0,0%
+  PASS. Gate hồi phục PASS (trung vị cuối-burst về <500 ms sau 4
+  phút, ≤5 phút). Van 1500–2000 ms/10 phút (đạt vạch tái hiệu chuẩn
+  ≤ baseline 1500–2500 ms).
+- Hồi quy (regone27, baseline v1.0.22 chạy lại tươi cùng seed):
+  v6 **1/3 = nền** ✓; sim1018 **0/3 — TỤT DƯỚI NỀN (2/3)** ✗: bỏ
+  audio k0 25,7% vs OLD 8,3%; k1 24,5% vs 7,7%; k2 28,8% vs 10,3%.
+  Chỉ chân bỏ audio fail; cặp mốc + line-start đều pass (thậm chí
+  tốt hơn OLD).
+- Cơ chế: trần 1,25× < tỉ lệ 1,46–1,51 trong thoại liên tục dài →
+  thiếu hụt xả ròng, hàng đợi bão hòa, chunk quá hạn (>500/700 ms)
+  bị stale-drop. Van chỉ nổ 3 lần/10 phút (ít biên burst + cap 500
+  ms/lần + 1 arm/burst) nên không bù được. Ngưỡng dốc theo tỉ lệ:
+  r1,42 → 0,8%; r1,51 → 4,1%. Fail chỉ khi tỉ lệ ≥~1,46 KẾT HỢP
+  thoại liên tục dài, ít khoảng lặng. Chế độ máy thật 12:00 (choppy
+  55% duty) → 0,0%.
+- Chưa quyết (parent quyết): A. Waive và ship 1,25× như đặc tả
+  (các thế giới fail khắc nghiệt hơn chế độ máy đã quan sát; sửa
+  đúng khiếu nại méo giọng; rủi ro mất chữ ~4% ở phim thoại dày
+  liên tục). B. Vòng sim mới (trần thỏa hiệp 1,35× — ngưỡng méo
+  chưa biết, cần user nghe thử; van mạnh hơn; prompt dịch ngắn gọn
+  giảm tỉ lệ; hybrid 1,25× + nhát ngắn 1,5×). C. Giữ 1,5×, chấp nhận
+  méo — trái phán quyết user, không khuyến nghị. D (đề xuất thêm từ
+  tổng hợp): build CHỈ-thiết-bị-đo (giữ 1,5×), lấy tốc độ áp dụng
+  thật + log từng burst để đóng số hạng ~1800 ms rồi mới quyết trần.
+- File bằng chứng (~/workspace/dub-live-moi/): sim1027.py,
+  sim1027_ship_run.txt, sim1027_step_run.txt, regone27.py,
+  regone27_k0/k1/k2.txt, regone25_base_k0/k1/k2.txt.
 
 Thử v1.0.21 trên máy thật: ảnh 09:10 (28/11). Neo transcription có
 tác dụng lúc đầu (cặp 60 s đầu 4), nhưng độ trôi cuối burst vẫn còn

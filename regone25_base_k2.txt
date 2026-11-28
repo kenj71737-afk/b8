@@ -1,0 +1,166 @@
+##### regression: v6 world (sim1017) — sa2sb3-valveON-seed2 #####
+=== OLD (v1.0.20), v6 world ===
+D changes: 97   D range: 3545..7988 ms (max 7988)   D last 60 s: [7387.0, 7570.0, 7699.0, 7797.0, 7897.0, 7920.0, 7945.0, 7960.0, 7971.0, 7985.0, 7986.0, 7988.0]
+last sample: 8.5 s   samples/60s: 112   queue: 12   deferred: 0   dropped: 0/0   empty: 0
+turn pairs: total 38, last 60 s: 9   bursts: 19   hold saturated (hold=0): 3
+tc: recv 23 (no-marker 0, anchor-back 0, consist 0, ok 23, fallback 0)
+burst: recv 17 (no-marker 0, anchor-back 0, consist 2, ok 15, fallback 0)
+marker splitting: splits 0
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 0, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median -8907 ms, p10 -9410, p90 +0 | |err| median 8907 ms, p90 9410 ms, n=15
+slice-sample err vs true lag: median -1433 ms, p10 -9956, p90 +1908, n=814
+BURST SYNC ERROR, TRUE render (n=19): signed median +8699 ms, p10 -543, p90 +10073 | |err| median 8699 ms, p90 10073 ms, n=19
+LINE-START SYNC ERROR, ACTUAL hold (n=83): signed median +7566 ms, p10 -507, p90 +9760 | |err| median 7566 ms, p90 9760 ms, n=83
+LINE-START ACTUAL, steady regimes only (n=65): signed median +1184 ms, p10 -564, p90 +9637 | |err| median 1608 ms, p90 9637 ms, n=65
+LINE-START FRESH-HOLD (n=82): signed median +8539 ms, p10 -3317, p90 +9732 | |err| median 8539 ms, p90 9732 ms, n=82
+SLICE-PLAY SYNC ERROR (n=814): signed median +9456 ms, p10 +659, p90 +13510 | |err| median 9456 ms, p90 13510 ms, n=814
+SLICE-PLAY, steady regimes only (n=578): signed median +3963 ms, p10 +252, p90 +12726 | |err| median 3963 ms, p90 12726 ms, n=578
+MEASURED pipeline (what the tracker eats): median 53 ms, p90 142 ms, max 143 ms, n=19
+TRUE pipeline (render - due): median 50 ms, p90 77 ms, max 174 ms
+backlog ahead at burst write: median 0 ms, p90 100 ms, max 101 ms
+DROPPED audio (hold queue, >500 ms overdue): 0 ms of 424686 ms (0.0%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 0 ms of 289240 ms (0.0%)
+mid-burst pipeline samples (every 20th chunk): median 54 ms, p90 82 ms, n=205
+DECOMP (steady, first slice of each played chunk): pipeline median 50 ms, hold median 800 ms, sample median 4712 ms (true lag median 4120 ms), D median 5483 ms, lag_est median 4740 ms, implied slice-play median 591 ms
+STRETCH actually used at chunk feeds: {1.0: 738, 1.1: 3214, 1.2: 160}
+LOOP lateness (busy_until - due) at feed: median 0 ms, p90 0 ms, max 0 ms, n=4112
+ratio (speech/dub): tracker 0.775 vs true 0.662   (per-turn sums: counted 27630 / dub 35591)
+burst-successor ratio measurements: 1
+slice D-check: rejected 94 samples, D-based re-anchors 4
+stretch speed distribution: {1.0: 1, 1.1: 15, 1.2: 3}
+pipeline EMA now: 52.0 ms   dynamic margin now: 852 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 18/87 (21%)   longest unexplained inter-burst gap: n/a ms (over 0 gaps)
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 0
+ratio display (dub/speech): 1.29x (true 1.51x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 13757.0 ms, p90 10073.090909090883 ms (n=19); slice-play steady |err| max 14637.0 ms, p90 12726.0 ms (n=578); per-burst END lateness |err| max 14405.909090909117 ms, p90 14376.0 ms (n=19 bursts)
+FIRST 60 s (restart gate): pairs 1, first sync error at 1454.0 ms, D pinned (>=7.9 s) 8% of the session
+
+=== NEW (v1.0.22r4 sa2sb3-valveON-seed2), v6 world ===
+D changes: 97   D range: 3545..7930 ms (max 7930)   D last 60 s: [7388.0, 7352.0, 7192.0, 7263.0, 7400.0, 7577.0, 7706.0, 7792.0, 7856.0, 7923.0, 7900.0, 7930.0]
+last sample: 7.9 s   samples/60s: 96   queue: 10   deferred: 0   dropped: 0/0   empty: 0
+turn pairs: total 35, last 60 s: 6   bursts: 19   hold saturated (hold=0): 1
+tc: recv 23 (no-marker 0, anchor-back 0, consist 0, ok 23, fallback 0)
+burst: recv 17 (no-marker 0, anchor-back 0, consist 5, ok 12, fallback 0)
+marker splitting: splits 0
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 0, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median -8802 ms, p10 -9404, p90 +0 | |err| median 8907 ms, p90 9404 ms, n=12
+slice-sample err vs true lag: median -1433 ms, p10 -10643, p90 +1908, n=814
+BURST SYNC ERROR, TRUE render (n=19): signed median +8699 ms, p10 -543, p90 +13757 | |err| median 8699 ms, p90 13757 ms, n=19
+LINE-START SYNC ERROR, ACTUAL hold (n=83): signed median +7566 ms, p10 -506, p90 +12637 | |err| median 7566 ms, p90 12637 ms, n=83
+LINE-START ACTUAL, steady regimes only (n=65): signed median +1184 ms, p10 -563, p90 +13046 | |err| median 1608 ms, p90 13046 ms, n=65
+LINE-START FRESH-HOLD (n=82): signed median +8539 ms, p10 -3315, p90 +9754 | |err| median 8539 ms, p90 9754 ms, n=82
+SLICE-PLAY SYNC ERROR (n=806): signed median +9497 ms, p10 +649, p90 +15681 | |err| median 9497 ms, p90 15681 ms, n=806
+SLICE-PLAY, steady regimes only (n=570): signed median +3910 ms, p10 +252, p90 +14715 | |err| median 3910 ms, p90 14715 ms, n=570
+MEASURED pipeline (what the tracker eats): median 53 ms, p90 142 ms, max 143 ms, n=19
+TRUE pipeline (render - due): median 50 ms, p90 75 ms, max 147 ms
+backlog ahead at burst write: median 0 ms, p90 100 ms, max 101 ms
+DROPPED audio (hold queue, >500 ms overdue): 0 ms of 424686 ms (0.0%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 0 ms of 289240 ms (0.0%)
+mid-burst pipeline samples (every 20th chunk): median 54 ms, p90 80 ms, n=205
+DECOMP (steady, first slice of each played chunk): pipeline median 50 ms, hold median 1410 ms, sample median 4663 ms (true lag median 4047 ms), D median 5456 ms, lag_est median 4702 ms, implied slice-play median 877 ms
+STRETCH actually used at chunk feeds: {1.2094531974050045: 1, 1.2084870848708489: 1, 1.208639705882353: 1, 1.2054794520547945: 1, 1.2045454545454546: 1, 1.2036199095022624: 1, 1.2027027027027026: 1, 1.201793721973094: 1, 1.2008928571428572: 1, 1.2021371326803205: 1, 1.200177147918512: 1, 1.2003530450132391: 1, 1.1973684210526316: 1, 1.1986001749781277: 1, 1.1977351916376306: 1, 1.1948051948051948: 1, 1.1939655172413792: 1, 1.1951848667239897: 1, 1.193327630453379: 1, 1.1914893617021276: 1, 1.191687871077184: 1, 1.1918850380388841: 1, 1.192131092295379: 1, 1.1963435696533131: 1, 1.2005560470112473: 1, 1.2047685243691817: 1, 1.2089810017271156: 1, 1.21319347908505: 1, 1.2174059564429842: 1, 1.2216184338009184: 1, 1.2258309111588523: 1, 1.2300433885167867: 1, 1.234255865874721: 1, 1.2270962894945532: 1, 1.2261523754104493: 1, 1.2262314097518539: 1, 1.2242878931530567: 1, 1.2233671332977545: 1, 1.2224539024489962: 1, 1.2195617708036912: 1, 1.2216404886561953: 1, 1.2197584716668686: 1, 1.216916342021768: 1, 1.217022298730934: 1, 1.2161569440567805: 1, 1.2162645574148416: 1, 1.2154083692941131: 1, 1.2136017967611017: 1, 1.212145017479084: 1, 1.2065941774815854: 1, 1.0: 657, 1.1: 2423, 1.2548365427675774: 43, 1.2568836045056322: 1, 1.2589695452649143: 6, 1.2: 35, 1.3023231407307756: 24, 1.2941310829259176: 1, 1.2947867699257816: 1, 1.2959858353063747: 1, 1.2971849006869676: 1, 1.2983839660675605: 1, 1.2995830314481536: 1, 1.3007820968287467: 1, 1.3019811622093396: 1, 1.3031802275899327: 1, 1.3043792929705256: 1, 1.3055783583511187: 1, 1.3067774237317118: 1, 1.307976489112305: 1, 1.309175554492898: 1, 1.310374619873491: 1, 1.3088259430393732: 1, 1.308499550874418: 1, 1.3084777933928762: 1, 1.3081524866877794: 1, 1.3078279338887657: 1, 1.307504132378074: 1, 1.307483391343562: 1, 1.3068587728110783: 1, 1.3062358829476037: 1, 1.3059154816342033: 1, 1.3061969275275565: 1, 1.5: 446, 1.3456204387278654: 40, 1.3464433203769766: 5, 1.468776422980672: 49, 1.2850509019467764: 40, 1.2585563041385948: 95, 1.4497195653162966: 49, 1.3029582126603227: 49, 1.4: 74}
+LOOP lateness (busy_until - due) at feed: median 0 ms, p90 0 ms, max 0 ms, n=4112
+ratio (speech/dub): tracker 0.761 vs true 0.662   (per-turn sums: counted 27017 / dub 35591)
+burst-successor ratio measurements: 1
+slice D-check: rejected 107 samples, D-based re-anchors 7
+stretch speed distribution: {1.2072155411655874: 1, 1.2525974025974025: 1, 1.3023231407307756: 1, 1.5: 9, 1.3456204387278654: 1, 1.468776422980672: 1, 1.2850509019467764: 1, 1.2585563041385948: 1, 1.4497195653162966: 2, 1.3029582126603227: 1}
+pipeline EMA now: 51.0 ms   dynamic margin now: 851 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 18/87 (21%)   longest unexplained inter-burst gap: n/a ms (over 0 gaps)
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 1
+ratio display (dub/speech): 1.31x (true 1.51x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 13853.0 ms, p90 13757.0 ms (n=19); slice-play steady |err| max 18621.0 ms, p90 14715.0 ms (n=570); per-burst END lateness |err| max 17673.0 ms, p90 17181.0 ms (n=19 bursts)
+D-based selection: 28 picks (21a)   split attempts: Kotlin-count 86 vs fixed-count 0 (== splits 0) (21c)
+TRANSCRIPTION ANCHOR (21b): sentences seen 0   ok 0 / no-mk 25 / cons 0 / agree 0   asrLag EMA 600 ms (calibrated from 0 short turns)
+FIRST 60 s (restart gate): pairs 1, first sync error at 1454.0 ms, D pinned (>=7.9 s) 4% of the session
+
+REGRESSION GATE (v6 world, WITHIN-CAP early half): fresh-hold |err| median OLD 13 -> NEW 12 (need NEW < 300); actual line-start steady median OLD 689 -> NEW 689 (need NEW <= OLD); pairs/60s OLD 9 -> NEW 6 (need NEW >= OLD)
+REGRESSION (v6, within-cap): FAIL
+
+##### regression: sim1018 device world (tc ON, no music) — sa2sb3-valveON-seed2 #####
+=== OLD (v1.0.19), sim1018 world, tc ON ===
+D changes: 72   D range: 3766..8000 ms (max 8000)   D last 60 s: [3882.0, 3882.0, 4382.0, 4382.0, 4582.0, 4832.0, 5082.0, 5276.0, 5326.0, 5469.0, 5469.0, 5539.0]
+last sample: 4.2 s   samples/60s: 90   queue: 10   deferred: 7   dropped: 0/0   empty: 9
+turn pairs: total 86, last 60 s: 9   bursts: 119   hold saturated (hold=0): 12
+tc: recv 119 (no-marker 8, anchor-back 2, consist 65, ok 44, fallback 10)
+burst: recv 117 (no-marker 7, anchor-back 3, consist 65, ok 42, fallback 12)
+marker splitting: splits 24
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 24, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median +2949 ms, p10 +96, p90 +4905 | |err| median 2949 ms, p90 4905 ms, n=86
+slice-sample err vs true lag: median +3087 ms, p10 +526, p90 +7695, n=871
+BURST SYNC ERROR, TRUE render (n=116): signed median -2528 ms, p10 -4239, p90 -232 | |err| median 2633 ms, p90 4239 ms, n=116
+LINE-START SYNC ERROR, ACTUAL hold (n=119): signed median -2474 ms, p10 -4239, p90 -178 | |err| median 2474 ms, p90 4239 ms, n=119
+LINE-START ACTUAL, steady regimes only (n=89): signed median -2348 ms, p10 -4286, p90 -113 | |err| median 2348 ms, p90 4286 ms, n=89
+LINE-START FRESH-HOLD (n=88): signed median -2864 ms, p10 -4675, p90 -444 | |err| median 2872 ms, p90 4675 ms, n=88
+SLICE-PLAY SYNC ERROR (n=773): signed median -1444 ms, p10 -3514, p90 +1368 | |err| median 1815 ms, p90 3796 ms, n=773
+SLICE-PLAY, steady regimes only (n=524): signed median -1487 ms, p10 -3607, p90 +970 | |err| median 1671 ms, p90 3607 ms, n=524
+MEASURED pipeline (what the tracker eats): median 52 ms, p90 130 ms, max 689 ms, n=116
+TRUE pipeline (render - due): median 557 ms, p90 843 ms, max 863 ms
+backlog ahead at burst write: median 0 ms, p90 114 ms, max 170 ms
+DROPPED audio (hold queue, >500 ms overdue): 52299 ms of 447071 ms (11.7%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 28537 ms of 275887 ms (10.3%)
+mid-burst pipeline samples (every 20th chunk): median 538 ms, p90 846 ms, n=197
+DECOMP (steady, first slice of each played chunk): pipeline median 482 ms, hold median 938 ms, sample median 4817 ms (true lag median 2098 ms), D median 5605 ms, lag_est median 4580 ms, implied slice-play median 279 ms
+STRETCH actually used at chunk feeds: {1.0: 35, 1.1: 40, 1.2: 5, 1.25: 238, 1.5: 4181}
+LOOP lateness (busy_until - due) at feed: median 458 ms, p90 706 ms, max 766 ms, n=4499
+ratio (speech/dub): tracker 0.699 vs true 0.662   (per-turn sums: counted 139623 / dub 200428)
+burst-successor ratio measurements: 11
+slice D-check: rejected 379 samples, D-based re-anchors 28
+stretch speed distribution: {1.1: 4, 1.5: 104, 1.0: 4, 1.25: 4}
+pipeline EMA now: 550.0 ms   dynamic margin now: 1350 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 119/120 (99%)   longest unexplained inter-burst gap: n/a ms (over 0 gaps)
+stall resets (old-style, speech-side only): 0
+ratio display (dub/speech): 1.43x (true 1.51x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 4973.999999999967 ms, p90 4239.0 ms (n=116); slice-play steady |err| max 4742.999999999971 ms, p90 3607.0 ms (n=524); per-burst END lateness |err| max 13337.666666672128 ms, p90 2535.5333333335875 ms (n=119 bursts)
+FIRST 60 s (restart gate): pairs 12, first sync error at 2472.0 ms, D pinned (>=7.9 s) 2% of the session
+
+=== NEW (v1.0.22r4 sa2sb3-valveON-seed2), sim1018 world, tc ON ===
+D changes: 73   D range: 3000..8000 ms (max 8000)   D last 60 s: [3243.0, 3243.0, 3000, 3000, 3049.0, 3237.0, 3191.0, 3251.0, 3239.0, 3224.0, 3224.0, 3359.0]
+last sample: 1.2 s   samples/60s: 138   queue: 4   deferred: 33   dropped: 0/0   empty: 52
+turn pairs: total 119, last 60 s: 21   bursts: 119   hold saturated (hold=0): 6
+tc: recv 119 (no-marker 8, anchor-back 15, consist 36, ok 60, fallback 20)
+burst: recv 117 (no-marker 5, anchor-back 17, consist 36, ok 59, fallback 21)
+marker splitting: splits 24
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 24, splits 24, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median +0 ms, p10 +0, p90 +2586 | |err| median 0 ms, p90 2586 ms, n=119
+slice-sample err vs true lag: median -72 ms, p10 -364, p90 +4613, n=802
+BURST SYNC ERROR, TRUE render (n=115): signed median +293 ms, p10 -2593, p90 +718 | |err| median 461 ms, p90 2593 ms, n=115
+LINE-START SYNC ERROR, ACTUAL hold (n=119): signed median +281 ms, p10 -2593, p90 +708 | |err| median 461 ms, p90 2593 ms, n=119
+LINE-START ACTUAL, steady regimes only (n=89): signed median +225 ms, p10 -3267, p90 +718 | |err| median 509 ms, p90 3267 ms, n=89
+LINE-START FRESH-HOLD (n=82): signed median -478 ms, p10 -3174, p90 -283 | |err| median 482 ms, p90 3174 ms, n=82
+SLICE-PLAY SYNC ERROR (n=733): signed median +1102 ms, p10 -1799, p90 +2425 | |err| median 1445 ms, p90 2799 ms, n=733
+SLICE-PLAY, steady regimes only (n=522): signed median +845 ms, p10 -2202, p90 +2139 | |err| median 1421 ms, p90 2596 ms, n=522
+MEASURED pipeline (what the tracker eats): median 52 ms, p90 75 ms, max 841 ms, n=115
+TRUE pipeline (render - due): median 525 ms, p90 839 ms, max 863 ms
+backlog ahead at burst write: median 0 ms, p90 37 ms, max 170 ms
+DROPPED audio (hold queue, >500 ms overdue): 45654 ms of 447071 ms (10.2%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 22655 ms of 281769 ms (8.0%)
+mid-burst pipeline samples (every 20th chunk): median 534 ms, p90 832 ms, n=201
+DECOMP (steady, first slice of each played chunk): pipeline median 421 ms, hold median 1095 ms, sample median 2097 ms (true lag median 2130 ms), D median 3287 ms, lag_est median 1974 ms, implied slice-play median 126 ms
+STRETCH actually used at chunk feeds: {1.1615487316421895: 1, 1.1628939192188195: 1, 1.2: 3, 1.25: 49, 1.5: 4258, 1.2628662799345531: 1, 1.2665848579503198: 1, 1.2577990486473867: 1, 1.2585137064118623: 1, 1.261426865149882: 1, 1.262868449384584: 1, 1.2635721962413222: 1, 1.2650071082484695: 1, 1.2664386935984004: 1, 1.2678669638463542: 1, 1.2700263256863482: 1, 1.2762716601453326: 10, 1.471966648034283: 7, 1.3696096608906272: 4, 1.40626900896535: 10, 1.3861670092251803: 11, 1.0: 8, 1.1: 5, 1.426795546311024: 6, 1.366413179238273: 9, 1.430619338286589: 10, 1.4968342169445414: 12, 1.4851436270218366: 12, 1.405864267924425: 11, 1.441732552172878: 5, 1.4832546012665837: 3, 1.438427862067965: 10, 1.440986651856675: 11, 1.4772211785258407: 12}
+LOOP lateness (busy_until - due) at feed: median 409 ms, p90 701 ms, max 765 ms, n=4479
+ratio (speech/dub): tracker 0.691 vs true 0.662   (per-turn sums: counted 455307 / dub 659561)
+burst-successor ratio measurements: 44
+slice D-check: rejected 144 samples, D-based re-anchors 8
+stretch speed distribution: {1.159484673478454: 1, 1.5: 100, 1.471966648034283: 1, 1.4072520018182455: 1, 1.366413179238273: 1, 1.430619338286589: 1, 1.4049861855402475: 1, 1.4681688926509728: 1, 1.4834376437910206: 1, 1.438427862067965: 1, 1.4806217460219642: 1, 1.4793009374402086: 1, 1.440986651856675: 1, 1.4801328973711343: 1, 1.4804865117417232: 1, 1.4802622676745776: 1}
+pipeline EMA now: 531.0 ms   dynamic margin now: 1331 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 119/120 (99%)   longest unexplained inter-burst gap: n/a ms (over 0 gaps)
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 0
+ratio display (dub/speech): 1.45x (true 1.51x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 4982.529251595322 ms, p90 2593.0 ms (n=115); slice-play steady |err| max 4715.862584928651 ms, p90 2595.799999998766 ms (n=522); per-burst END lateness |err| max 18004.600000005477 ms, p90 2725.1333333322546 ms (n=119 bursts)
+D-based selection: 4 picks (21a)   split attempts: Kotlin-count 67 vs fixed-count 24 (== splits 24) (21c)
+TRANSCRIPTION ANCHOR (21b): sentences seen 0   ok 0 / no-mk 176 / cons 0 / agree 0   asrLag EMA 600 ms (calibrated from 0 short turns)
+FIRST 60 s (restart gate): pairs 13, first sync error at 2472.0 ms, D pinned (>=7.9 s) 2% of the session
+
+REGRESSION (sim1018 world, re-scoped): pairs/60s OLD 9 -> NEW 21; line-start steady median OLD 2348 -> NEW 509 (need NEW <= OLD); dropped audio steady OLD 10.3% -> NEW 8.0% (need NEW <= OLD, round-2 cap 8.3%); dropped slices OLD 0 -> NEW 0: PASS
+SIM1018 dropped-audio cap check: NEW 8.0% vs cap 8.3% -> PASS
+SIM1018 OLD range note: the 8.3%% cap is the OLD of ONE world/seed; OLD itself varies across seeds — see regone25.py runs k=0,1,2 for the range.
+
+REGONE25 k=2 valve=ON spec=sa2sb3: v6=False sim1018=True droppedNEW=8.0% droppedOLD=10.3%

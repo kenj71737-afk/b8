@@ -235,8 +235,11 @@ class DubDelayTracker(
         private const val TAG = "DubDelayTracker"
         /** One measurement slice, ms. */
         const val SLICE_MS = 500L
-        /** Max speech slices kept (20 s of speech). */
-        const val MAX_SLICES = 40
+        /** Max speech slices kept (60 s of speech, v1.0.22 T-b:
+         * was 40 = 20 s — the tx re-anchor fell back to a VAD
+         * marker ~24 s away whenever the line start was older
+         * than 20 s; the sim's audioAt now covers 60 s). */
+        const val MAX_SLICES = 120
         /** Aggregation window per source-audio segment, ms. */
         const val WINDOW_MS = 4000L
         /** Valid latency sample range, ms. */
@@ -347,6 +350,18 @@ class DubDelayTracker(
          * -135,043,353 ms). Such a value is dropped (shown as
          * "—") and its raw inputs are logged. */
         const val SYNC_GARBAGE_MS = 60_000L
+        /** v1.0.22 — FRAME-RESIDUAL guard (tighter than the
+         * sync guard): a real frame residual is bounded by
+         * roughly D + drift (a few seconds). The 09:10 device
+         * photo showed "khung hình -52199 ms" while "lệch hình"
+         * was +13 ms — the video time had jumped ~47 s
+         * backwards between the marker and the burst play
+         * (episode change / seek / reload) and the ±60 s guard
+         * let it through. Beyond ±10 s the residual is dropped
+         * (shown as "—") and its raw inputs are logged; the
+         * continuity check in [tryComputeFrameResidual] is the
+         * primary defence (a jumped video fails it first). */
+        const val FRAME_GARBAGE_MS = 10_000L
         /** v1.0.19 — slice D-check window (feedSample). */
         const val SLICE_D_CHECK_MS = 1500L
         /** v1.0.19 — sustained slice D-rejections before re-anchor. */
@@ -397,6 +412,60 @@ class DubDelayTracker(
         /** v1.0.21 (21d) — D pinned at/above this counts as
          * pinned (the 8 s hard cap is 8000 ms). */
         const val D_PINNED_MS = 7900L
+        /** v1.0.22 — ratio-baseline stretch (V-a) + catch-up
+         * (V-b) + tail valve (V-c, round-2 tuned V2000cap500):
+         * the stretch floor is the measured dub/speech ratio so
+         * the steady-state drift is ~0; the catch-up multiplies
+         * it by (1 + endLag/5000) on the corrected in-burst lag;
+         * the valve drops at most 500 ms of stale head-audio at
+         * the next burst when the corrected end-lag exceeds
+         * 2000 ms with the stretch already at the 1.5x ceiling.
+         * Sim rounds 1–4 (sim1022–sim1025): the 1.25 level cap
+         * is BELOW the measured 1.42x ratio, so drift accumulated
+         * at 13.6% of burst length; CHASE was measured and
+         * rejected (dense end-p90 3120 vs 1667 shipped). */
+        const val CATCHUP_GAIN_MS = 5000.0
+        const val VALVE_THRESH_MS = 2000L
+        const val VALVE_KEEP_MS = 1500L
+        const val VALVE_MAX_DROP_MS = 500L
+        /** v1.0.22 — tx sub-split (T-a): anchor groups close on
+         * a >=300 ms fragment gap (dense dialogue never leaves
+         * an 800 ms gap, so groups never closed); the SENTENCE
+         * grouping for the seed path keeps the 800 ms gap
+         * ([TX_GAP_MS]) in a parallel list. */
+        const val TX_SUB_GAP_MS = 300L
+        /** v1.0.22 — R-b: once the reference is established, a
+         * tx sample more than this above the selection lag is a
+         * +1-line error even inside the 1200 ms residual. */
+        const val RB_UP_MS = 600L
+        /** v1.0.22 — Rf1 ratio measurement: counted speech
+         * corrected for music fed during inter-line pauses
+         * (counted − 0.40 × Σ max(0, fragGap − 900 ms)); the
+         * uncorrected estimator read 0.83 vs the true 0.704. */
+        const val RATIO_PAUSE_K = 0.40
+        const val RATIO_PAUSE_GAP_MS = 900L
+        /** v1.0.22 — Sa2 seed v2: the first paired slice sample
+         * picks the closed SENTENCE group nearest
+         * (firstBurstArrival − sliceLag), but only a group whose
+         * start is at least this far past the first marker wall
+         * (the sim's gap was 80 ms — thinner than real marker /
+         * startEst noise; +500 ms still leaves the true group
+         * ~2.4 s clear). Window lower bound for the candidate
+         * search (same 300 ms as the tx anchor). */
+        const val S2_MARKER_MARGIN_MS = 500L
+        const val S2_MIN_GAP_MS = 300L
+        /** v1.0.22 — S-b slice referee: trial when the median of
+         * the last 3 per-burst slice medians deviates from the
+         * reference by more than this; a trial lasts 5 bursts
+         * with a 10-burst cooldown and at most 3 trials; adopt
+         * on 3 consecutive bursts agreeing within 600 ms. */
+        const val SB_N = 3
+        const val SB_TRIAL_BURSTS = 5
+        const val SB_TRIG_MS = 1500L
+        const val SB_AGREE_MS = 600L
+        const val SB_AGREE_RUN = 3
+        const val SB_COOLDOWN_BURSTS = 10
+        const val SB_MAX_TRIALS = 3
     }
 
     /** One 500 ms slice of counted speech: its wall span and its
@@ -689,6 +758,77 @@ class DubDelayTracker(
     private var lastBurstPaired = false
     private var lastBurstMarker: TurnMarker? = null
 
+    // ---- v1.0.22 — hold/queue redesign (sim1022–sim1025) ----
+    /** Parallel SENTENCE grouping of the tx fragments (800 ms
+     * gap = [TX_GAP_MS]) for the seed path: the anchor groups
+     * ([txGroups]) close at 300 ms (T-a), but the seed must see
+     * whole sentences — a 300 ms group is one fragment, and
+     * seeding from it picks line 2 instead of line 1 (Ba, seed
+     * err −2336 ms in the sim). Pure bookkeeping; no turn
+     * attachment (only firstMs is ever read). */
+    private val sentGroups = ArrayList<TxGroup>()
+    private var sentCurGroup: TxGroup? = null
+    private var sentLastFragAtMs: Long? = null
+    /** Every tx-in fragment arrival (for the Rf1 pause
+     * estimate); pruned to the last 10 minutes. */
+    private val txFragArrivals = ArrayDeque<Long>()
+    /** Rf1 prev-tracking: the previous tx-ok's audio position,
+     * cumDub and group (its firstMs bounds the pause window). */
+    private var rfPrevAudioPos: Long? = null
+    private var rfPrevCumDubMs = 0L
+    private var rfPrevGroupFirstMs: Long? = null
+    private var rfMeas = 0
+    /** Corrected end-lag of the most recently PLAYED burst
+     * (play-anchored, stretch-corrected: playWall +
+     * offset/speed − sourceWall − D). Drives V-b catch-up and
+     * the V-c tail valve; 0 when the burst had no pairing
+     * entries. The sim computes it for every burst; Kotlin
+     * only for bursts with a record (marker-less bursts get 0
+     * — conservative: no false valve arms). */
+    private var lastCorrectedEndLagMs = 0L
+    /** Tail valve (V-c): ms of stale head-audio to drop at the
+     * next burst(s); the last played burst's seq and the seq
+     * the valve already armed from (one arm per play report). */
+    private var pendingTailDropMs = 0L
+    private var tailDroppedMs = 0L
+    private var tailValveFires = 0
+    private var vbPlaySeq: Long? = null
+    private var vbValveUsedSeq: Long? = null
+    /** Sa2 seed v2: arrival wall of the session's first dub
+     * chunk; the first paired slice sample re-seeds from it.
+     * Set once per session (stop() clears it; reconnect/stall
+     * resets do NOT re-arm it). */
+    private var saFirstArrivalMs: Long? = null
+    private var saPending = false
+    /** S-b slice referee: per-burst slice samples (non-boundary
+     * only, accepted or D-check-rejected alike), first/last,
+     * and the tx-ok lat of each burst; finalised burst records
+     * and the per-burst median history. */
+    private data class SbBurstRec(
+        val seq: Long,
+        val med: Long?,
+        var latTx: Long?
+    )
+    private val sbSamples = HashMap<Long, MutableList<Long>>()
+    private val sbFirst = HashMap<Long, Long>()
+    private val sbLast = HashMap<Long, Long>()
+    private val sbLatOk = HashMap<Long, Long>()
+    private val sbBursts = ArrayList<SbBurstRec>()
+    private val sbHist = ArrayDeque<Long>()
+    private var sbLastSeq: Long? = null
+    private var sbTrialActive = false
+    private var sbTrialRef: Long? = null
+    private var sbTrialLeft = 0
+    private var sbTrialBaseRef: Long? = null
+    private var sbTrialBaseMed: Long? = null
+    private var sbTrialRun = 0
+    private var sbTrialMaxRun = 0
+    private val sbTrialBursts = ArrayList<SbBurstRec>()
+    private var sbTrials = 0
+    private var sbAdopts = 0
+    private var sbAdoptedRef: Long? = null
+    private var sbCooldown = 0
+
     // ---- v1.0.21 (21d) — sync-error history ----
     /** Burst-start sync errors ((play − marker wall) − D), one
      * per burst that played with a marker. */
@@ -809,9 +949,13 @@ class DubDelayTracker(
     private var playDriftMs: Long? = null
     /** Video-time records for the frame check (item 6): the video's
      * currentTime at the marker wall / at the burst play wall,
-     * already corrected to the event wall by the service. */
-    private val markerVideoTimes = ArrayDeque<Pair<Long, Double>>()
-    private val burstVideoTimes = ArrayDeque<Pair<Long, Double>>()
+     * already corrected to the event wall by the service — plus
+     * that event wall itself (v1.0.22: the continuity check in
+     * [tryComputeFrameResidual] needs it to tell a real residual
+     * from a video that seeked / reloaded / changed episode
+     * between the two events). */
+    private val markerVideoTimes = ArrayDeque<Triple<Long, Double, Long>>()
+    private val burstVideoTimes = ArrayDeque<Triple<Long, Double, Long>>()
     /** Recent burst seq -> marker seq, for the frame residual
      * (the pending burst record is gone by the time the JS replies
      * arrive). */
@@ -896,13 +1040,29 @@ class DubDelayTracker(
     /** v1.0.21 (21h/21j/21n/21o) — independent lag reference.
      * Once the tx anchor is established (tx_ok > 0 and >= 5
      * boundary samples): the centre of the densest cluster of
-     * the accepted boundary samples + the bootstrap candidates.
+     * the accepted boundary samples.
+     * v1.0.22 (Rc2): the bootstrap pool ([seedCand]) is NO
+     * LONGER mixed in once established — the pool freezes at
+     * the wrong mode when the seed is wrong, and keeping it
+     * locks the reference there (round-2 D-ratchet).
+     * v1.0.22 (S-b): a running trial's reference overrides
+     * everything end-to-end; an adopted reference reads the
+     * median of boundary samples near it once they accumulate.
      * During bootstrap: the densest cluster of the candidate
-     * pool (every in-window tx group per burst). Then the seed
-     * lag; then the parent's D-based lag. */
+     * pool (every in-window tx group per burst, trimmed to one
+     * per burst by Bb). Then the seed lag; then the parent's
+     * D-based lag. */
     private fun refLagMs(): Long {
+        if (sbTrialActive && sbTrialRef != null) return sbTrialRef!!
+        if (sbAdoptedRef != null) {
+            val near = bndSamples.filter {
+                kotlin.math.abs(it - sbAdoptedRef!!) <= CLUSTER_WINDOW_MS
+            }.sorted()
+            if (near.size >= 3) return near[near.size / 2]
+            return sbAdoptedRef!!
+        }
         if (txOk > 0 && bndSamples.size >= 5) {
-            return clusterCentre(bndSamples + seedCand)
+            return clusterCentre(bndSamples)
         }
         if (seedCand.size >= 8) {
             return clusterCentre(seedCand)
@@ -1153,6 +1313,12 @@ class DubDelayTracker(
         recentSamples.clear()
         lastDubChunkAtMs = -1L
         lastLoudAtMs = 0L
+        // v1.0.22 — the tail valve's pending drop and end-lag
+        // belong to the stalled burst; the next chunk starts a
+        // new turn and must not be eaten or stretched on a stale
+        // backlog. Sa2 / S-b state survives (once per run).
+        pendingTailDropMs = 0L
+        lastCorrectedEndLagMs = 0L
     }
 
     /**
@@ -1376,6 +1542,15 @@ class DubDelayTracker(
         dubMs: Long,
         firstAudioSentAtMs: Long
     ): Long {
+        // v1.0.22 (Sa2) — the first dub chunk's arrival wall is
+        // the seed-correction anchor: the first paired slice
+        // sample re-seeds from it (see [feedSample]). Set once
+        // per session (stop() clears it; reconnect/stall resets
+        // do not re-arm it).
+        if (saFirstArrivalMs == null) {
+            saFirstArrivalMs = nowMs
+            saPending = true
+        }
         var hold = lastHoldMs
         // ALDA FIX32 first-audio seed: the very first translation's
         // latency sets the EMA and the delay (latency + margin).
@@ -1448,6 +1623,15 @@ class DubDelayTracker(
             // just no sync sample.
             burstSeq++
         }
+        // v1.0.22 (S-b) — a new burst starts: finalise the
+        // previous burst's slice record (its samples are
+        // complete; its tx anchor, if any, landed during it) and
+        // remember this seq. Runs AFTER the new burst's anchor
+        // work above, like the sim's on_dub_burst (finalise
+        // after super()).
+        if (isBurst || isFirstChunk) {
+            sbOnBurstStart(nowMs)
+        }
         // v1.0.18 — MONOTONIC HOLD: a chunk's due never precedes
         // the previous chunk's due. A hold drop (a new boundary
         // sample lowering the hold) would otherwise make the new
@@ -1467,6 +1651,23 @@ class DubDelayTracker(
         pairDubSlices(dubMs, nowMs)
         // 4 s window flush: median of the window's samples -> EMA.
         flushWindowIfDue(nowMs)
+        // v1.0.22 (V-c) — tail valve: drop this whole chunk from
+        // playback while an armed amount remains (the sim drops
+        // whole chunks in its loop AFTER on_dub ran, so the chunk
+        // still counts in cumDubMs/pairing — only the BYTES are
+        // discarded; the service sees the -1 return and skips
+        // playAudio). The armed amount decreases by the full
+        // chunk (it may go negative — the next chunk then plays,
+        // exactly like the sim).
+        if (pendingTailDropMs > 0L) {
+            pendingTailDropMs -= dubMs
+            tailDroppedMs += dubMs
+            // A drop is a dropped slice in the HUD count
+            // ("bỏ … lát") — the sim's dropped-audio metric
+            // counts valve drops the same way.
+            droppedSlices++
+            return -1L
+        }
         return hold
     }
 
@@ -1555,6 +1756,53 @@ class DubDelayTracker(
         while (pendingBursts.isNotEmpty() && pendingBursts.first().seq <= seq) {
             pendingBursts.removeFirst()
         }
+        // v1.0.22 — the play seq + corrected end-lag (V-b/V-c
+        // input) and the play-anchored slice samples. These are
+        // computed for EVERY burst with a record, marker or not:
+        // the sim computes the end-lag from the pairing log
+        // alone, and only the sync error below needs the marker.
+        // Default end-lag 0 (no pairing entries → no drift
+        // signal, no valve arm — conservative: a marker-less
+        // burst never arms the valve on an unmeasurable lag).
+        // The speed used is the tracker's target at this burst's
+        // play (stretchUpdate runs after this block, so it is
+        // the speed in effect during the burst; a mid-burst
+        // speed change is a second-order error on this
+        // diagnostic). The sim measures the same quantity from
+        // true render times, so after the v1.0.22 measurement
+        // fix the device numbers are comparable to the sim.
+        vbPlaySeq = seq
+        lastCorrectedEndLagMs = 0L
+        if (record != null) {
+            val playSpeed = targetSpeed.coerceIn(1.0, MAX_STRETCH_SPEED)
+            val slices = pairingLog.filter { it.burstSeq == seq }
+                .sortedBy { it.dubCumMs }
+            if (slices.isNotEmpty()) {
+                val samples = slices.map { entry ->
+                    val playSliceWall = playWallMs +
+                        ((entry.dubCumMs - record.startCumDubMs) / playSpeed).toLong()
+                    playSliceWall - entry.sourceWallMs
+                }
+                lastPlaySliceSampleMs = samples.last()
+                playDriftMs = if (samples.size >= 2) {
+                    samples.last() - samples.first()
+                } else {
+                    0L
+                }
+                // v1.0.21 (21d) — slice-play errors ((play sample)
+                // − D) and the per-burst END lateness (the last
+                // slice-play error of this burst — the voice
+                // lateness at the END of the sentence).
+                val sliceErrs = samples.map { it - delayMs }
+                for (e in sliceErrs) {
+                    slicePlayErrs.addLast(e)
+                }
+                while (slicePlayErrs.size > MAX_SLICE_PLAY_HISTORY) slicePlayErrs.removeFirst()
+                endLatenessErrs.addLast(sliceErrs.last())
+                while (endLatenessErrs.size > MAX_SYNC_ERR_HISTORY) endLatenessErrs.removeFirst()
+                lastCorrectedEndLagMs = sliceErrs.last()
+            }
+        }
         if (record?.markerWallMs != null) {
             // v1.0.20 — GARBAGE GUARD (Error 1): a sync error
             // beyond ±60 s cannot be real (the v1.0.19 clock bug
@@ -1577,33 +1825,6 @@ class DubDelayTracker(
                 syncErrs.addLast(lastSyncErrorMs!!)
                 while (syncErrs.size > MAX_SYNC_ERR_HISTORY) syncErrs.removeFirst()
                 if (firstSyncAtMs == null) firstSyncAtMs = playWallMs
-            }
-            // Play-anchored slice samples for this burst.
-            val slices = pairingLog.filter { it.burstSeq == seq }
-                .sortedBy { it.dubCumMs }
-            if (slices.isNotEmpty()) {
-                val samples = slices.map { entry ->
-                    val playSliceWall = playWallMs +
-                        (entry.dubCumMs - record.startCumDubMs)
-                    playSliceWall - entry.sourceWallMs
-                }
-                lastPlaySliceSampleMs = samples.last()
-                playDriftMs = if (samples.size >= 2) {
-                    samples.last() - samples.first()
-                } else {
-                    0L
-                }
-                // v1.0.21 (21d) — slice-play errors ((play sample)
-                // − D) and the per-burst END lateness (the last
-                // slice-play error of this burst — the voice
-                // lateness at the END of the sentence).
-                val sliceErrs = samples.map { it - delayMs }
-                for (e in sliceErrs) {
-                    slicePlayErrs.addLast(e)
-                }
-                while (slicePlayErrs.size > MAX_SLICE_PLAY_HISTORY) slicePlayErrs.removeFirst()
-                endLatenessErrs.addLast(sliceErrs.last())
-                while (endLatenessErrs.size > MAX_SYNC_ERR_HISTORY) endLatenessErrs.removeFirst()
             }
         }
         // Pairing-log entries of this burst and older are spent.
@@ -1739,6 +1960,34 @@ class DubDelayTracker(
         ) {
             targetSpeed = maxOf(1.0, kotlin.math.round((targetSpeed - 0.10) * 100) / 100)
         }
+        // v1.0.22 (V-a/V-b) — ratio-baseline stretch, max-wins:
+        // the dub runs ~1.42x the source, so the floor is the
+        // measured ratio (1/ratio(), clamped [1.0, 1.5]),
+        // multiplied by (1 + endLag/5000) while the last played
+        // burst drifted late; it decays to 1.0 when silent >5 s
+        // (no burst play — the floor is a dubbing speed, not an
+        // idle speed). Applied AFTER the base logic (including
+        // the decay above), like the sim's _stretch_update: the
+        // lowering paths may never pull the speed below the
+        // floor while dubbing is active. The 1.25 level cap is
+        // below the measured ratio, so without this floor the
+        // drift accumulated at 13.6% of burst length.
+        val floor = ratioFloorMs(nowMs)
+        if (floor > targetSpeed) targetSpeed = floor
+    }
+
+    /** v1.0.22 — the V-a/V-b stretch floor (see [stretchUpdate]). */
+    private fun ratioFloorMs(nowMs: Long): Double {
+        if (lastBurstPlayWallMs != null &&
+            nowMs - lastBurstPlayWallMs!! > 5000L
+        ) {
+            return 1.0
+        }
+        var f = (1.0 / ratio()).coerceIn(1.0, MAX_STRETCH_SPEED)
+        if (lastCorrectedEndLagMs > 0L) {
+            f *= (1.0 + lastCorrectedEndLagMs / CATCHUP_GAIN_MS)
+        }
+        return f.coerceIn(1.0, MAX_STRETCH_SPEED)
     }
 
     /**
@@ -1752,22 +2001,31 @@ class DubDelayTracker(
      * The residual is (video time now − marker video time) − D:
      * positive = the shown frame is AHEAD of the spoken sentence.
      * v1.0.17 only reports it; it never steers D.
+     * v1.0.22 — CONTINUITY CHECK: the video normally advances
+     * ~1x between the two event walls, so (vBurst − vMarker) must
+     * roughly equal (burstWall − markerWall). A video that
+     * seeked / reloaded / changed episode in between jumps by
+     * tens of seconds (the 09:10 device photo: -52 s while the
+     * sync error was +13 ms) — the residual is dropped, not
+     * displayed. A paused video also fails the check (video
+     * time frozen while the wall advances), which is correct:
+     * the residual is meaningless while the picture is frozen.
      */
     @Synchronized
-    fun setMarkerVideoTime(markerSeq: Long, videoTimeSec: Double) {
-        markerVideoTimes.addLast(markerSeq to videoTimeSec)
+    fun setMarkerVideoTime(markerSeq: Long, videoTimeSec: Double, eventWallMs: Long = 0L) {
+        markerVideoTimes.addLast(Triple(markerSeq, videoTimeSec, eventWallMs))
         while (markerVideoTimes.size > MAX_VIDEO_TIME_RECORDS) {
             markerVideoTimes.removeFirst()
         }
         // A burst video time may already be waiting for this marker.
-        for ((seq, _) in burstVideoTimes) {
+        for ((seq, _, _) in burstVideoTimes) {
             tryComputeFrameResidual(seq)
         }
     }
 
     @Synchronized
-    fun onBurstVideoTime(seq: Long, videoTimeSec: Double) {
-        burstVideoTimes.addLast(seq to videoTimeSec)
+    fun onBurstVideoTime(seq: Long, videoTimeSec: Double, eventWallMs: Long = 0L) {
+        burstVideoTimes.addLast(Triple(seq, videoTimeSec, eventWallMs))
         while (burstVideoTimes.size > MAX_VIDEO_TIME_RECORDS) {
             burstVideoTimes.removeFirst()
         }
@@ -1777,16 +2035,47 @@ class DubDelayTracker(
     private fun tryComputeFrameResidual(seq: Long) {
         val markerSeq = recentBurstMarkers.firstOrNull { it.first == seq }?.second
             ?: return
-        val vMarker = markerVideoTimes.firstOrNull { it.first == markerSeq }?.second
+        val vMarkerRec = markerVideoTimes.firstOrNull { it.first == markerSeq }
             ?: return
-        val vBurst = burstVideoTimes.firstOrNull { it.first == seq }?.second
+        val vBurstRec = burstVideoTimes.firstOrNull { it.first == seq }
             ?: return
+        val vMarker = vMarkerRec.second
+        val vBurst = vBurstRec.second
+        // v1.0.22 — continuity: the video-time advance between
+        // the two events must match the wall-clock advance
+        // (1x playback). Tolerances (-3 s behind, +5 s ahead)
+        // cover JS round-trip jitter, the service's correction
+        // error, and short pauses. A seek / reload / episode
+        // change fails it by tens of seconds and the residual
+        // is dropped (shown as "—") with the raw inputs logged.
+        // A paused video also fails it (video time frozen while
+        // the wall advances) — correct, the residual is
+        // meaningless while the picture is frozen. Event walls
+        // of 0 mean "unknown" (old callers) — then the check is
+        // skipped and only the magnitude guard below applies.
+        val markerWall = vMarkerRec.third
+        val burstWall = vBurstRec.third
+        if (markerWall > 0L && burstWall > 0L) {
+            val wallDeltaMs = burstWall - markerWall
+            val videoDeltaMs = ((vBurst - vMarker) * 1000.0).toLong()
+            if (wallDeltaMs < 0L ||
+                videoDeltaMs < wallDeltaMs - 3000L ||
+                videoDeltaMs > wallDeltaMs + 5000L
+            ) {
+                Log.w(TAG, "frame residual dropped: video jumped (vMarker=%.3f vBurst=%.3f videoDelta=%d ms wallDelta=%d ms D=%d seq=%d)"
+                    .format(vMarker, vBurst, videoDeltaMs, wallDeltaMs, delayMs, seq))
+                lastFrameResidualMs = null
+                return
+            }
+        }
         // v1.0.20 — GARBAGE GUARD (Error 1, same poisoned wall as
         // the sync error: the service's video-time correction
-        // inherits the play wall). Beyond ±60 s the residual is
-        // dropped (show "—") and the raw inputs are logged.
+        // inherits the play wall). v1.0.22 — tightened for the
+        // frame residual: beyond ±10 s it cannot be real (a real
+        // residual is bounded by ~D + drift); dropped (show "—")
+        // and the raw inputs are logged.
         val residual = ((vBurst - vMarker) * 1000.0 - delayMs).toLong()
-        lastFrameResidualMs = if (kotlin.math.abs(residual) > SYNC_GARBAGE_MS) {
+        lastFrameResidualMs = if (kotlin.math.abs(residual) > FRAME_GARBAGE_MS) {
             Log.w(TAG, "garbage frame residual dropped: vBurst=%.3f vMarker=%.3f D=%d residual=%d seq=%d"
                 .format(vBurst, vMarker, delayMs, residual, seq))
             null
@@ -1988,6 +2277,31 @@ class DubDelayTracker(
      */
     private fun onDubBurst(nowMs: Long): Pair<Long, TurnMarker?> {
         burstRecv++
+        // v1.0.22 — V-c tail valve (round-2 tuned V2000cap500):
+        // arm at the next burst boundary when the last PLAYED
+        // burst drifted >2000 ms with the stretch already at the
+        // 1.5x ceiling — the queue cannot drain by speed alone,
+        // so the stale head-audio of this burst is dropped
+        // instead (see the drop in [onDubAudioArrival]). One arm
+        // per play report (a report that already armed never
+        // arms again); the arm reads only the last play's
+        // end-lag + the current speed, so it runs before every
+        // return path below, like the sim's on_dub_burst (which
+        // arms after its anchor work regardless of outcome).
+        if (vbPlaySeq != null && vbPlaySeq != vbValveUsedSeq &&
+            lastCorrectedEndLagMs > VALVE_THRESH_MS &&
+            targetSpeed >= MAX_STRETCH_SPEED - 0.01
+        ) {
+            val drop = minOf(
+                lastCorrectedEndLagMs - VALVE_KEEP_MS,
+                VALVE_MAX_DROP_MS
+            )
+            if (drop > 0L) {
+                pendingTailDropMs += drop
+                tailValveFires++
+                vbValveUsedSeq = vbPlaySeq
+            }
+        }
         // v1.0.19 — previous hold, for the hold slew limit (the
         // hold may not drop more than HOLD_SLEW_MS below it).
         val prevHoldMs = lastHoldMs
@@ -2336,7 +2650,19 @@ class DubDelayTracker(
      */
     @Synchronized
     fun noteTxInFragment(arrivalMs: Long) {
-        if (txLastFragAtMs != null && arrivalMs - txLastFragAtMs!! >= TX_GAP_MS) {
+        // v1.0.22 (Rf1) — record every fragment arrival for the
+        // pause estimate (pruned to the last 10 minutes).
+        txFragArrivals.addLast(arrivalMs)
+        while (txFragArrivals.isNotEmpty() &&
+            arrivalMs - txFragArrivals.first() > 600_000L
+        ) {
+            txFragArrivals.removeFirst()
+        }
+        // v1.0.22 (T-a) — anchor groups close on a >=300 ms
+        // fragment gap: dense dialogue never leaves an 800 ms
+        // gap, so groups never closed and the anchor found no
+        // CLOSED group (tx no-mk 98% on the dense device film).
+        if (txLastFragAtMs != null && arrivalMs - txLastFragAtMs!! >= TX_SUB_GAP_MS) {
             closeTxGroup()
         }
         txLastFragAtMs = arrivalMs
@@ -2349,6 +2675,25 @@ class DubDelayTracker(
             while (txGroups.size > 500) txGroups.removeAt(0)
         } else {
             cur.lastMs = arrivalMs
+        }
+        // v1.0.22 (BaSent/Sa2) — parallel SENTENCE grouping at
+        // the 800 ms gap, for the seed path only: the anchor
+        // groups above are sub-splits (one fragment each under
+        // T-a), and seeding from them picks line 2 instead of
+        // line 1. Pure bookkeeping; the tracker's own grouping
+        // is untouched.
+        if (sentLastFragAtMs != null && arrivalMs - sentLastFragAtMs!! >= TX_GAP_MS) {
+            sentCurGroup?.let { it.closed = true }
+            sentCurGroup = null
+        }
+        sentLastFragAtMs = arrivalMs
+        if (sentCurGroup == null) {
+            val g = TxGroup(firstMs = arrivalMs, lastMs = arrivalMs, closed = false)
+            sentCurGroup = g
+            sentGroups.add(g)
+            while (sentGroups.size > 500) sentGroups.removeAt(0)
+        } else {
+            sentCurGroup!!.lastMs = arrivalMs
         }
         val turnIdx = currentTxTurnIdx()
         if (turnIdx == null) return
@@ -2375,7 +2720,14 @@ class DubDelayTracker(
 
     /** Inverse of [wallAtSpeech]: counted-speech position of a
      * wall time, interpolated from the slices. Null when no
-     * slice covers it. */
+     * slice covers it.
+     * v1.0.22 (T-d) — extrapolate 1:1 wall->speech past the
+     * slice edges, so the tx re-anchor never needs the VAD
+     * marker fallback (audioAt covered 20 s at MAX_SLICES=40
+     * and the newest marker was 30 s old on the device, so the
+     * fallback failed too). Only when no slice covers the wall
+     * at all; with no slices at all, still null (the anchor
+     * then uses the marker fallback as before). */
     private fun audioAt(wallMs: Long): Long? {
         for (slice in speechSlices) {
             if (wallMs in slice.startWallMs..slice.endWallMs) {
@@ -2385,7 +2737,13 @@ class DubDelayTracker(
                     (wallMs - slice.startWallMs) * spanAudio / spanWall
             }
         }
-        return null
+        if (speechSlices.isEmpty()) return null
+        val first = speechSlices.first()
+        if (wallMs < first.startWallMs) {
+            return maxOf(0L, first.startAudioMs - (first.startWallMs - wallMs))
+        }
+        val last = speechSlices.last()
+        return last.endAudioMs + (wallMs - last.endWallMs)
     }
 
     /** Estimated start wall of a tx sentence: its first fragment
@@ -2436,6 +2794,16 @@ class DubDelayTracker(
         // whole line off.
         var best: TxGroup? = null
         var bestRes: Long? = null
+        // v1.0.22 (Bb) — one seed candidate per burst: the loop
+        // records EVERY in-window group's lat into the pool, and
+        // the pool then votes for the wrong line (cluster race,
+        // round 2). Keep only the candidate nearest the current
+        // reference. (Counted by adds, not by index: the pool
+        // prunes from the front at the 200 cap, so a stored
+        // index would go stale.)
+        val bbOn = !refEstablished()
+        var bbAdded = 0
+        val bbExpected = ArrayList<Long>()
         for (g in txGroups) {
             // CLOSED groups only: the next line's group is still
             // OPEN when this burst arrives (its first fragment
@@ -2448,6 +2816,8 @@ class DubDelayTracker(
             if (!refEstablished()) {
                 seedCand.add(burstArrival - startEst)
                 while (seedCand.size > MAX_SEED_CAND) seedCand.removeAt(0)
+                bbExpected.add(burstArrival - startEst)
+                bbAdded++
             }
             val res = kotlin.math.abs(startEst - target)
             if (bestRes == null || res < bestRes) {
@@ -2455,9 +2825,48 @@ class DubDelayTracker(
                 bestRes = res
             }
         }
+        if (bbOn && bbAdded > 0 && bbExpected.isNotEmpty()) {
+            val chosen = bbExpected.minByOrNull {
+                kotlin.math.abs(it - selLagMs())
+            }!!
+            val tail = seedCand.takeLast(bbAdded)
+            val kept = ArrayList<Long>()
+            var keptChosen = false
+            for (v in tail) {
+                if (v == chosen && !keptChosen) {
+                    kept.add(v)
+                    keptChosen = true
+                }
+            }
+            if (!keptChosen && tail.isNotEmpty()) {
+                kept.add(tail.minByOrNull {
+                    kotlin.math.abs(it - chosen)
+                }!!)
+            }
+            repeat(bbAdded) { seedCand.removeAt(seedCand.size - 1) }
+            seedCand.addAll(kept)
+        }
         if (best == null) {
             txNoMk++
             return
+        }
+        // v1.0.22 (S-b) — the tx lat of this burst's best group,
+        // captured before the anchor runs (side-effect free);
+        // stored only if the anchor accepts below.
+        val sbLatTx = burstArrival - txSentenceStartMs(best)
+        // v1.0.22 (Rb) — once established, a sample more than
+        // 600 ms above the selection lag is a +1-line error even
+        // inside the 1200 ms residual — block it before it feeds
+        // D. The VAD-agree path (same line, no sample) is
+        // exempt: R-b only stops a sample from feeding D, it must
+        // not block an agreement.
+        if (refEstablished() && bestRes != null && bestRes <= TX_RES_MS) {
+            val agree = lastBurstMarker != null &&
+                kotlin.math.abs(lastBurstMarker!!.wallMs - txSentenceStartMs(best)) <= 500L
+            if (!agree && sbLatTx > dlag + RB_UP_MS) {
+                txCons++
+                return
+            }
         }
         // Residual bound once the reference is established: a
         // mid-turn burst in a merged group is ~3.4 s from its
@@ -2530,12 +2939,278 @@ class DubDelayTracker(
         txOk++
         txAnchoredBurst = burstSeq
         txLastAudioPos = audioPos
+        // v1.0.22 (S-b) — the tx-ok lat of this burst, for the
+        // slice referee (stored only on accept, like the sim);
+        // patch an already-finalised record of this burst.
+        sbLatOk[burstSeq] = sbLatTx
+        for (rec in sbBursts) {
+            if (rec.seq == burstSeq && rec.latTx == null) rec.latTx = sbLatTx
+        }
+        // v1.0.22 (Rf1) — ratio from consecutive tx-ok line
+        // positions, with the counted speech corrected for music
+        // fed during inter-line pauses (see [pauseEstimate]).
+        // Same sanity bounds as the burst chain. This REPLACES
+        // the uncorrected round-1 RATIO_TX (off in the winner:
+        // the uncorrected estimator read 0.83 vs the true
+        // 0.704). The prev-tracking updates on every tx-ok,
+        // measured or not.
+        val rfPrevPos = rfPrevAudioPos
+        val rfPrevGroupFirst = rfPrevGroupFirstMs
+        if (rfPrevPos != null && rfPrevGroupFirst != null) {
+            val countedDiff = audioPos - rfPrevPos
+            val dubDiff = cumDubMs - rfPrevCumDubMs
+            val pause = pauseEstimate(rfPrevGroupFirst, best.lastMs)
+            val countedUse = countedDiff - RATIO_PAUSE_K * pause
+            val expected = countedUse * 1.3
+            if (countedUse >= 500.0 && dubDiff >= 0.7 * expected &&
+                dubDiff <= 1.6 * expected
+            ) {
+                sumCountedMs += countedUse.toLong()
+                sumTotalDubMs += dubDiff
+                rfMeas++
+            }
+        }
+        rfPrevAudioPos = audioPos
+        rfPrevCumDubMs = cumDubMs
+        rfPrevGroupFirstMs = best.firstMs
         if (mBest != null && (mRes ?: Long.MAX_VALUE) <= 2500L) {
             txLastMarkerSeq = mBest.seq
             lastBurstMarker = mBest
             noteAccepted(mBest.seq)
         }
         burstDCheckStreak = 0
+    }
+
+    // ---- v1.0.22 — Sa2 seed v2 + S-b slice referee ----
+
+    /**
+     * v1.0.22 (Sa2) — re-seed from the first paired slice
+     * sample. The slice sample is a DIRECT lag measurement
+     * (burstArrival − sourceWall of the paired slice), so
+     * target = firstBurstArrival − sliceLag is the true start
+     * of the line this burst translates. Pick the closed
+     * SENTENCE group whose estimated start is nearest the
+     * target, but only a group whose start is at least
+     * [S2_MARKER_MARGIN_MS] past the first marker wall: the
+     * untranslated line 0 sits just before the marker wall,
+     * and the sim's 80 ms gap is thinner than real marker /
+     * startEst noise. Fallback (no candidate): the BaSent
+     * most-recent-closed rule. No candidate at all: keep the
+     * loop seed. Runs BEFORE the D-check judges this sample
+     * (see [feedSample]) and applies the same four seed
+     * updates the loop seed does (seed lag, EMA seed, D, hold).
+     * The sim's S-a literal (no marker bound) FAILS 3/4 worlds
+     * (seed +2589 ms — the first slice measures
+     * burstArrival − wall(~500 ms) of the line being spoken,
+     * not the absolute lag); Sa2 passes 4/4 ex-cold.
+     */
+    private fun saCorrect(sliceLagMs: Long, nowMs: Long) {
+        val arrival = saFirstArrivalMs ?: return
+        val target = arrival - sliceLagMs
+        val markerWall = markers.firstOrNull()?.wallMs
+        val loopSeed = seedLagMs
+        var chosen: TxGroup? = null
+        var bestDist: Long? = null
+        var bestSe: Long? = null
+        for (g in sentGroups) {
+            if (!g.closed) continue
+            val se = txSentenceStartMs(g)
+            if (se !in (arrival - TX_WIN_MS)..(arrival - S2_MIN_GAP_MS)) continue
+            if (markerWall != null && se < markerWall + S2_MARKER_MARGIN_MS) continue
+            val dist = kotlin.math.abs(se - target)
+            if (bestDist == null || dist < bestDist ||
+                (dist == bestDist && se < (bestSe ?: Long.MAX_VALUE))
+            ) {
+                chosen = g
+                bestDist = dist
+                bestSe = se
+            }
+        }
+        if (chosen == null) {
+            // Fallback: BaSent most-recent-closed (no bound).
+            var fbSe: Long? = null
+            for (g in sentGroups) {
+                if (!g.closed) continue
+                val se = txSentenceStartMs(g)
+                if (se !in (arrival - TX_WIN_MS)..(arrival - S2_MIN_GAP_MS)) continue
+                if (fbSe == null || se > fbSe) {
+                    chosen = g
+                    fbSe = se
+                }
+            }
+        }
+        val group = chosen ?: return
+        val se = txSentenceStartMs(group)
+        val el = arrival - se
+        seedLagMs = el
+        latencyEma.seed(el)
+        val newDelay = capDelayMs(el + dynamicMarginMs())
+        if (newDelay != delayMs) {
+            delayMs = newDelay
+            onDelayChanged(delayMs)
+        }
+        lastHoldMs = (newDelay - el - pipelineMs()).coerceAtLeast(0L)
+        Log.i(TAG, "Sa2 seed corrected: sliceLag=%d target=%d startEst=%d seed=%d (loop seed was %s)"
+            .format(sliceLagMs, target, se, el, loopSeed?.toString() ?: "none"))
+    }
+
+    /**
+     * v1.0.22 (S-b) — a new burst started: finalise the
+     * previous burst's slice record (its samples are complete;
+     * its tx anchor, if any, landed during it) and remember
+     * this seq. Called from [onDubAudioArrival] after the new
+     * burst's anchor work, like the sim's on_dub_burst
+     * (finalise after super()).
+     */
+    private fun sbOnBurstStart(nowMs: Long) {
+        val prev = sbLastSeq
+        if (prev != null && prev != burstSeq) {
+            sbFinalise(prev, nowMs)
+        }
+        sbLastSeq = burstSeq
+    }
+
+    /** v1.0.22 (S-b) — finalise one burst's slice record. */
+    private fun sbFinalise(seq: Long, nowMs: Long) {
+        val samples = sbSamples.remove(seq) ?: ArrayList()
+        sbFirst.remove(seq)
+        sbLast.remove(seq)
+        val med = if (samples.isNotEmpty()) {
+            samples.sorted()[samples.size / 2]
+        } else {
+            null
+        }
+        val rec = SbBurstRec(seq = seq, med = med, latTx = sbLatOk[seq])
+        sbBursts.add(rec)
+        if (med != null) {
+            sbHist.addLast(med)
+            while (sbHist.size > 60) sbHist.removeFirst()
+        }
+        sbStep(nowMs, rec)
+    }
+
+    /**
+     * v1.0.22 (S-b) — trigger / trial accounting, one step per
+     * finalised burst. A trial only STARTS once the reference
+     * is established; the trigger is the median of the last 3
+     * per-burst slice medians deviating from the reference by
+     * more than [SB_TRIG_MS]. During a trial the reference is
+     * the trial value end-to-end (see [refLagMs]); adoption
+     * needs 3 consecutive agreeing bursts AND the candidate
+     * beating the base on the trial medians. The sim proved
+     * the trigger signal is a transient crossing of a drifting
+     * stale-anchor sample and the adopt rule is
+     * self-reinforcing — S-b is a safety net that fires late,
+     * not a referee to rely on for fixing the seed (it fired
+     * 0 times in the winning sim run: the win is Sa2's).
+     */
+    private fun sbStep(nowMs: Long, rec: SbBurstRec) {
+        if (sbTrialActive) {
+            sbTrialBursts.add(rec)
+            val agree = rec.latTx != null && rec.med != null &&
+                kotlin.math.abs(rec.latTx - rec.med!!) <= SB_AGREE_MS
+            if (agree) {
+                sbTrialRun++
+                if (sbTrialRun > sbTrialMaxRun) sbTrialMaxRun = sbTrialRun
+            } else {
+                sbTrialRun = 0
+            }
+            sbTrialLeft--
+            if (sbTrialLeft <= 0) sbEndTrial(nowMs)
+            return
+        }
+        if (sbCooldown > 0) {
+            sbCooldown--
+            return
+        }
+        if (sbHist.size < SB_N) return
+        val lastN = sbHist.takeLast(SB_N)
+        val medN = lastN.sorted()[lastN.size / 2]
+        val ref = refLagMs()
+        val dev = medN - ref
+        if (kotlin.math.abs(dev) > SB_TRIG_MS && refEstablished() &&
+            sbTrials < SB_MAX_TRIALS
+        ) {
+            sbStartTrial(nowMs, medN, ref)
+        }
+    }
+
+    private fun sbStartTrial(nowMs: Long, medN: Long, ref: Long) {
+        val baseMeds = sbHist.takeLast(SB_N)
+        sbTrialBaseMed = baseMeds.map {
+            kotlin.math.abs(it - ref)
+        }.sorted().let { it[it.size / 2] }
+        sbTrialRef = medN
+        sbTrialBaseRef = ref
+        sbTrialActive = true
+        sbTrialLeft = SB_TRIAL_BURSTS
+        sbTrialRun = 0
+        sbTrialMaxRun = 0
+        sbTrialBursts.clear()
+        sbTrials++
+        Log.i(TAG, "S-b trial start: ref=%d -> trial=%d".format(ref, medN))
+    }
+
+    private fun sbEndTrial(nowMs: Long) {
+        val trialRef = sbTrialRef
+        val bursts = sbTrialBursts.toList()
+        val meds = bursts.mapNotNull { it.med }
+        val medCand = if (meds.isNotEmpty() && trialRef != null) {
+            meds.map {
+                kotlin.math.abs(it - trialRef)
+            }.sorted().let { it[it.size / 2] }
+        } else {
+            null
+        }
+        val medBase = if (meds.isNotEmpty() && sbTrialBaseRef != null) {
+            meds.map {
+                kotlin.math.abs(it - sbTrialBaseRef!!)
+            }.sorted().let { it[it.size / 2] }
+        } else {
+            null
+        }
+        val adopt = sbTrialMaxRun >= SB_AGREE_RUN && meds.size >= 3 &&
+            medCand != null && medBase != null && medCand < medBase
+        if (adopt) {
+            sbAdoptedRef = trialRef
+            sbAdopts++
+            Log.i(TAG, "S-b trial ADOPT: ref=%s (run=%d, medCand=%s, medBase=%s)"
+                .format(trialRef?.toString() ?: "?", sbTrialMaxRun,
+                    medCand?.toString() ?: "?", medBase?.toString() ?: "?"))
+        } else {
+            Log.i(TAG, "S-b trial reject: ref=%s (run=%d, medCand=%s, medBase=%s)"
+                .format(trialRef?.toString() ?: "?", sbTrialMaxRun,
+                    medCand?.toString() ?: "?", medBase?.toString() ?: "?"))
+        }
+        sbTrialActive = false
+        sbTrialRef = null
+        sbTrialLeft = 0
+        sbCooldown = SB_COOLDOWN_BURSTS
+    }
+
+    /**
+     * v1.0.22 (Rf1) — Σ max(0, gap − 900 ms) over consecutive
+     * tx fragment arrivals in (firstFrag, lastFrag]. Within a
+     * line fragments step 500–900 ms, so only inter-line gaps
+     * (line tail + pause + next line's frag delay) contribute.
+     * The counted speech fed during those gaps is music, not
+     * dialogue.
+     */
+    private fun pauseEstimate(firstFragMs: Long, lastFragMs: Long): Long {
+        var p = 0L
+        var prev: Long? = null
+        for (a in txFragArrivals) {
+            if (a <= firstFragMs) {
+                prev = a
+                continue
+            }
+            if (a > lastFragMs) break
+            if (prev != null) {
+                p += maxOf(0L, a - prev - RATIO_PAUSE_GAP_MS)
+            }
+            prev = a
+        }
+        return p
     }
 
     private fun recordTurnPair(nowMs: Long) {
@@ -2571,6 +3246,23 @@ class DubDelayTracker(
      */
     private fun feedSample(sampleMs: Long, nowMs: Long, boundary: Boolean): Long {
         if (!boundary) {
+            // v1.0.22 (S-b bucketing + Sa2 seed) — BEFORE the
+            // D-check below: the sample is the raw pair() output,
+            // accepted or D-check-rejected alike — the referee
+            // sees the slice measurement as pairDubSlices
+            // produced it, and the corrected seed (not the loop
+            // seed) is what the D-check judges this sample
+            // against. The bucket is keyed by the tracker's
+            // current burst seq (the burst this sample arrived
+            // in); it is finalised when the next burst starts.
+            val bucket = sbSamples.getOrPut(burstSeq) { ArrayList() }
+            bucket.add(sampleMs)
+            if (sbFirst[burstSeq] == null) sbFirst[burstSeq] = sampleMs
+            sbLast[burstSeq] = sampleMs
+            if (saPending) {
+                saPending = false
+                saCorrect(sampleMs, nowMs)
+            }
             if (kotlin.math.abs(sampleMs - dBasedLagMs()) > SLICE_D_CHECK_MS) {
                 lastSampleMs = sampleMs
                 lastSampleAtMs = nowMs
@@ -2810,8 +3502,11 @@ class DubDelayTracker(
             // 0 valid samples and "nhỏ" growing = the 22:35
             // starved-pairing failure; "lớn" growing = stale queue /
             // the dub running shorter than the original.
-            " · bỏ %d lát/%d mẫu (nhỏ %d hoãn/lớn %d)".format(
-                droppedSlices, droppedSamples, deferredTooSmall, droppedTooLarge
+            " · bỏ %d lát/%d mẫu (nhỏ %d hoãn/lớn %d)%s".format(
+                droppedSlices, droppedSamples, deferredTooSmall, droppedTooLarge,
+                // v1.0.22 (V-c) — total ms the tail valve
+                // discarded (each fired drop is also a "bỏ lát").
+                if (tailDroppedMs > 0L) " · xả %d ms".format(tailDroppedMs) else ""
             )
         } else {
             ""
@@ -2848,8 +3543,10 @@ class DubDelayTracker(
         } ?: " · phát —"
         val ratioPart = " · giọng/gốc %.2f×".format(1.0 / ratio())
         val framePart = lastFrameResidualMs?.let {
-            // v1.0.20 — belt-and-braces garbage guard (see above).
-            if (kotlin.math.abs(it) > SYNC_GARBAGE_MS) " · khung hình —"
+            // v1.0.22 — belt-and-braces guard: the frame guard is
+            // FRAME_GARBAGE_MS (10 s); the computation already
+            // drops jumped videos (see tryComputeFrameResidual).
+            if (kotlin.math.abs(it) > FRAME_GARBAGE_MS) " · khung hình —"
             else " · khung hình %+d ms".format(it)
         } ?: " · khung hình —"
         // v1.0.18 — per-reason boundary rejection counters (the
@@ -2927,10 +3624,20 @@ class DubDelayTracker(
                 txOk, txNoMk, txCons, txAgree, txAsrEmaMs.toInt(), txAsrSamples, dBasedSel
             )
         }
-        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s%s".format(
+        // v1.0.22 (S-b) — slice-referee trials: how many fired
+        // and how many adopted a new reference. In the winning
+        // sim run this was 0/0 (the win is Sa2's); a non-zero
+        // number on the device means the referee fired and its
+        // verdict is worth checking against the sync numbers.
+        val sbPart = if (sbTrials > 0) {
+            " · sb %d thử/%d nhận".format(sbTrials, sbAdopts)
+        } else {
+            ""
+        }
+        return "D %s s · %s · %d mẫu/60 s · cặp mốc %d/60 s · chờ %d lát · hold %.1f s · %s%s%s%s%s%s%s%s%s%s".format(
             delaySec, samplePart, sampleTimes60s.size, turnPairTimes60s.size,
             speechSlices.size, lastHoldMs / 1000.0, vadPart, droppedPart,
-            syncPart, pipePart, ratioPart, framePart, rejectPart, markerPart, diag21Part
+            syncPart, pipePart, ratioPart, framePart, rejectPart, markerPart, diag21Part, sbPart
         )
     }
 
@@ -2970,6 +3677,11 @@ class DubDelayTracker(
         // restart (a new connection means new speech is coming).
         burstDCheckStreak = 0
         stalled = false
+        // v1.0.22 — the tail valve's pending drop and end-lag
+        // belong to the pre-reconnect burst (see resetForStall).
+        // Sa2 / S-b state survives (once per run).
+        pendingTailDropMs = 0L
+        lastCorrectedEndLagMs = 0L
     }
 
     /** Manual nudge from the "Trễ −1s / +1s" buttons: shift D by the
@@ -3119,6 +3831,43 @@ class DubDelayTracker(
         targetSpeed = 1.0
         levelRaiseAtMs = null
         lastStretchUpdateMs = 0L
+        // v1.0.22 — Sa2 seed, sentence groups, Rf1
+        // prev-tracking, tail valve, S-b referee.
+        saFirstArrivalMs = null
+        saPending = false
+        sentGroups.clear()
+        sentCurGroup = null
+        sentLastFragAtMs = null
+        txFragArrivals.clear()
+        rfPrevAudioPos = null
+        rfPrevCumDubMs = 0L
+        rfPrevGroupFirstMs = null
+        rfMeas = 0
+        lastCorrectedEndLagMs = 0L
+        pendingTailDropMs = 0L
+        tailDroppedMs = 0L
+        tailValveFires = 0
+        vbPlaySeq = null
+        vbValveUsedSeq = null
+        sbSamples.clear()
+        sbFirst.clear()
+        sbLast.clear()
+        sbLatOk.clear()
+        sbBursts.clear()
+        sbHist.clear()
+        sbLastSeq = null
+        sbTrialActive = false
+        sbTrialRef = null
+        sbTrialBaseRef = null
+        sbTrialBaseMed = null
+        sbTrialLeft = 0
+        sbTrialRun = 0
+        sbTrialMaxRun = 0
+        sbTrialBursts.clear()
+        sbTrials = 0
+        sbAdopts = 0
+        sbAdoptedRef = null
+        sbCooldown = 0
         latencyEma.reset()
         latencyEma.setMarginMs(2000L)
     }

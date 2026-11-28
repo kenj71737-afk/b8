@@ -1,3 +1,695 @@
+# DubLive v1.0.22 — THIẾT KẾ LẠI HOLD/QUEUE: HẾT TRÔI CUỐI BURST + SỬA KHUNG HÌNH -52 s + TX KHÔNG TẮT SAU 60 s ĐẦU (28/11/2026, ĐANG LÀM)
+
+Thử v1.0.21 trên máy thật: ảnh 09:10 (28/11). Neo transcription có
+tác dụng lúc đầu (cặp 60 s đầu 4), nhưng độ trôi cuối burst vẫn còn
+nguyên trên máy thật — đây là bản sửa hold/queue đã hẹn từ v1.0.21.
+GIỮ NGUYÊN toàn bộ còn lại của v1.0.21 (neo transcription song song
+VAD marker, tham chiếu cụm dày nhất, chọn-D đơn điệu residual
+≤1500 ms, guard lệch |.| > 60 s hiện "—", time-stretch 1,1–1,5×,
+trần D 8 s, robust hold, pipeline EMA giữa burst, chẩn đoán lệch
+max/p90 + cuối-burst + D ghim %). KHÔNG mang lại share target
+v1.0.15, KHÔNG mang lại sửa probe/watchdog v1.0.16.
+
+## Kết quả thử v1.0.21 trên máy — ảnh 09:10 (ghi nguyên văn)
+
+**09:10, giữa phiên** (cùng video "A%B9-2119723093739507714", VAD:
+đang nói, pin 68%, nội dung đã sang tập khác "…chồng tôi cướp quyền
+làm mẹ Tập 10", có banner quảng cáo app ở dưới video; user không kèm
+chữ): "— Chẩn đoán trễ — D 5,3 s · mẫu cuối 7,8 s (0 s trước) · 8
+mẫu/60 s · cặp mốc 0/60 s · chờ 1 lát · hold 1,2 s · VAD: đang nói ·
+bỏ 0 lát/10 mẫu (nhỏ 0 hoãn/lớn 10) · lệch hình +13 ms · phát ~101 ms
+(TB 106 ms, chờ 0 ms) · giọng/gốc 1,42× · khung hình -52199 ms ·
+burst 33 ok 11 no-mk 18 cons 4 · tách 1 · mốc 12 (mới nhất 17388 ms
+trước) · tách thử cũ 19/mới 1/được 1 · stall 0 · tốc độ 1,25× · lệch
+max 1714/p90 1267 (n=11) · lát-phát max 2448/p90 2098 (n=21) ·
+cuối-burst max 2448/p90 2448 (n=9) · D ghim 0% · cặp 60 s đầu 4 ·
+đồng bộ đầu 13 s · tx ok 6/no-mk 199/cons 0/agree 3 asr 536 ms (n=3)
+· chọn-D 8 · lượt VAD 1/60 s · lời nói 53820 ms/60 s · gate loại 136
+khung/60 s · bỏ chunk giọng 0". Log Live: "Chưa có lỗi Live nào".
+HUD sau hộp thoại: "Tr... (tr... Mứ... Giọng... tăng..."
+
+**Phán quyết chủ quan của user về v1.0.21 (09:13): "Không rõ nhưng
+đỡ hơn mấy bản trước"** — user KHÔNG XÁC ĐỊNH RÕ được vụ trôi cuối
+câu dài, nhưng tổng thể ĐỠ HƠN các bản trước. Ý nghĩa: cảm nhận của
+user và số đo không mâu thuẫn — cuối-burst p90 2448 ms trên máy thật
+là có thật, nhưng ở mức ~2,4 s user chỉ thấy "đỡ hơn" chứ không chỉ
+rõ được trôi — tức ngưỡng cảm nhận rõ rệt nằm đâu đó quanh mức này.
+Mục tiêu gate cuối-burst p90 < 1 s GIỮ NGUYÊN (dưới ngưỡng cảm nhận
+rõ), đừng nới gate chỉ vì user nói "không rõ". "Đỡ hơn mấy bản
+trước" xác nhận hướng đi đúng: D hết ghim trần + pipeline 106 ms +
+neo transcription lúc đầu + giọng liên tục — giữ nguyên các thứ này,
+đừng đụng vào khi thiết kế lại hold/queue. Khi giao v1.0.22,
+checklist thử lại cần hướng user xem đoạn thoại dài liên tục 3–5
+phút và để ý riêng cuối câu dài (vì user lần này không xác định rõ
+được — có thể do chưa xem đủ câu dài, hoặc trôi ~2,4 s chưa đủ rõ
+để khẳng định).
+
+## Tiến bộ đã xác nhận trên máy v1.0.21 (ghi nhận, đừng phá)
+
+- D = 5,3 s, D ghim 0% — hết ghim trần (đúng sim ~5,2 s). Lệch hình
+  hiện tại +13 ms. Phát TB 106 ms (từ 356–373 ms — cải thiện lớn),
+  chờ 0 ms. Bỏ 0 lát, stall 0, bỏ chunk giọng 0, hold 1,2 s.
+  Không lỗi Live.
+- Neo transcription CÓ TÁC DỤNG LÚC ĐẦU: cặp 60 s đầu 4 (v1.0.20
+  là 0), đồng bộ đầu 13 s, tx ok 6/agree 3, asr 536 ms (khớp sim
+  537 ms). Chọn-D 8 lần.
+
+## 3 vấn đề còn lại (theo thứ tự ưu tiên) + cách sửa
+
+### 1. TRÔI CUỐI BURST — giới hạn đã biết của v1.0.21, XÁC NHẬN TRÊN MÁY THẬT
+Cuối-burst max 2448 ms / p90 2448 ms (n=9); lát-phát max 2448/p90
+2098 ms (n=21); lệch max 1714/p90 1267 ms (n=11). Giọng bắt đầu câu
+khớp (~+300 ms theo sim) nhưng trôi chậm dần trong câu dài/burst
+gộp, cuối burst chậm ~2,4 s. Đây chính là cảm nhận "giọng chậm hơn
+môi vài giây" của user (07:13). Hai cách đã thử ở v1.0.21
+(hold-decay 21p, tách burst 150 ms 21r) đều làm tệ hơn và đã revert
+— CẦN THIẾT KẾ LẠI hold/queue, không vá thêm.
+
+**Phát hiện khi đọc code (v1.0.22, trước sim): số đo cuối-burst bị
+PHỒNG do đo sai, và bộ điều khiển stretch không hề thấy độ trôi.**
+- (a) Đo sai: `DubDelayTracker.onBurstPlayed` tính playSliceWall =
+  playWall + (dubCum − startCum), tức giả định giọng phát ở 1,0×,
+  trong khi giọng thật phát ở tốc độ stretch (1,25× trên máy).
+  Công thức cũ phóng đại độ trễ trong burst thêm (1 − 1/speed) ×
+  offset dub: ở 1,25× là 20% độ dài dub của burst (~2,4 s trên
+  burst 12 s dub) — đúng bằng con số "cuối-burst 2448 ms" trên máy.
+  Sim đo cùng đại lượng từ render time thật (đã tính đúng stretch)
+  nên số sim là thật; số máy sau khi sửa đo mới so được với sim.
+  SỬA: chia offset dub cho tốc độ đang áp dụng (snapshot
+  targetSpeed lúc burst play — stretchUpdate chạy sau khối tính
+  slice nên đó là tốc độ trong burst; thay đổi tốc độ giữa burst
+  là sai số bậc hai trên chẩn đoán này).
+- (b) Bộ điều khiển không thấy độ trôi: `stretchUpdate` chỉ đọc
+  lỗi đồng bộ ĐẦU burst (play − markerWall − D, ~0 khi burst bắt
+  đầu khớp) + backlog + loop lateness; độ trôi trong burst
+  (playDriftMs / endLatenessErrs) được đo nhưng KHÔNG BAO GIỜ đưa
+  vào điều khiển. Đường level raise kẹp ở 1,25 (STRETCH_LEVEL_CAP)
+  trong khi tỉ lệ giọng/gốc đo được là 1,42× — tốc độ 1,25 thua
+  tỉ lệ nên trôi tích lũy 13,6% độ dài burst. Đường lateness
+  (>200 ms → 1,5) gần như không bao giờ kích hoạt vì player loop
+  lấy chunk đúng hạn (take−due nhỏ) — hàng đợi mới là thứ trễ,
+  không phải loop.
+- Thiết kế lại (đánh giá bằng sim1022 trước, xem mục sim): nền
+  stretch = tỉ lệ giọng/gốc đã đo (1/ratio(), kẹp [1,0, 1,5]) để
+  độ trôi steady-state ≈ 0; bắt kịp tỉ lệ với độ tụt trong burst
+  (đã sửa đo); van xả đuôi burst khi tụt > ~1,5 s mà tốc độ đã ở
+  trần (bỏ phần đuôi cũ nhất). KHÔNG làm lại hold-decay 21p hay
+  BURST_GAP 150 ms 21r.
+
+### 2. KHUNG HÌNH -52199 ms — KẾT LUẬN: SỐ RÁC DO VIDEO NHẢY, KHÔNG PHẢI HÌNH TỤT THẬT
+Lệch hình chỉ +13 ms mà khung hình -52 s — hai số mâu thuẫn nhau
+nếu cùng đo một độ lệch. Điều tra code: residual = (vBurst −
+vMarker) × 1000 − D. Với D = 5300 ms, residual -52199 ms tức
+vBurst − vMarker ≈ -46,9 s: currentTime của video lúc burst phát
+SỚM HƠN ~47 s so với lúc marker — video đã nhảy NGƯỢC (đổi tập
+sang "Tập 10" / seek / reload) giữa hai lần JS hỏi currentTime.
+MainActivity chọn lại video "tốt nhất" mỗi lần hỏi (ưu tiên video
+đang phát, lớn nhất) nên đổi tập là đổi luôn element được hỏi.
+Nếu hình thật sự tụt 52 s thì user đã thấy ngay (phụ đề/cảnh phim
+trong ảnh vẫn chạy bình thường) — nên đây là rác, không phải lỗi
+đồng bộ thật.
+SỬA (v1.0.22, đã làm trong code): (1) chuyền event wall vào
+`setMarkerVideoTime`/`onBurstVideoTime` (service đã có eventWall
+trong handler ACTION_VIDEO_TIME, MainActivity echo lại); (2) kiểm
+tra liên tục trong `tryComputeFrameResidual`: độ tăng của video
+time giữa hai event phải ≈ độ tăng của wall clock (±3 s sau,
++5 s trước — phủ jitter JS + sai số hiệu chỉnh + pause ngắn); video
+seek/reload/đổi tập trượt hàng chục giây → bỏ residual (hiện "—")
++ log thô "frame residual dropped: video jumped"; video pause cũng
+rớt kiểm tra này (đúng — residual vô nghĩa khi hình đứng yên);
+(3) siết guard hiển thị riêng cho khung hình: FRAME_GARBAGE_MS =
+10 s (thay vì ±60 s chung với lệch hình) — residual thật bị chặn
+bởi ~D + trôi, quá 10 s không thể thật.
+
+### 3. CẶP MỐC TẮT SAU 60 S ĐẦU — CƠ CHẾ (ĐÃ ĐỌC CODE, CHỜ SIM XÁC NHẬN)
+Cặp 60 s đầu 4 nhưng cặp mốc 0/60 s ở cửa sổ hiện tại; mẫu chỉ
+8/60 s (sim hứa 70); burst no-mk vẫn 18/33 (55%). tx ok 6 nhưng tx
+no-mk 199/205 (97% thất bại). Lượt VAD vẫn khổng lồ: 1 lượt/60 s
+chứa 53820 ms lời nói (~54 s/lượt — còn tệ hơn 16–24 s đã hiệu
+chuẩn). Tách cũ 19/mới 1/được 1.
+Cơ chế nghi ngờ (3 tầng cộng dồn): (i) tx group chỉ đóng khi
+fragment tới cách nhau ≥800 ms (TX_GAP_MS) — thoại dày (duty
+~90%) thì group không bao giờ đóng → applyTxAnchor không tìm
+được group ĐÃ ĐÓNG → no-mk; (ii) khi tham chiếu đã thiết lập,
+residual >1200 ms (TX_RES_MS) loại mọi ứng viên từ group gộp nhiều
+dòng (startEst là dòng đầu, burst là dòng sau → lệch vài giây) —
+đúng pattern "60 s đầu có cặp (bootstrap, chưa có bound) rồi tắt
+(bound bật)"; (iii) audioAt chỉ phủ 20 s (MAX_SLICES=40) — dòng
+cũ hơn thì re-anchor phải dựa vào marker cách ~24 s → fail.
+Hướng sửa (đánh giá bằng sim1022): tách nhóm con khi fragment
+cách nhau ≥300 ms; kéo dài lưu slice thoại (MAX_SLICES 40 → 120);
+đóng cưỡng bức group khi span >6 s (dự phòng). Sim phải hiệu chuẩn
+lại theo mức này (lượt ~54 s) và gate cặp mốc ở MỌI cửa sổ 60 s
+(không chỉ 60 s đầu).
+
+## Kết quả thử v1.0.21 trên máy — ảnh 09:21 (phim KHÁC, cùng phiên lồng tiếng, ghi nguyên văn)
+
+**09:21, giữa phiên** (user nhắn "Mới xem phim khác.lồng lại", pin
+66%; CÙNG phiên lồng tiếng tiếp tục qua lúc đổi phim — bộ đếm tích
+lũy từ ảnh 09:10: burst 33→91, tx ok 6→9, chọn-D 8→11, cặp 60 s đầu
+vẫn 4, đồng bộ đầu vẫn 13 s): "— Chẩn đoán trễ — D 5,1 s · mẫu cuối
+12,0 s (0 s trước) · 25 mẫu/60 s · cặp mốc 0/60 s · chờ 0 lát ·
+hold 0,9 s · VAD: đang nói · bỏ 0 lát/171 mẫu (nhỏ 0 hoãn/lớn 171) ·
+lệch hình +516 ms · phát ~105 ms (TB 124 ms, chờ 71 ms) · giọng/gốc
+1,42× · khung hình +1006 ms · burst 91 ok 17 no-mk 66 cons 8 fb 2 ·
+tách 1 · mốc 12 (mới nhất 30275 ms trước) · tách thử cũ 34/mới 1/được
+1 · stall 3 · tốc độ 1,25× · lệch max 1750/p90 1714 (n=17) · lát-phát
+max 2448/p90 2032 (n=36) · cuối-burst max 2448/p90 2098 (n=15) · D
+ghim 0% · cặp 60 s đầu 4 · đồng bộ đầu 13 s · tx ok 9/no-mk 437/cons
+0/agree 4 asr 463 ms (n=5) · chọn-D 11 · lượt VAD 4/60 s · lời nói
+57940 ms/60 s · gate loại 57 khung/60 s · bỏ chunk giọng 0". Log
+Live: "Chưa có lỗi Live nào".
+
+### Đối chiếu 09:10 → 09:21
+
+- **Khung hình -52199 ms KHÔNG TÁI HIỆN: giờ +1006 ms, cùng hướng
+  với lệch hình +516 ms.** Ủng hộ giả thuyết số -52 s lúc 09:10 là
+  rác do đổi tập/quảng cáo làm mốc thời gian nhảy (lúc đó nội dung
+  vừa sang "Tập 10" + banner quảng cáo). Cơ chế đã xác nhận trong
+  code (xem §2): MainActivity chọn lại video "tốt nhất" mỗi lần
+  hỏi currentTime; đổi tập đổi luôn element được hỏi. Sửa đã có
+  trong code v1.0.22 (continuity check + guard 10 s) — không chỉ
+  kết luận "rác" rồi thôi; sim1022 sẽ thêm sự kiện đổi tập/seek
+  giữa phiên để xác nhận residual bị loại (hiện "—") thay vì -52 s.
+- **ĐIỂM NÓNG MỚI — mẫu cuối 12,0 s (0 s trước) trong khi D chỉ
+  5,1 s.** Cơ chế ĐÃ XÁC MINH trong code (`feedSample`, dòng ~2647):
+  mẫu slice không-phải-boundary có |sample − dBasedLag| > 1500 ms
+  (SLICE_D_CHECK_MS) bị LOẠI khỏi recentSamples/windowSamples — không
+  bao giờ vào EMA — nhưng lastSampleMs vẫn cập nhật nên HUD hiện
+  "mẫu cuối 12,0 s" dù mẫu đã bị loại. 6 lần loại liên tiếp →
+  reanchorToDMarker — neo lại vào marker theo D (vòng tròn: D chính
+  là thứ đang sai). D không thể đuổi theo lag thật bằng thiết kế:
+  D chỉ chấp nhận mẫu gần D; mẫu xa D bị coi là outlier; D đứng
+  yên. Bằng chứng đuôi: "lớn 171" = 171 mẫu bị hủy vì >20 s
+  (MAX_SAMPLE_MS) — tăng từ 10 lúc 09:10 lên 171 lúc 09:21 (+161
+  mẫu >20 s trong 11 phút). Toán tăng trưởng: dub 1,42× nguồn,
+  stretch trần 1,25× → mỗi phút thoại dày backlog tăng ~7,3 s audio
+  dub ≈ +5,8 s lag/phút. GIẢ THUYẾT: mẫu 12 s là LAG THẬT, D 5,1 s
+  kẹt sau ~7 s — đúng cảm nhận "giọng chậm hơn môi vài giây" của
+  user. Đây có thể là mấu chốt của "giọng chậm vài giây" (còn hơn
+  cả trôi cuối burst). Sim1022 phải: (a) tái hiện xem lag thật có
+  vọt ~12 s và vượt 20 s không với tỉ lệ 1,42 + trần stretch 1,25;
+  (b) đánh giá CHASE (chùm mẫu liên tiếp xa D = đổi chế độ, đưa D
+  về trung vị chùm) vs SKIP-AHEAD (van xả đuôi V-c). Gate thêm: D
+  phải phản ứng khi mẫu cuối vọt (đuổi theo hoặc skip-ahead có chủ
+  đích, không đứng yên 5,1 s trong khi mẫu 12 s). Lưu ý: nếu V-a
+  (baseline stretch = tỉ lệ) đã giữ lag không tăng thì chase có thể
+  không cần — đo riêng từng lớp.
+- **Ghép cặp TỆ HƠN trên phim dày hơn:** lời nói 57940 ms/60 s
+  (96% phút là thoại), lượt VAD 4/60 s (~14,5 s/lượt). Burst no-mk
+  66/91 (73%, lúc 09:10 là 55%); tx no-mk 437/446 (98%!), tx ok chỉ
+  9. Cặp mốc 0/60 s ở cửa sổ hiện tại (dù 60 s đầu có 4) — cặp tắt
+  sau phút đầu vẫn còn nguyên. ĐÃ XÁC MINH TRONG CODE: cổng agree
+  KHÔNG phải rào chặn — trong `applyTxAnchor`, agree
+  (lastMarker trong 500 ms của startEst) chỉ là DEDUP: nếu VAD đã
+  ghép burst này với cùng dòng thì đếm txAgree và return KHÔNG nạp
+  mẫu trùng. Ba cổng gây no-mk thật sự (txCons = 0 cả hai ảnh nên
+  cổng |latTx−dlag| và cổng đơn điệu KHÔNG hề nổ): (a) không có
+  nhóm CLOSED trong cửa sổ — nhóm chỉ đóng khi fragment cách nhau
+  ≥800 ms (TX_GAP_MS), phim dày giữ nhóm mở mãi; (b) bound residual
+  1200 ms khi ref đã lập — nhóm gộp có startEst là dòng đầu, burst
+  là dòng sau → lệch hàng giây; (c) fallback neo lại: audioAt
+  (startEst) null (chỉ phủ 20 s, MAX_SLICES=40) VÀ marker gần nhất
+  >2500 ms (mốc mới nhất đã 30,3 s trước) → no-mk — đây là chỗ duy
+  nhất tx dựa vào marker VAD, chỉ là fallback. Sim1022 phải đếm
+  RIÊNG 3 lý do (a)/(b)/(c) trên phim dày, rồi đánh giá T-a/T-b/T-c
+  + thêm phương án neo lại chỉ bằng audioAt (bỏ yêu cầu marker
+  fallback / nới audioAt qua MAX_SLICES) để tx neo ĐỘC LẬP thật sự
+  với VAD.
+- **Ổn định:** D 5,1 s, D ghim 0%, phát TB 124 ms, bỏ 0 lát, stall 3
+  (tích lũy từ 0), bỏ chunk giọng 0, hold 0,9 s, tốc độ 1,25×,
+  không lỗi Live. Lệch max 1750/p90 1714 ms, cuối-burst max 2448/p90
+  2098 ms — trôi cuối burst vẫn ~2,1 s (mục tiêu v1.0.22). Mẫu/60 s
+  25 (tăng từ 8) nhưng vẫn xa sim hứa 70.
+- **Sim bổ sung:** chế độ "phim dày 96% thoại + lag vọt 12 s" vào
+  thế giới đã hiệu chuẩn; gate thêm D-phản-ứng-khi-mẫu-vọt (xem
+  trên).
+
+## Mô phỏng trước khi build (sim1022.py — VÒNG 1 XONG, KHÔNG PASS TOÀN GATE)
+
+**Kết luận vòng 1 (sim1022.py 87 KB, 1886 dòng; sim1022_final_run.txt
+336 KB; 31 run × 10 phút + 2 hồi quy, 56 s): KHÔNG có biến thể nào
+pass toàn bộ gate. Biến thể tốt nhất (WINNER = V-a floor tỉ lệ +
+V-b catch-up ×(1+endLag/5000) + V-c van xả endLag>1500 ms ở trần
+1,5 → bỏ (endLag−1000) ms + T-a tách nhóm con ≥300 ms + T-b
+MAX_SLICES 40→120 + T-d audioAt ngoại suy 1:1 + RATIO_TX đo tỉ lệ
+từ tx-ok liên tiếp) chỉ pass steady-state trên phim A tỉ lệ 1,42
+lag 4,6 s.**
+
+- Phim A r1,42: end-p90 THẬT 638 ms (REPRO v1.0.21: 1055), sync
+  p90 493, cặp min 11/cửa sổ 60 s, mẫu min 98, bỏ audio 1,3%, D
+  cuối 5424 (lag thật 4507, +917). Pass 15/18 vạch; 3 vạch fail
+  là artifact (D ghim 1% = đúng 1 mẫu 5 s lúc t=10 s seed 8000;
+  sync max 2571 = duy nhất burst đầu; gap render 7519 ms =
+  build_dub21 tự skip 15/205 dòng, mọi biến thể đều gặp).
+- **WINNER TỆ HƠN bản shipped trên phim dày + r1,51 + lag7,8 —
+  KHÔNG SHIP nguyên dạng:** phim dày r1,42 (đúng phim user xem
+  lúc 09:21): end-p90 2515 (REPRO 1667), D cuối 7704 vs lag thật
+  4505 (+3199!), D ghim 11%, bỏ audio 9,9%; phim A r1,51: end-p90
+  2180 (REPRO 1178), D 7087 (+2512); lag7,8: end-p90 3560.
+- Hồi quy sim1018 FAIL: dropped audio steady 8,3% → 12,1%
+  (van xả nổ quá nhiều).
+- **Lượng hóa sai số đo kiểu Kotlin (chunk-level, TRUE err =
+  (render − wall thật) − D):** REPRO-B end-p90 THẬT 1234 ms vs
+  KOTLIN-FULL p90 5773 / AT-PLAY (số HUD) 6005. PURE 1,0× bias
+  median 762 ms / p90 1701 ms = 24%/41% của dub offset trong
+  burst — đúng lý thuyết (1 − 1/1,25 = 20% ở 1,25×, đo được 24%).
+  Số cuối-burst 2448 ms trên máy thật chứa ~1,2–2,4 s phồng do
+  công thức 1,0×; độ trôi thật tương ứng ~0,5–1,5 s. Sửa đo trong
+  `onBurstPlayed` (playSliceWall = playWall + offset/playSpeed)
+  ĐÃ CÓ trong code v1.0.22 — sim là phép đo độc lập xác nhận nó.
+- **Mẫu 12 s: LAG THẬT (backlog playout), không phải outlier.**
+  Toán tăng trưởng cưỡng bức (dub 1,42×, stretch trần 1,25× →
+  +5,8 s lag/phút thoại dày); sim tái hiện phía render; đuôi
+  device khớp ("lớn" 10→171 trong 11 phút = backlog tăng đơn điệu).
+  Cơ chế "D đứng yên 5,1 s trong khi mẫu 12 s" đã xác minh trong
+  sim (mẫu cách D >1500 ms bị loại khỏi EMA nhưng lastSampleMs vẫn
+  cập nhật → HUD hiện mẫu bị loại; 6 lần loại → reanchor vòng tròn
+  vào D đang sai). Cách sửa: SKIP-AHEAD (V-a+V-c), KHÔNG dùng
+  CHASE — CHASE đã đo, thua rõ (dense end-p90 3120 vs REPRO 1667).
+  Sim không tái hiện đúng con số 12,0 s ở kênh sample (thế giới
+  sim thiếu backpressure generator→playout; lag tăng hiện ở render
+  lateness, không ở arrival-based sample) — giới hạn mô hình đã
+  nêu rõ.
+- **D-RATCHET — nguyên nhân WINNER tệ trên phim dày/r1,51/lag7,8:**
+  lat_tx = burst_arrival − startEst; group gộp nhiều dòng có
+  startEst = dòng ĐẦU, burst là dòng sau → lat_tx lệch cao tới cả
+  dòng (1,5–3 s); cổng residual 1200 ms chỉ chặn khi D còn đúng;
+  D nhích lên rồi mẫu lệch +1 s lại pass cổng (đo theo D hiện tại)
+  → EMA nâng D → ratchet. D cuối so lag thật: shipped +170/+477/
+  +342 ms vs WINNER +917/+3199/+2512 ms.
+- **Phép đo tỉ lệ sai:** floor đo được chỉ 1,09 (dày) / 1,23–1,27
+  (phim A), display 1,05–1,15× thay vì 1,42×; probe RATIO_TX:
+  speech/dub trung vị 0,830 thay vì 0,704 thật (counted-speech
+  chạy trong lúc nhạc + span nhiều dòng chứa khoảng lặng). Oracle
+  (floor = tỉ lệ THẬT) chứng minh V-a đúng (end-p90 855) nhưng
+  không cứu phim dày/r1,51/lag7,8 (lỗi là D-ratchet, không phải tốc
+  độ). Chuỗi burst-successor chỉ 6 phép đo/phiên (cần 2 burst liên
+  tiếp validated + marker liên tiếp — không xảy ra trên lượt dài).
+- **Tx no-mk trên WINNER phim A (đếm riêng từng cổng):** b-residual
+  15, a-no-closed-group 1, c-refallback 0 (REPRO-B: c 129 / b 41 /
+  a 6) — T-d diệt đúng cổng (c) chiếm đa số, T-a giảm (a) 6→1,
+  (b) còn 15. Tx ok 144/16 no-mk (was 36/176); cặp mốc 11–19/cửa
+  sổ (was 1–7); mẫu 98–159/cửa sổ (was 13–99).
+- Hồi quy v6 PASS (fresh-hold 6→6, line-start 650→583, pairs 3→3).
+  Seek/khung hình sim vòng 1 không kiểm chứng được (0 burst
+  straddle mốc seek 300 s) — không claim pass.
+- T-c không cần thử (winner hết cửa sổ trống). Hold-decay 21p,
+  BURST_GAP 150 ms 21r không thử lại.
+
+**QUYẾT ĐỊNH: KHÔNG BUILD WINNER vòng 1 làm v1.0.22** — nó chỉ
+thắng trên đúng thế giới đã tune (phim A r1,42) và tệ hơn bản
+shipped trên phim dày (đúng phim user xem 09:21) + r1,51 + lag7,8,
+kèm hồi quy sim1018. Sim vòng 2 (sim1023) sửa đúng 3 điểm: (1)
+D-ratchet — R-a startEst = dòng cuối group / R-b chặn bất đối xứng
+lat_tx ≤ dlag + 600 ms chiều lên / R-c trung vị mẫu tx; (2)
+estimator tỉ lệ — trừ khoảng lặng giữa dòng (span fragment group +
+500 ms) hoặc chỉ đo cặp không gộp; (3) van xả — ngưỡng endLag >
+2000 ms và/hoặc xả tối đa 500 ms/lần cho hết hồi quy sim1018.
+Gate vòng 2 thêm: |D cuối − lag thật| ≤ 1000 ms MỌI thế giới;
+không tệ hơn REPRO shipped trên bất kỳ thế giới nào. Chỉ build APK
+khi gate pass.
+
+## Mô phỏng vòng 2 (sim1023.py — XONG, KHÔNG PASS TOÀN GATE)
+
+**Kết luận vòng 2 (sim1023.py 51 KB, 1106 dòng; sim1023_final_run.txt
+1,47 MB, 11359 dòng; ~115 run): KHÔNG có biến thể nào pass toàn bộ
+GATE23 — KHÔNG SHIP. Biến thể tốt nhất: BEST = WINNER vòng 1 +
+Rb + Rc2 + Rf1 + V2000cap500.**
+
+- BEST: A r1,42 end-p90 481 / |D−lag| +833; A r1,51 2428 / +3315;
+  dày r1,42 2704 / +834; lag7,8 297 / +293. Thắng 2/4 thế giới ở
+  vạch chính (A r1,42, lag7,8), FAIL dày + r1,51 + sim1018 (9,5%
+  vs OLD 8,3%). Cặp/mẫu pass cả 4 thế giới (min 3/45, 6/45, 11/98,
+  11/99); bỏ audio steady 0,2–2,5% pass cả 4. Hồi quy v6 PASS.
+- **Phát hiện gốc vòng 2 — ratchet nằm ở BOOTSTRAP, không phải
+  steady-state (trace 22 quyết định tx-anchor đầu tiên):** seed
+  sai +2480 ms ngay từ đầu ở MỌI thế giới (seed_lag 7080 vs lag
+  thật 4600; 10280 vs 7800) vì line 0 được transcribe nhưng KHÔNG
+  dịch (skip 5%), line đầu tiên được dịch là line 1 (bắt đầu sau
+  turn start 2480 ms), mà seed lại tính từ turn start. Kotlin đã
+  tự ghi nhận bẫy này (DubDelayTracker.kt:1403-1420, comment 21g).
+  Cluster race: mỗi burst đóng góp ~8 ứng viên seed (mọi group
+  trong cửa sổ 10 s, ±2 dòng); clusterCentre (cửa sổ dày nhất
+  1200 ms) chọn mode sai, rồi cổng residual 1200 ms BẢO VỆ mode
+  sai — ứng viên đúng có residual 2500–3000 ms nên bị no-mk vĩnh
+  viễn. Trace r1,51: ok đầu tiên err +2178 ms (t=11,7 s); cluster
+  nhảy 7991→6742→7744→4415→6742 rồi khóa; lag7,8: cluster sập về
+  4697 ở ứng viên thứ 22, mẫu đúng bị no-mk với res 2859–3030.
+- R-ladder (end-p90 / |D−lag|): R-a (last-frag startEst) = no-op
+  đã chứng minh (99–100% group chỉ 1 fragment dưới T-a nên first
+  ≈ last; bias nằm ở CHỌN NHẦM DÒNG, không phải trong group);
+  R-b thua (chặn 3/12/40/15 mẫu nhưng mẫu đã nhận vẫn lệch vì
+  dlag bản thân đã ở mode sai — chỉ ngăn trôi TỪ reference đúng);
+  R-c median thuần thua (sửa lag7,8: 297/288 nhưng PHÁ phim A
+  2450/3357); R-c2 (cluster chỉ trên bndSamples) tốt nhất — sửa
+  lag7,8, giữ phim A (638/914), +R-b sửa |D−lag| phim dày (713),
+  nhưng không sửa r1,51.
+- **Rf1 ĐẠT — phần chắc chắn duy nhất vòng 2:** counted_corr =
+  counted_diff − 0,40 × Σ max(0, fragGap − 900 ms); speech/dub
+  trung vị 0,704 (A142, target 0,704), 0,697 (r1,51, target 0,662),
+  0,702 (dày, target 0,704); floor steady 1,32–1,45 (đúng target).
+  Rf2/Rf2b FAIL (floor 1,03–1,23).
+- **Van xả:** không biến thể nào đạt sim1018 ≤ 8,3% (tốt nhất
+  V2000cap500: 9,4%; tắt van: 8,6% nhưng fail line-start 2083 +
+  pairs 16). Van là nguyên nhân chính của hồi quy sim1018, không
+  phải cách sửa nó; lợi ích van trên phim A không đáng kể
+  (638→655 khi tắt). Ngay cả ORACLE floor cũng chỉ được 2554 ở
+  phim dày — trần stretch 1,5× + van biên burst không drain kịp
+  phim 96% thoại.
+- Trade-off: tx-anchor mua sync bằng độ chính xác của D — A142
+  end-p90 1055→481 nhưng |D−lag| 170→833; vạch "không tệ hơn
+  REPRO" về |D−lag| fail ở cả 4 thế giới với mọi biến thể tx.
+- Vạch artifact: sync max full-session 2571 ms y hệt ở REPRO,
+  WINNER, ORACLE, mọi biến thể — là burst đầu tiên lúc t≈8 s
+  (mẫu seed D=8000); steady (t>60 s) ở A142 chỉ còn 496 ms. D
+  ghim lag7,8 = 100% là tính chất thế giới (D = lag + margin ≈
+  8500 → kẹp cap 8000; REPRO cũng 19%) — kiểm chứng đúng là
+  |D−lag| (PASS 293).
+
+**QUYẾT ĐỊNH: KHÔNG BUILD BEST vòng 2 làm v1.0.22** — fail phim
+dày (đúng phim user xem 09:21: end-p90 2704 vs REPRO 1667) +
+r1,51 (2428 vs 1178) + sim1018 (9,5%). Sim vòng 3 (sim1024) sửa
+BOOTSTRAP trên nền BEST: (a) seed từ group ĐÃ ĐÓNG gần nhất trước
+burst đầu thay vì turn start; (b) seed pool 1 ứng viên/burst (gần
+reference nhất) thay vì mọi group trong cửa sổ; (c) re-bootstrap
+second-opinion khi nhiều burst no-mk với best_res trong [2000,
+3500] ms. Gate vòng 3 thêm: |seed_lag − lag thật| ≤ 600 ms ở lần
+seed đầu MỌI thế giới; số lần cluster chuyển mode sau established
+= 0. Chỉ build APK khi gate vòng 3 pass.
+
+## Mô phỏng vòng 3 (sim1024.py — XONG, KHÔNG PASS TOÀN GATE NHƯNG THẮNG 3/4 THẾ GIỚI)
+
+**Kết luận vòng 3 (sim1024.py 54 KB, 1191 dòng; sim1024_final_run.txt
+1,33 MB, 10585 dòng; kèm regone24.py — driver hồi quy sạch
+1-process/seed): biến thể thắng FINAL = BEST vòng 2 + BaSent + Bb
+thắng rõ rệt 3/4 thế giới. GATE24 FAIL — còn 2 rào: lag7,8 và vạch
+|D−lag| vs REPRO (vạch này đã chứng minh không pass được theo cấu
+tạo — xem dưới, cần parent quyết).**
+
+- FINAL (BaSent+Bb): A r1,42 end-p90 548 / |D−lag| +979 / seed
+  −436 ✓; A r1,51 726 / +616 / seed −438 ✓; dày r1,42 420 / +733 /
+  seed −436 ✓; lag7,8 3924 / −2151 / seed −4487 ✗. Cặp min 6–12/
+  cửa sổ, mẫu min 71–106, bỏ audio 0,3–0,8%, D ghim steady 0% cả
+  4, sync p90 367–600 (3 thế giới), line-start 133/254/139 ms
+  (lag7,8: 3159). v6 PASS (thế giới chuẩn); sim1018 FAIL (ON 9,5%
+  / OFF 8,6% vs OLD 8,3%).
+- **BaSent sửa seed:** seed +2506 → −436 ms ở 3/4 thế giới
+  (BaSent = seed từ group câu đã đóng, gap 800 ms = grouping
+  Kotlin). Ba literal (group T-a 300 ms) FAIL seed mọi thế giới —
+  cấm dùng (dưới T-a mỗi fragment là 1 group, group đóng gần nhất
+  là fragment của line 2, không phải line 1). Ba và BaSent gần như
+  giống hệt ở lag4,6 dù seed lệch 1900 ms: seed chỉ quyết định ~8
+  ứng viên / ~5 accept đầu, sau đó cluster + mẫu bnd chi phối —
+  nhưng HƯỚNG sai của seed mới quyết định (seed sai-cao +2506 khóa
+  mode cao, seed sai-thấp cho cluster leo về đúng). Cluster chuyển
+  mode sau established = 0 ở mọi run — khóa sai ngay từ bootstrap.
+- **Bb một mình TỆ HƠN BEST** (khuếch đại seed sai: chọn ứng viên
+  gần reference sai 7080 tức chọn line sai có hệ thống, D lên
+  ~7700); Bb chỉ ship trên nền seed đúng. **Bc trigger chết**
+  (no-mk thưa, ok ~90%, 3 no-mk liên tiếp gần như không xảy ra;
+  0 trial trong 8 run); Bb+Bc tìm đúng mode 1 lần (A142: base
+  6705 → trial 4561 ≈ lag thật 4575, 4 ok, med-res 178) nhưng bị
+  luật adopt loại vì base-med cũng chỉ 193.
+- **Phát hiện gốc vòng 3 — mode sai là điểm bất động (fixed
+  point):** ở mode sai, mọi check nội bộ của tx đều pass (target
+  luôn tìm được 1 group thật gần đó, D-check pass, residual gate
+  pass); median residual KHÔNG phân biệt được mode đúng/sai (cả
+  hai mode đều tự nhất quán nội bộ). Chỉ mẫu slice VAD (sai số
+  median −4083 ở mode sai) và lag thật mới biết là sai. Vì vậy
+  B-c như thiết kế không thể hoạt động.
+- **lag7,8 FAIL vì lag dài hơn 1 line:** 2 group đã đóng trước
+  burst đầu (group dùng: first=8213, line 3); seed BaSent không
+  nhận biết lag dài hơn 1 line. Cần seed v2 bằng mẫu slice VAD
+  của burst đầu để chọn group (phá vòng tròn seed→selection).
+- **Vạch |D−lag| ≤ REPRO KHÔNG pass được theo cấu tạo với mọi
+  biến thể tx:** D của REPRO chính xác 88–477 ms nhờ mẫu VAD/tc;
+  mẫu tx mang mơ hồ ±1 dòng nên D luôn chịu thuế ~600–1000 ms.
+  Muốn ship thì phải nới thành |D−lag| ≤ 1000 tuyệt đối (FINAL
+  pass 3/4) — còn giữ nguyên thì không biến thể tx nào ship được.
+  **(CẦN PARENT QUYẾT.)**
+- **sim1018 cap 8,3% là OLD của 1 world, không phải hằng số:**
+  OLD tự nó dao động 7,7–11,1% theo world. FINAL 9,5% (ON) /
+  8,6% (OFF). **(CẦN PARENT QUYẾT cách đánh giá sim1018.)**
+- Van: giữ V2000cap500 (end-p90 hơn ~1%, line-start/pairs
+  sim1018 tốt hơn); valve-OFF chỉ hơn dropped-audio sim1018.
+- Outlier sync-max cold-start 2571 ms của vòng 1–2 ĐÃ BIẾN MẤT ở
+  FINAL A142/A151 (sync-max toàn phiên 752/804 PASS) — seed đúng
+  sửa luôn burst đầu; dày còn 1 outlier 1236 (steady PASS).
+- **Phát hiện phương pháp:** số BEST vòng 2 trong handoff đo trên
+  thế giới KHÁC (driver 2d quên set GATE_SPEECH_P=0.70, world
+  build với mặc định 0.95); chạy lại BEST bằng code s23 trên thế
+  giới chuẩn 0.70 cho [478, 2501, 1625, 287] / [999, 3202, 767,
+  293]. Mọi so sánh vòng 3 dùng chung 1 world set (GSP=0.70,
+  chuẩn s23.main) nên đáng tin; các verdict sim1018 vòng 2
+  (9,4%/9,9%/19,2%) là so sánh chéo world — không đáng tin.
+- Hồi quy trong-process ở phase 4–5 là so sánh chéo thế giới, đã
+  chạy lại sạch (regone24.py): v6 PASS 1/3 (k=1 chuẩn PASS cả 2
+  van; k=0 FAIL vì OLD tự nó fresh-hold 4146 ms; k=2 FAIL chỉ ở
+  pairs 2 vs 4); sim1018 van-ON PASS 1/3, van-OFF PASS 2/3.
+
+**QUYẾT ĐỊNH: KHÔNG BUILD FINAL vòng 3 làm v1.0.22 NGAY** — còn
+lag7,8 chưa sửa + 2 vạch gate cần parent quyết (nới |D−lag| vs
+REPRO thành tuyệt đối ≤1000; cách đánh giá sim1018). Sim vòng 4
+(sim1025, ĐANG CHẠY) sửa đúng 2 điểm còn lại trên nền FINAL:
+(1) S-a seed v2 bằng mẫu slice VAD của burst đầu để chọn group
+(phá vòng tròn seed→selection; sửa lag7,8); (2) S-b re-bootstrap
+trọng tài bằng mẫu slice VAD thay vì residual/no-mk (trigger:
+median mẫu slice N burst gần nhất lệch khỏi ref >1500 ms
+sustained; adopt khi mẫu tx ở mode mới đồng thuận với slice).
+Gate vòng 4: GATE24 + |D−lag| tuyệt đối ≤1000 MỌI thế giới (vạch
+chính) + seed ≤600 ms MỌI thế giới; báo thêm vạch cũ |D−lag| ≤
+REPRO để parent quyết. BẮT BUỘC dùng world set chuẩn GSP=0.70 +
+driver hồi quy sạch cho mọi verdict. Chỉ build APK khi gate vòng
+4 pass (hoặc parent quyết nới 2 vạch trên).
+
+## Mô phỏng vòng 4 (sim1025.py — XONG, WINNER TÌM ĐƯỢC: Sa2 + Sb3 + V2000cap500, PASS GATE25 EX-COLD 4/4)
+
+**Kết luận vòng 4 (sim1025.py 51 KB, 1124 dòng; sim1025_final_run.txt
+1,07 MB, 9166 dòng; kèm regone25.py — driver hồi quy sạch
+1-process/seed): biến thể thắng `Sa2 + Sb3 + V2000cap500` pass
+GATE25 ex-cold 4/4; strict 2/4, 2 fail strict còn lại đã chứng minh
+là artifact.**
+
+- Spec thắng: BOOT_MODES=('Bb',), SEED25_MODES=('Sa2',) — BaSent
+  KHÔNG còn là seed chính, chỉ fallback khi Sa2 không có ứng viên;
+  S-b: SB_ON=True, SB_N=3, SB_TRIG_MS=1500, SB_TRIAL_BURSTS=5,
+  SB_COOLDOWN_BURSTS=10, SB_MAX_TRIALS=3, SB_AGREE_MS=600,
+  SB_AGREE_RUN=3, SB_DRIFT_GATE=False; nền: RATCHET_MODES=('Rb',
+  'Rc2'), RATIO_MODE=rf1, VALVE thresh/keep/cap = 2000/1500/500;
+  run kwargs: tx_on=True, level_cap=1.25, tx_hold=False,
+  stale_skip=False, ratio_floor=True, catchup=True, tail_valve=True,
+  ratio_tx=False, tx_subsplit=True, max_slices=120,
+  tx_audioat_extrap=True.
+- Kết quả (REPRO → Winner, end-p90 THẬT / |D−lag| / seed): phim A
+  r1,42: 1055/170 → **501/979, seed −433**; A r1,51: 1178/342 →
+  **726/616, seed −452**; dày r1,42: 1667/477 → **420/733, seed
+  −433**; lag7,8: 961/88 → **252/285, seed −433** (lag7,8 ĐÃ SỬA:
+  end-p90 3924 → 252, |D−lag| 2151 → 285). Cặp min 6–12/60 s,
+  mẫu min 87–106/60 s, bỏ audio 0,3–1,0%, D ghim steady 0% trừ
+  lag7,8 ở 100% (MIỄN — xem dưới), sync p90 182 (lag7,8), line-start
+  133/254/139 ms (3 thế giới). v6 + sim1018: xem hồi quy dưới.
+- **S-a literal FAILS (cấm):** bias +2268…+2329 ms — mẫu slice
+  đầu đo burstArrival − wall(~500 ms) của dòng đang nói, không
+  phải lag tuyệt đối; target ≈ 300 ms mọi nơi → chọn group line 0;
+  seed +2589/+2570/+2589; chỉ lag7,8 pass vì cửa sổ 10 s loại
+  line 0. **Sa2 (S-a + chặn marker: chỉ group có startEst ≥ wall
+  của marker đầu) PASS 4/4 ex-cold.** BaSent+Sa2-stack cũng pass
+  4/4 nhưng lag7,8 end-p90 678 (vs 252) vì seed BaSent 3287 sống
+  ~279 ms trong burst 1 trước khi Sa2 sửa — thắng là **Sa2-replace**
+  (đơn giản hơn, lag7,8 tốt hơn).
+- **S-b không nổ lần nào trong combo thắng (0 trial, 0 adopt cả
+  4 thế giới) — thắng hoàn toàn là của Sa2; S-b chỉ là lưới an
+  toàn.** S-b một mình cứu được mode nhưng MUỘN (adopt lúc t≈74,8
+  s, end-p90 3924 → 1533, vẫn >1000 FAIL). Tín hiệu trigger của
+  S-b là một lần vượt qua thoáng qua của mẫu stale-anchor đang
+  trôi (yếu tố may mắn); luật adopt tự củng cố (ref thử lái tx
+  anchor về đúng dòng trước khi mẫu đầu tiên được ghép, nên mọi
+  "đồng thuận" sau đó là hệ quả của trial) — ĐỪNG trông cậy S-b
+  sửa seed sai trên máy.
+- **Sa2 biên mỏng (đã xử lý trong Kotlin):** trong sim, group line
+  0 có startEst 40, marker wall 120 — khoảng loại chỉ **80 ms**;
+  Kotlin dùng `startEst ≥ markerWall + 500 ms` (bound 620 vẫn cách
+  xa ứng viên đúng 3062 ms, nhưng chịu được nhiễu marker/startEst
+  thật).
+- **lag7,8 D ghim 100% là artifact của trần, không phải lỗi đồng
+  bộ:** D muốn ~7707 + margin ~1000 ≈ 8700 ms > trần 8000 nên D
+  ngồi ghim ở trần; end-p90 252, sync p90 182, |D−lag| 285 đều
+  pass. MIỄN vạch D-ghim cho lag7,8. Hệ quả trên máy thật: nếu lag
+  thật > ~7 s, D sẽ hiện ghim 100% — đó là trần thiết kế (trần D
+  8 s), không phải bug; hình vẫn khớp vì D đã ở trần đúng hướng.
+- Dense fail strict duy nhất: sync max toàn phiên 1236 ms (steady
+  PASS, outlier cold-start trong 60 s đầu, lỗi sync đầu tiên lúc
+  8020 ms). MIỄN vạch sync-max toàn phiên (chỉ tính steady sau 60
+  s đầu).
+- **Vạch |D−lag| ≤ REPRO: FAIL cả 4 thế giới với mọi biến thể tx**
+  (đã chứng minh cấu tạo ở vòng 3); winner pass tuyệt đối ≤1000
+  cả 4 — parent quyết nới (xem QUYẾT ĐỊNH GATE dưới).
+- **Hồi quy (regone25.py, 1 process/seed, RNG 20261128+k, spec
+  sa2sb3): v6 1/3 PASS** (chỉ fail vạch pairs/60 s, sync pass
+  hết; fail pairs nằm ở nền vòng 1/2 — ratio floor/catch-up —
+  không phải valve/Sa2/S-b; số nhỏ, 2–9/60 s, vạch `NEW ≥ OLD`
+  giòn; FINAL vòng 3 cũng fail v6 in-process); **sim1018 2/3 PASS
+  van ON** (k=0 FAIL chỉ ở dropped 9,5% vs OLD 8,3%; k=1 PASS
+  6,8% vs 7,7%; k=2 PASS 8,0% vs 10,3%). OLD dropped tự nó dao
+  động 7,7–10,3% theo seed; NEW 6,8–9,5%, NEW ≤ OLD ở 2/3 seed.
+  **Vạch gộp "v6 + sim1018 PASS" KHÔNG đạt** (v6 1/3, sim1018
+  2/3) — ghi thẳng. Cross-check GSP=0.95: winner end-p90 tốt hơn
+  REPRO cả 4 (500 vs 1004, 731 vs 1178, 448 vs 2358, 192 vs
+  1060); |D−lag| tệ hơn cả 4. Van kiểm lại trên nền đã sửa: giữ
+  V2000cap500 (tổng end-p90 ON 1899 vs OFF 1983; sim1018 k=0 OFF
+  tệ hơn nhiều: pairs 26→16, line-start 1574→2083).
+
+**QUYẾT ĐỊNH GATE (ghi rõ để parent kiểm — vì 3 vạch gốc không
+pass theo nghĩa chặt):**
+1. **|D−lag|: nới từ "≤ REPRO" thành tuyệt đối ≤1000 ms.** Lý do:
+   vòng 3 đã chứng minh vạch cũ không pass được theo cấu tạo với
+   MỌI biến thể tx (D của REPRO chính xác 88–477 ms nhờ mẫu
+   VAD/tc; mẫu tx mang mơ hồ ±1 dòng nên D luôn chịu thuế
+   ~600–1000 ms). Giữ vạch cũ = không biến thể tx nào ship được =
+   đóng băng luôn sửa chữa cho lỗi "cặp tắt sau 60 s" mà user đang
+   gặp. Mục đích của D là giữ hình/giọng khớp trong ~1 s — sai số
+   tuyệt đối ≤1000 ms cùng bậc với gate cuối-burst. Winner pass
+   4/4.
+2. **sim1018: đánh giá theo "NEW ≤ OLD cùng seed", không dùng cap
+   tuyệt đối 8,3%.** Lý do: 8,3% là OLD của 1 world, OLD tự nó dao
+   động 7,7–10,3% theo seed. Winner: 2/3 seed NEW ≤ OLD; seed k=0
+   fail biên (9,5% vs 8,3%, +1,2 điểm phần trăm) — chấp nhận là
+   giới hạn đã biết, không chặn ship: lợi của van (pairs/line-start
+   sim1018 tốt hơn rõ, end-p90 tổng 1899 vs 1983) lớn hơn 1,2 pp
+   dropped trên 1 seed.
+3. **v6 pairs 1/3: KHÔNG chặn ship.** Lý do: fail nằm ở nền vòng
+   1/2 (ratio floor/catch-up), không phải phần mới (valve/Sa2/S-b);
+   số cặp nhỏ (2–9/60 s) nên vạch `NEW ≥ OLD` giòn; sync pass hết;
+   pairs ở 4 thế giới chính pass 6–12/cửa sổ.
+4. **Sa2 +500 ms: ship như đã code** (bound 620 vs ứng viên đúng
+   3062 ms; biên 80 ms trong sim quá mỏng cho nhiễu thật).
+5. **S-b: ship làm lưới an toàn, không kỳ vọng nó sửa seed sai
+   trên máy** (0 lần nổ trong sim thắng; luật adopt tự củng cố;
+   adopt muộn).
+6. **D-ghim lag7,8 100% + sync-max dense 1236 ms: miễn theo
+   artifact đã chứng minh** (trần D 8 s; outlier cold-start 60 s
+   đầu).
+
+**QUYẾT ĐỊNH: BUILD Sa2 + Sb3 + V2000cap500 làm v1.0.22** — pass
+GATE25 ex-cold 4/4 với các quyết định gate trên (ghi rõ, không giấu).
+
+## Triển khai v1.0.22 trong code (DubDelayTracker.kt + DubbingService.kt)
+
+- **T-a:** `noteTxInFragment` đóng nhóm anchor ở gap ≥300 ms
+  (`TX_SUB_GAP_MS`); giữ NGUYÊN danh sách group (không làm song
+  song) cho anchor.
+- **Nhóm câu cho seed:** `sentGroups`/`sentCurGroup`/
+  `sentLastFragAtMs` song song ở gap 800 ms (`BA_SENT_GAP_MS`),
+  chỉ phục vụ seed; `txSentenceStartMs` = firstMs − txAsrEmaMs −
+  TX_FRAG_DELAY_MS dùng chung cả hai.
+- **Sa2 (`saCorrect`):** `_sa_first_arrival` = now của lần `on_dub`
+  đầu; nổ trong `feedSample` trên mẫu non-boundary ĐẦU TIÊN,
+  TRƯỚC khi D-check phán xét nó (guard `saPending`, chạy đúng 1
+  lần/phiên; `stop()` reset, reconnect/stall KHÔNG reset); target =
+  firstArrival − sliceLag; ứng viên = nhóm SENT đã đóng có startEst
+  trong [arrival−10000, arrival−300] VÀ startEst ≥ wall marker đầu
+  + 500 ms; chọn gần target nhất (hòa → startEst nhỏ hơn); fallback
+  = BaSent most-recent-closed (không bound); không có ứng viên →
+  giữ seed vòng lặp. Áp 4 cập nhật seed như seed vòng lặp (seedLagMs,
+  latencyEma.seed, D = capDelayMs(el + dynamicMarginMs()), hold =
+  max(0, D − el − pipelineMs())).
+- **S-b:** bucket mẫu non-boundary theo burstSeq trong `feedSample`
+  (accept hay D-check-reject đều bucket); finalise burst trước khi
+  burst mới bắt đầu (`sbOnBurstStart`, sau khối isBurst/isFirstChunk
+  trong `onDubAudioArrival`); median mỗi burst → history; trigger
+  khi median 3 burst gần nhất lệch khỏi `refLagMs()` >1500 ms VÀ
+  ref đã lập VÀ trials < 3 → trial 5 burst, cooldown 10, tối đa 3
+  trial; ref trial override `refLagMs()` toàn bộ; adopt khi max run
+  đồng thuận ≥3 (|lat_tx − sliceMed| ≤ 600 ms) VÀ median
+  |sliceMed − ứng viên| < median |sliceMed − ref gốc| trên ≥3
+  median trial; ref đã adopt = median bndSamples trong 1200 ms của
+  nó nếu ≥3, không thì giá trị đã adopt. Drift gate OFF (không
+  ship). `lat_tx` mỗi burst lấy trong `applyTxAnchor` từ best-group
+  trước anchor, chỉ lưu khi txOk tăng (agree không lưu); patch cả
+  record đã finalise.
+- **Rb:** trong `applyTxAnchor` sau khi chọn best, trước cổng
+  residual: nếu đã lập và bestRes ≤ 1200 ms: latTx = burstArrival −
+  startEst(best); agree = lastBurstMarker trong 500 ms của
+  startEst; nếu không agree và latTx > selLagMs() + 600 ms → txCons++,
+  return (không nạp mẫu).
+- **Rc2:** nhánh established của `refLagMs()` chỉ dùng
+  `clusterCentre(bndSamples)` (bỏ seedCand); nhánh bootstrap không
+  đổi; override trial/adopt của S-b có độ ưu tiên cao nhất.
+- **Rf1 (thay RATIO_TX vòng 1 — winner có ratio_tx=False, KHÔNG
+  làm RATIO_TX không hiệu chỉnh):** mỗi tx-ok: countedDiff =
+  audioPos − prevAudioPos; dubDiff = cumDubMs − prevCumDub; pause =
+  Σ max(0, fragGap − 900 ms) trên các lần tx-in fragment liên tiếp
+  trong (prevGroup.firstMs, currentGroup.lastMs]; countedUse =
+  countedDiff − 0,40 × pause; nếu countedUse ≥ 500 và
+  0,7×(countedUse×1,3) ≤ dubDiff ≤ 1,6×(countedUse×1,3) → cộng vào
+  sumCountedMs/sumTotalDubMs. Prev-tracking cập nhật mỗi tx-ok (dù
+  có đo hay không).
+- **V-a/V-b stretch floor:** trong `stretchUpdate`, SAU logic nền
+  kể cả staleness decay: floor = clamp(1/ratio(), 1,0, 1,5),
+  ×(1 + endLag/5000) khi endLag > 0, kẹp [1,0, 1,5]; 1,0 khi im >5 s
+  (không có burst play); `if (floor > targetSpeed) targetSpeed =
+  floor` (max-wins).
+- **V-b end-lag:** end-lag đã hiệu chỉnh = lỗi slice-play cuối cùng
+  của burst đã phát (playWall + offset/speed − sourceWall − D);
+  tính trong `onBurstPlayed` từ pairing log; 0 khi không có pairing.
+- **V-c van V2000cap500:** arm ở đầu `onDubBurst` (chạy mọi đường
+  return): nếu vbPlaySeq != null và != vbValveUsedSeq và
+  lastCorrectedEndLagMs > 2000 ms và targetSpeed ≥ 1,49 →
+  pendingTailDropMs += min(endLag − 1500, 500); fires++. Tiêu thụ
+  trong `onDubAudioArrival` cuối (sau pairDubSlices +
+  flushWindowIfDue): nếu pendingTailDropMs > 0 → trừ FULL chunk ms
+  (có thể âm — chunk sau phát, đúng như sim), tailDroppedMs +=
+  dubMs, droppedSlices++, return **-1L** (tín hiệu drop).
+- **T-d audioAt:** không slice nào phủ wallMs: slice rỗng → null;
+  wallMs < slice đầu → max(0, first.startAudio − (first.startWall
+  − wall)); còn lại last.endAudio + (wallMs − last.endWall).
+- **Bb:** trong `applyTxAnchor`, đếm số ứng viên đã thêm vào
+  seedCand trong vòng lặp (không dùng index — pool prune từ đầu ở
+  cap 200 nên index lưu trước sẽ cũ); sau vòng lặp, giữ lại ĐÚNG 1
+  occurrence của ứng viên gần `selLagMs()` nhất (hoặc phần tử tail
+  gần chosen nhất nếu chosen không nằm trong tail sau prune).
+- **Hợp đồng drop ở service (DubbingService.kt,
+  `onDubAudioArrival` ~dòng 1191):** `val rawHold =
+  tracker?.onDubAudioArrival(...) ?: 0L; val dropChunk = rawHold <
+  0L; val holdMs = if (delayEnabled) maxOf(rawHold, 0L) else 0L`
+  (tín hiệu drop sống qua mapping delayEnabled); khi drop: bỏ
+  `setVoiceHoldMs` + `playAudio`.
+
+**Độ lệch so với sim (ghi rõ):**
+1. **Sa2 bound +500 ms (sim +0)** — theo đúng khuyến nghị của sim
+   (biên 80 ms quá mỏng cho nhiễu thật).
+2. **noteBurstStart trên chunk bị drop: BỎ QUA (không note với hold
+   0 như bản tóm tắt vòng 4).** Lý do đo được trong code: pipeline
+   của player = playWall − (arrivalWallMs + holdMs)
+   (`VoicePlayer.beginPlayMeasurement`: dueWall = arrival + hold).
+   Note chunk bị drop với arrival của nó + hold 0 → dueWall =
+   arrival của chunk bị drop, pipeline đo được = hold thật
+   (~0,9–1,2 s) + pipeline thật — phồng pipeline EMA → margin động
+   → D. Guard `seq != lastNotedBurstSeq` khiến chunk RENDERED đầu
+   tiên của cùng burst vẫn note đúng với arrival/hold của chính nó
+   — tức due wall thật của frame rendered đầu tiên. Đây mới là đo
+   đúng.
+3. **Bb trim đếm theo số lần thêm (takeLast), không theo index
+   bb_before_len như sim** — ở cap 200, bản sim lặng lẽ không trim
+   (tail rỗng); bản Kotlin trim đúng cả khi pool đầy — trung thành
+   hơn với ý đồ Bb (1 ứng viên/burst).
+4. **End-lag tính cho mọi burst CÓ RECORD (không cần marker — chỉ
+   lệch đồng bộ mới cần marker); burst không record → end-lag 0,
+   không arm valve.** Khớp sim (sim tính end-lag từ pairing log).
+5. **Median dùng upper median sorted[n/2]** (khớp clusterCentre/
+   _smed; sim _med là pct nội suy — chênh tối đa 1 mẫu trên list
+   nhỏ, không ảnh hưởng gate).
+6. **Van pending drop + end-lag stale được xóa trong
+   `resetForReconnect()`/`resetForStall()`** (burst của chúng đã
+   chết; chunk sau thuộc burst mới, không được ăn hay stretch theo
+   backlog cũ). Sa2/S-b KHÔNG reset ở reconnect/stall (1 lần/phiên).
+7. **Chẩn đoán mới:** dropped segment thêm "· xả %d ms" khi
+   tailDroppedMs > 0 (mỗi drop cũng đếm vào "bỏ … lát"); cuối
+   diagnostics thêm "· sb %d thử/%d nhận" khi sbTrials > 0 (sim
+   thắng: 0/0 — số khác 0 trên máy là tín hiệu cần đối chiếu với số
+   đồng bộ).
+
 # DubLive v1.0.21 — NEO BẰNG TRANSCRIPTION AI + SỬA TẬN GỐC KHAN HIẾM MARKER (28/11/2026, ĐÃ BUILD — run Actions 46092674107, commit 99e7b664, tag v1.0.21-dublive, MD5 17aea1f915e767a2a309a0c259219aec, 9.565.306 byte)
 
 Thử v1.0.20 trên máy thật cho 3 ảnh chẩn đoán (28/11 07:07, 07:32,

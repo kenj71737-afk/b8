@@ -646,8 +646,13 @@ class DubbingService : Service() {
                             }
                             try {
                                 when (purpose) {
-                                    "marker" -> tracker?.setMarkerVideoTime(seq, eventVideoSec)
-                                    "burst" -> tracker?.onBurstVideoTime(seq, eventVideoSec)
+                                    // v1.0.22 — pass the event wall
+                                    // so the tracker's frame check can
+                                    // tell a real residual from a video
+                                    // that seeked / changed episode
+                                    // between the marker and the burst.
+                                    "marker" -> tracker?.setMarkerVideoTime(seq, eventVideoSec, eventWall)
+                                    "burst" -> tracker?.onBurstVideoTime(seq, eventVideoSec, eventWall)
                                 }
                             } catch (e: Exception) {
                                 Log.w(TAG, "tracker video time failed", e)
@@ -1182,36 +1187,61 @@ class DubbingService : Service() {
                         // hold is 0: the picture is live, so the voice
                         // plays at once.
                         val nowMs = System.currentTimeMillis()
-                        val holdMs = try {
-                            val h = tracker?.onDubAudioArrival(
+                        val rawHold = try {
+                            tracker?.onDubAudioArrival(
                                 nowMs,
                                 (pcm24k.size / 48).toLong(),
                                 firstAudioSentAtMs
                             ) ?: 0L
-                            if (delayEnabled) h else 0L
                         } catch (e: Exception) {
                             Log.w(TAG, "voice hold failed", e)
                             0L
                         }
-                        try { voicePlayer?.setVoiceHoldMs(holdMs) } catch (e: Exception) {
-                            Log.w(TAG, "setVoiceHoldMs failed", e)
+                        // v1.0.22 (V-c) — the tail valve's drop
+                        // signal: rawHold < 0 means "discard this
+                        // chunk" (the sim drops whole chunks after
+                        // on_dub ran, so it still counted in
+                        // cumDubMs/pairing). The signal must survive
+                        // the delayEnabled mapping (a drop is a drop
+                        // even with the video delay off), so it is
+                        // tested BEFORE the maxOf(…, 0).
+                        val dropChunk = rawHold < 0L
+                        val holdMs = if (delayEnabled) maxOf(rawHold, 0L) else 0L
+                        if (!dropChunk) {
+                            try { voicePlayer?.setVoiceHoldMs(holdMs) } catch (e: Exception) {
+                                Log.w(TAG, "setVoiceHoldMs failed", e)
+                            }
                         }
                         // v1.0.17 — a new burst started (the tracker
                         // bumped its seq): note it to the VoicePlayer
                         // BEFORE this first chunk is enqueued, so the
                         // player thread measures this burst's real
                         // play start (pipeline + closed-loop sync).
-                        try {
-                            val seq = tracker?.lastBurstSeq ?: 0L
-                            if (seq != 0L && seq != lastNotedBurstSeq) {
-                                lastNotedBurstSeq = seq
-                                voicePlayer?.noteBurstStart(seq, nowMs, holdMs)
+                        // v1.0.22 (V-c) — on a DROP the note is
+                        // SKIPPED, not noted with hold 0: the
+                        // player's pipeline is play − (arrival +
+                        // hold), so a note with the dropped chunk's
+                        // arrival and hold 0 would overstate the
+                        // pipeline by the whole hold (~1 s) and
+                        // poison the pipeline EMA -> D. The
+                        // seq != lastNotedBurstSeq guard below
+                        // notes the burst on the first RENDERED
+                        // chunk instead, with that chunk's own
+                        // arrival/hold — the true due wall of the
+                        // first rendered frame.
+                        if (!dropChunk) {
+                            try {
+                                val seq = tracker?.lastBurstSeq ?: 0L
+                                if (seq != 0L && seq != lastNotedBurstSeq) {
+                                    lastNotedBurstSeq = seq
+                                    voicePlayer?.noteBurstStart(seq, nowMs, holdMs)
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "noteBurstStart failed", e)
                             }
-                        } catch (e: Exception) {
-                            Log.w(TAG, "noteBurstStart failed", e)
-                        }
-                        try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
-                            Log.w(TAG, "playAudio failed", e)
+                            try { voicePlayer?.playAudio(pcm24k) } catch (e: Exception) {
+                                Log.w(TAG, "playAudio failed", e)
+                            }
                         }
                     }
 

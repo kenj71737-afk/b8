@@ -102,11 +102,8 @@ class SettingsActivity : AppCompatActivity() {
             ?: Prefs.VOICES.keys.first()
         voiceSpinner.setSelection(Prefs.VOICES.keys.indexOf(voiceLabel).coerceAtLeast(0))
 
-        // v1.0.23 — TRỄ CỐ ĐỊNH 40 s: max-delay (3–45 s, mặc định
-        // 40 s) chỉ còn là trần cho LatencyEma; D thật lấy từ base
-        // delay bên dưới.
         val initialDelay = (Prefs.maxDelayMs(this) / 1000).toInt()
-        maxDelaySeek.progress = (initialDelay - 3).coerceIn(0, 42)
+        maxDelaySeek.progress = (initialDelay - 3).coerceIn(0, 17)
         maxDelayLabel.text = "$initialDelay giây"
         maxDelaySeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -121,15 +118,12 @@ class SettingsActivity : AppCompatActivity() {
         // starts here and FIFO samples move it from there; the "Trễ
         // −1s / +1s" buttons on the main screen nudge the same value
         // mid-session (and update this seed when not dubbing).
-        // v1.0.23 — TRỄ CỐ ĐỊNH: đây là D CỐ ĐỊNH của phiên
-        // (35–45 s, mặc định 40 s — sim1028 gate ở L=40). Không còn
-        // mẫu tự động nào di chuyển D sau khi phiên bắt đầu.
         val initialBase = (Prefs.baseDelayMs(this) / 1000).toInt()
-        baseDelaySeek.progress = (initialBase - Prefs.FIXED_DELAY_MIN_SEC).coerceIn(0, 10)
+        baseDelaySeek.progress = (initialBase - 3).coerceIn(0, 17)
         baseDelayLabel.text = "$initialBase giây"
         baseDelaySeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seek: SeekBar?, progress: Int, fromUser: Boolean) {
-                baseDelayLabel.text = "${progress + Prefs.FIXED_DELAY_MIN_SEC} giây"
+                baseDelayLabel.text = "${progress + 3} giây"
             }
 
             override fun onStartTrackingTouch(seek: SeekBar?) {}
@@ -221,7 +215,7 @@ class SettingsActivity : AppCompatActivity() {
             .putBoolean(Prefs.KEY_WHOLE_SENTENCE, wholeSentenceCheck.isChecked)
             .putString(Prefs.KEY_VOICE, Prefs.VOICES[voiceLabel] ?: "Aoede")
             .putInt(Prefs.KEY_MAX_DELAY_SEC, maxDelaySeek.progress + 3)
-            .putInt(Prefs.KEY_BASE_DELAY_SEC, baseDelaySeek.progress + Prefs.FIXED_DELAY_MIN_SEC)
+            .putInt(Prefs.KEY_BASE_DELAY_SEC, baseDelaySeek.progress + 3)
             .putInt(Prefs.KEY_ORIGINAL_VOLUME, originalVolumeSeek.progress.coerceIn(0, 100))
             .putInt(Prefs.KEY_DUB_VOLUME, dubVolumeSeek.progress.coerceIn(0, 100))
             .putInt(Prefs.KEY_VAD_THRESHOLD, (vadThresholdSeek.progress + 250).coerceIn(250, 900))

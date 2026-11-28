@@ -15,8 +15,7 @@ package com.dublive.live
  * voice on USAGE_MEDIA is never an input.
  *
  * GRAPH (per video, mirrors ALDA FIX42/FIX31):
- *   MediaElementSource -> DelayNode x2 (D, max 44 s: 22 + 22,
- *     v1.0.23 fixed 40 s) -> GainNode (duck)
+ *   MediaElementSource -> DelayNode(D, max 22 s) -> GainNode (duck)
  *     -> destination            (original audio, delayed by D, MEDIA)
  *   MediaElementSource -> ScriptProcessor(2048) -> silent Gain(0)
  *     -> destination            (PCM tap for Live, LIVE not delayed)
@@ -82,7 +81,7 @@ object TapJs {
 (function () {
   if (window.__dubLiveTapInstalled) return;
   window.__dubLiveTapInstalled = true;
-  window.DubLiveTapDelaySec = 40;
+  window.DubLiveTapDelaySec = 5;
   window.DubLiveTapDuckVol = 1.0;
   window.__dubLiveTapActive = false;
   window.__dubLiveTapStates = [];
@@ -177,25 +176,18 @@ object TapJs {
       } catch (e) {}
     }
     var AC = window.AudioContext || window.webkitAudioContext;
-    var ctx, source, delay, delay2, gain, tap, silent;
+    var ctx, source, delay, gain, tap, silent;
     try {
       ctx = new AC();
       source = ctx.createMediaElementSource(v);
-      // v1.0.23 — TRỄ CỐ ĐỊNH 40 s: ONE DelayNode caps at 22 s
-      // (Web Audio max), so the original audio runs through TWO
-      // in series (22 + 22 = 44 s). The tap still branches off
-      // the source BEFORE the delays (live PCM for Live).
       delay = ctx.createDelay(22.0);
-      delay2 = ctx.createDelay(22.0);
-      var d1 = Math.min(window.DubLiveTapDelaySec, 22);
-      delay.delayTime.value = d1;
-      delay2.delayTime.value = Math.max(0, window.DubLiveTapDelaySec - d1);
+      delay.delayTime.value = window.DubLiveTapDelaySec;
       gain = ctx.createGain(); gain.gain.value = window.DubLiveTapDuckVol;
       tap = ctx.createScriptProcessor(2048, 1, 1);
       silent = ctx.createGain(); silent.gain.value = 0.0;
-      source.connect(delay); delay.connect(delay2); delay2.connect(gain); gain.connect(ctx.destination);
+      source.connect(delay); delay.connect(gain); gain.connect(ctx.destination);
       source.connect(tap); tap.connect(silent); silent.connect(ctx.destination);
-      var st = { v: v, ctx: ctx, source: source, delay: delay, delay2: delay2, gain: gain, tap: tap,
+      var st = { v: v, ctx: ctx, source: source, delay: delay, gain: gain, tap: tap,
                  silent: silent, nonSilentBlocks: 0, failed: false, checkTimer: null,
                  aliveNotified: false, bypassed: false };
       v.__dubLiveTapState = st;
@@ -242,7 +234,7 @@ object TapJs {
           if (st.nonSilentBlocks === 0) {
             st.failed = true;
             try { source.disconnect(); source.connect(ctx.destination); } catch (e) {}
-            try { delay.disconnect(); delay2.disconnect(); gain.disconnect(); tap.disconnect(); silent.disconnect(); } catch (e) {}
+            try { delay.disconnect(); gain.disconnect(); tap.disconnect(); silent.disconnect(); } catch (e) {}
             try { if (window.DubLiveAudio) DubLiveAudio.onTapFailed('Trang chặn âm thanh WebAudio (CORS/DRM)'); } catch (e) {}
           } else {
             notify('Đã nhận âm thanh trong trang.');
@@ -314,7 +306,7 @@ object TapJs {
       if (s.failed || s.blocked || s.bypassed) return;
       s.bypassed = true;
       try { s.source.disconnect(); s.source.connect(s.ctx.destination); } catch (e) {}
-      try { s.delay.disconnect(); if (s.delay2) s.delay2.disconnect(); s.gain.disconnect(); s.tap.disconnect(); s.silent.disconnect(); } catch (e) {}
+      try { s.delay.disconnect(); s.gain.disconnect(); s.tap.disconnect(); s.silent.disconnect(); } catch (e) {}
     });
   };
   window.DubLiveTapResume = function () {
@@ -323,7 +315,7 @@ object TapJs {
       if (s.failed || s.blocked || !s.bypassed) return;
       s.bypassed = false;
       try { s.source.disconnect(); } catch (e) {}
-      try { s.source.connect(s.delay); if (s.delay2) { s.delay.connect(s.delay2); s.delay2.connect(s.gain); } else { s.delay.connect(s.gain); } s.gain.connect(s.ctx.destination); } catch (e) {}
+      try { s.source.connect(s.delay); s.delay.connect(s.gain); s.gain.connect(s.ctx.destination); } catch (e) {}
       try { s.source.connect(s.tap); s.tap.connect(s.silent); s.silent.connect(s.ctx.destination); } catch (e) {}
       try { if (s.ctx.state === 'suspended') s.ctx.resume(); } catch (e) {}
       if (s.startCheck) s.startCheck();
@@ -331,12 +323,8 @@ object TapJs {
     scan();
   };
   window.DubLiveTapSetDelay = function (sec) {
-    // v1.0.23 — TRỄ CỐ ĐỊNH 40 s: kẹp 0..44 (2 DelayNode × 22 s),
-    // chia đều qua hai node (node 1 tối đa 22 s, phần còn lại
-    // sang node 2). Glide như cũ (tau 0,3 s) để không nhảy tiếng.
-    var n = Math.max(0, Math.min(44, Number(sec) || 0));
+    var n = Math.max(0, Math.min(20, Number(sec) || 0));
     window.DubLiveTapDelaySec = n;
-    var d1 = Math.min(n, 22), d2 = n - d1;
     window.__dubLiveTapStates.forEach(function (s) {
       if (s.failed || s.blocked) return;
       // v1.0.17 — D must GLIDE, not jump: a DelayNode delayTime
@@ -345,8 +333,7 @@ object TapJs {
       // with tau 0.3 s settles in ~1 s (95% in 3*tau) — the music
       // stretches almost inaudibly instead of jumping. (The old
       // tau 0.025 s settled in ~100 ms: effectively a jump.)
-      try { s.delay.delayTime.setTargetAtTime(d1, s.ctx.currentTime, 0.3); } catch (e) {}
-      try { if (s.delay2) s.delay2.delayTime.setTargetAtTime(d2, s.ctx.currentTime, 0.3); } catch (e) {}
+      try { s.delay.delayTime.setTargetAtTime(n, s.ctx.currentTime, 0.3); } catch (e) {}
     });
   };
   window.DubLiveTapSetDuck = function (vol) {

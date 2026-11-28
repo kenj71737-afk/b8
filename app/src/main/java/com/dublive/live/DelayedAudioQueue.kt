@@ -22,15 +22,14 @@ package com.dublive.live
  * In both modes a block overdue by more than [staleMs] is dropped
  * instead of played, so the queue catches up after a delay decrease
  * instead of trailing behind forever. Bounded: the oldest blocks are
- * dropped past [maxBlocks] (45 s at 10 ms/block, v1.0.23 — was 26 s,
- * không đủ cho trễ cố định 40 s của tiếng gốc).
+ * dropped past [maxBlocks] (26 s at 10 ms/block).
  *
  * Pure Kotlin, no Android dependencies, unit-testable. All methods are
  * synchronized (feed runs on the capture/socket thread, the playback
  * loop on another thread).
  */
 class DelayedAudioQueue(
-    private val maxBlocks: Int = 4500,
+    private val maxBlocks: Int = 2600,
     private val staleMs: Long = 500L
 ) {
     private data class Block(

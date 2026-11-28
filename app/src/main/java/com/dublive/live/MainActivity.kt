@@ -96,10 +96,9 @@ class MainActivity : AppCompatActivity() {
     private var appFullscreen = false
     private var delayOn = true
     /** v1.0.6 — delay (ms) last pushed to the WebView canvas via
-     * DubLiveSetDelay. v1.0.23: TRỄ CỐ ĐỊNH 40 s (was 5000 ms seed);
-     * TYPE_HUD updates it whenever the measured delay moves > 200 ms
-     * (now only the manual ±1 s nudge moves it). */
-    private var lastAppliedDelayMs = 40000L
+     * DubLiveSetDelay. Starts at the 5000 ms seed set in onPageFinished;
+     * TYPE_HUD updates it whenever the measured delay moves > 200 ms. */
+    private var lastAppliedDelayMs = 5000L
     /** v1.0.5 — user can hide subtitles and listen to the dub only. */
     private var subtitlesVisible = true
     private var dubbing = false
@@ -319,13 +318,11 @@ class MainActivity : AppCompatActivity() {
                     // v1.0.6 — the main bug: until now this branch only
                     // updated the HUD TEXT and never told the WebView the
                     // new delay, so the canvas always delayed exactly the
-                    // 40000 ms fixed delay from onPageFinished while the
-                    // HUD showed 7 s / 12 s / 19,4 s — the dub voice (7–15 s
-                    // behind the real speech) always lagged the picture.
-                    // Apply the measured delay to the canvas whenever it
-                    // moved more than 200 ms (avoids spamming JS on every
-                    // tick). v1.0.23: D is fixed, so this branch now only
-                    // fires on the manual ±1 s nudge.
+                    // 5000 ms seed from onPageFinished while the HUD showed
+                    // 7 s / 12 s / 19,4 s — the dub voice (7–15 s behind
+                    // the real speech) always lagged the picture. Apply
+                    // the measured delay to the canvas whenever it moved
+                    // more than 200 ms (avoids spamming JS on every tick).
                     if (ms > 0 && kotlin.math.abs(ms - lastAppliedDelayMs) > 200) {
                         lastAppliedDelayMs = ms
                         try {
@@ -802,7 +799,7 @@ class MainActivity : AppCompatActivity() {
      * waiting for its first FIFO sample.
      */
     private fun applyBaseDelayToWebView() {
-        val seed = try { Prefs.baseDelayMs(this) } catch (_: Exception) { 40000L }
+        val seed = try { Prefs.baseDelayMs(this) } catch (_: Exception) { 5000L }
         lastAppliedDelayMs = seed
         hudView.text = "Trễ hình: %.1f s".format(seed / 1000.0)
         try {
@@ -840,11 +837,8 @@ class MainActivity : AppCompatActivity() {
                 Log.w(TAG, "adjustDelay failed", e)
             }
         } else {
-            // v1.0.23 — TRỄ CỐ ĐỊNH 40 s: nudge tay trong 35–45 s.
             val sec = ((Prefs.baseDelayMs(this) / 1000).toInt() +
-                (deltaMs / 1000).toInt()).coerceIn(
-                    Prefs.FIXED_DELAY_MIN_SEC, Prefs.FIXED_DELAY_MAX_SEC
-                )
+                (deltaMs / 1000).toInt()).coerceIn(3, 20)
             Prefs.setBaseDelaySec(this, sec)
             val ms = sec * 1000L
             lastAppliedDelayMs = ms
@@ -938,21 +932,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * v1.0.23 — tell the page a dub session started / stopped, so the
-     * delay canvas + pre-roll overlay only run while dubbing. Before
-     * the session the page shows its video live (a 40 s delayed
-     * picture + live audio while merely browsing would be 40 s out
-     * of sync). Starting also restarts the 40 s pre-roll (the JS
-     * clears stale frames and ramps the effective delay 0 -> D).
-     */
-    private fun setWebDubbingActive(active: Boolean) {
-        try {
-            webView.evaluateJavascript("window.DubLiveSetDubbing($active)", null)
-        } catch (_: Exception) {
-        }
-    }
-
-    /**
      * v1.0.11 — tap-first start: NO screen-capture dialog. The service
      * starts in TAP_WEB mode (the film sound comes from the page, the
      * dub voice plays on the MEDIA stream — loud, no echo because no
@@ -1011,9 +990,6 @@ class MainActivity : AppCompatActivity() {
         // the picture and the delayed original audio wait the right
         // amount from the first second.
         applyBaseDelayToWebView()
-        // v1.0.23 — start the 40 s pre-roll on the page (canvas +
-        // wait overlay); before this the page showed live video.
-        setWebDubbingActive(true)
     }
 
     /** Mic mode: no screen-capture dialog, no MediaProjection token. */
@@ -1065,8 +1041,6 @@ class MainActivity : AppCompatActivity() {
         // picture waits the right amount from the first second instead
         // of sitting on the page-load seed until the first sample.
         applyBaseDelayToWebView()
-        // v1.0.23 — start the 40 s pre-roll on the page.
-        setWebDubbingActive(true)
     }
 
     /**
@@ -1123,8 +1097,6 @@ class MainActivity : AppCompatActivity() {
             hudRow.visibility = View.VISIBLE
             // v1.0.7 — push the base-delay seed into the canvas now.
             applyBaseDelayToWebView()
-            // v1.0.23 — start the 40 s pre-roll on the page.
-            setWebDubbingActive(true)
         } catch (e: Exception) {
             Log.w(TAG, "startForegroundService (projection) failed, retry=$isRetry", e)
             if (!isRetry) {
@@ -1146,9 +1118,6 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "stopDub failed", e)
         }
         dubbing = false
-        // v1.0.23 — back to live video on the page (canvas + wait
-        // overlay off).
-        setWebDubbingActive(false)
         pendingTapStart = false
         fallbackPending = false
         // v1.0.11 — bypass the tap delay so the video's own audio

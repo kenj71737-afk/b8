@@ -63,17 +63,6 @@
             android:visibility="gone" />
 
         <TextView
-            android:id="@+id/localWaitView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="#ED000000"
-            android:gravity="center"
-            android:text="Đang chuẩn bị lồng tiếng…"
-            android:textColor="@color/dub_white"
-            android:textSize="20sp"
-            android:visibility="gone" />
-
-        <TextView
             android:id="@+id/localSubtitleView"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

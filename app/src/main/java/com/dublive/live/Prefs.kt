@@ -44,18 +44,8 @@ object Prefs {
         "Nhật" to "ja"
     )
 
-    const val DEFAULT_MAX_DELAY_SEC = 40
+    const val DEFAULT_MAX_DELAY_SEC = 20
     const val MIN_DELAY_MS = 3000L
-    /**
-     * v1.0.23 — TRỄ CỐ ĐỊNH 40 s (sim1028 GATE PASS). D không còn
-     * thích ứng: base delay là giá trị D cố định của phiên (mặc định
-     * 40 s, nút ±1 s nudge trong 35–45 s). Giá trị đã lưu từ bản cũ
-     * (3–20 s) được kéo về dải này để canvas/tap/giọng không bao giờ
-     * khởi động ở một D khác D của tracker.
-     */
-    const val FIXED_DELAY_SEC = 40
-    const val FIXED_DELAY_MIN_SEC = 35
-    const val FIXED_DELAY_MAX_SEC = 45
 
     fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -85,7 +75,7 @@ object Prefs {
 
     fun maxDelayMs(context: Context): Long {
         val sec = prefs(context).getInt(KEY_MAX_DELAY_SEC, DEFAULT_MAX_DELAY_SEC)
-        return (sec.coerceIn(3, 45) * 1000).toLong()
+        return (sec.coerceIn(3, 20) * 1000).toLong()
     }
 
     /**
@@ -93,20 +83,15 @@ object Prefs {
      * the seed delay a session starts with, before the first FIFO sample
      * arrives. The old code hard-coded 5238 ms here and 5000 ms in the
      * WebView; both now read this one value.
-     *
-     * v1.0.23 — TRỄ CỐ ĐỊNH: đây giờ là D CỐ ĐỊNH của cả phiên
-     * (mặc định 40 s, dải 35–45 s — sim1028 gate ở L=40). Tracker
-     * không còn EMA D từ mẫu nữa; giá trị này là D duy nhất mà
-     * canvas, tap, background player và hold giọng cùng theo.
      */
     fun baseDelayMs(context: Context): Long {
-        val sec = prefs(context).getInt(KEY_BASE_DELAY_SEC, FIXED_DELAY_SEC)
-        return (sec.coerceIn(FIXED_DELAY_MIN_SEC, FIXED_DELAY_MAX_SEC) * 1000).toLong()
+        val sec = prefs(context).getInt(KEY_BASE_DELAY_SEC, 5)
+        return (sec.coerceIn(3, 20) * 1000).toLong()
     }
 
     fun setBaseDelaySec(context: Context, sec: Int) {
         prefs(context).edit()
-            .putInt(KEY_BASE_DELAY_SEC, sec.coerceIn(FIXED_DELAY_MIN_SEC, FIXED_DELAY_MAX_SEC)).apply()
+            .putInt(KEY_BASE_DELAY_SEC, sec.coerceIn(3, 20)).apply()
     }
 
     fun originalVolume(context: Context): Float {

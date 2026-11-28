@@ -111,16 +111,7 @@ class DelayedBackgroundPlayer(private val context: Context) {
     @Volatile private var playbackRunning = false
 
     fun setDelayMs(ms: Long) {
-        targetDelayMs = ms.coerceIn(0L, 45000L)
-        // v1.0.23 — TRỄ CỐ ĐỊNH 40 s: kẹp cũ 25 s không đủ. Set
-        // thẳng hiệu dụng khi chưa chạy / đang ở 0 / tắt trễ:
-        // glide 10 ms/10 ms (1× thời gian thực) đổi 0→40 s phải
-        // mất 40 s mới ổn định — đúng bằng thời gian chờ pre-roll
-        // thêm một lần nữa. Giữa phiên D chỉ đổi ±1 s (nút tay)
-        // nên glide 1 s đó vẫn giữ nguyên, không nhảy tiếng.
-        if (!playbackRunning || targetDelayMs == 0L || effectiveDelayMs == 0L) {
-            effectiveDelayMs = targetDelayMs
-        }
+        targetDelayMs = ms.coerceIn(0L, 25000L)
     }
 
     /** Current delay, for the duck ticker / status. */

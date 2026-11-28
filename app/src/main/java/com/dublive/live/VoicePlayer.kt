@@ -86,8 +86,13 @@ class VoicePlayer(
      * queue-based fallback instead of a getTimestamp measurement).
      * v1.0.18 — fifth value: the backlog (ms) already queued ahead
      * of the burst's first frame at write time.
+     * v1.0.24 — sixth value: the MEASURED applied stretch speed
+     * (playhead slope, [measuredSpeed]) at burst play, 0.0 when
+     * not measured — the tracker divides the in-burst dub offset
+     * by THIS, not by the target (HUD 1,50× trên ảnh 12:00 có thể
+     * là số giả trong khi track kẹt 1,0×).
      */
-    private val onBurstPlayed: (Long, Long, Long, Boolean, Long) -> Unit = { _, _, _, _, _ -> },
+    private val onBurstPlayed: (Long, Long, Long, Boolean, Long, Double) -> Unit = { _, _, _, _, _, _ -> },
     /**
      * v1.0.19 — TIME-STRETCH catch-up (the runaway-backlog fix).
      * Three callbacks into the tracker, all called on the player
@@ -98,7 +103,7 @@ class VoicePlayer(
      *    (which under-measures it ~10x).
      *  - [onWriteLate]: every chunk taken, how late the take was
      *    vs its due (take − due, ms). The tracker raises the
-     *    stretch to 1.5x when the loop is >200 ms behind.
+     *    stretch to 1.35x when the loop is >200 ms behind.
      *  - [onTrackLevel]: after every chunk write, the audio
      *    queued in the track (ms) and the buffer cap (ms). The
      *    tracker raises the stretch when the level is high.
@@ -256,17 +261,49 @@ class VoicePlayer(
     /**
      * v1.0.19 — TIME-STRETCH (AudioTrack.setPlaybackParams, Sonic
      * inside the framework: speed up without changing pitch).
-     * The tracker asks for 1.0–1.5x; the service calls
+     * The tracker asks for 1.0–1.35x; the service calls
      * [setPlaybackSpeed] and the player loop applies it. The
      * pending speed is applied in the player thread (not in the
      * setter) so a track rebuild never races a setPlaybackParams
-     * call on a dead track. [stretchSupported] goes false forever
-     * once setPlaybackParams throws — the player then stays at
-     * 1.0x and the tracker falls back to word-drop.
+     * call on a dead track.
+     * v1.0.24 — [stretchSupported] is NO LONGER false forever:
+     * every buildTrack (new track) retries stretch once; only if
+     * setPlaybackParams throws again does it go false — and then
+     * only for that track. The old behaviour (one throw → stuck
+     * at 1.0x forever, silently) is the #1 suspect for the
+     * ~1800 ms unexplained term on the 12:00 photo.
      */
     @Volatile private var pendingSpeed = 1.0
     @Volatile private var currentSpeed = 1.0
     @Volatile private var stretchSupported = true
+    /** v1.0.24 — THIẾT BỊ ĐO TỐC ĐỘ ÁP DỤNG THẬT (port từ v1.0.23,
+     * chỉ đo — đóng số hạng ~1800 ms chưa giải thích được trên
+     * ảnh 12:00, khi HUD in 1,50× nhưng không ai biết track thật
+     * chạy bao nhiêu):
+     *  - [appliedSpeedReadback]: tốc độ đọc lại từ
+     *    track.playbackParams ngay sau setPlaybackParams.
+     *  - [appliedSpeedMismatch]: readback lệch target >0,02.
+     *  - [measuredSpeed]: tốc độ thật đo bằng độ dốc playhead
+     *    (dFrames/dWall/24000) trên cửa sổ 2 s, null khi không
+     *    phát/không đo được. framePosition đếm frame ĐẦU RA sau
+     *    stretch nên độ dốc chính là tốc độ thật — không cần ánh
+     *    xạ input/output.
+     *  - stretchSupported=false KHÔNG còn vĩnh viễn: mỗi lần
+     *    buildTrack (track mới) thử lại một lần; chỉ khi throw
+     *    tiếp mới lại false.
+     */
+    @Volatile private var appliedSpeedReadback = 1.0
+    @Volatile private var appliedSpeedMismatch = false
+    @Volatile private var stretchUnsupportedLogged = false
+    private val speedSamples = ArrayDeque<Pair<Long, Long>>()
+    private var lastSpeedSampleAtMs = 0L
+    @Volatile private var measuredSpeedValue: Double? = null
+    /** Tốc độ thật đang phát (độ dốc playhead), null khi chưa đo được. */
+    val measuredSpeed: Double? get() = measuredSpeedValue
+    /** Tốc độ đọc lại từ track sau lần setPlaybackParams gần nhất. */
+    val appliedSpeed: Double get() = appliedSpeedReadback
+    /** True khi readback lệch target >0,02. */
+    val isAppliedSpeedMismatch: Boolean get() = appliedSpeedMismatch
     /** v1.0.19 — how often a mid-burst pipeline sample is taken
      * (every 20th chunk ≈ every 10 s of dub). */
     private val PIPELINE_SAMPLE_EVERY = 20
@@ -392,6 +429,20 @@ class VoicePlayer(
         }
         audioTrack = track
         running = true
+        // v1.0.24 — track MỚI = thử lại stretch một lần: false cũ
+        // chỉ áp cho track đã chết (setPlaybackParams throw một
+        // lần → kẹt 1,0× vĩnh viễn, không chỗ nào set lại true —
+        // ứng viên số 1 cho số hạng ~1800 ms trên ảnh 12:00).
+        // Nếu máy thật sự không hỗ trợ, lần áp đầu tiên sẽ throw
+        // lại và false như cũ — nhưng ít nhất mỗi rebuild được
+        // một cơ hội, và HUD (isStretchSupported) nói rõ trạng
+        // thái thay vì im lặng.
+        stretchSupported = true
+        stretchUnsupportedLogged = false
+        appliedSpeedReadback = 1.0
+        appliedSpeedMismatch = false
+        synchronized(speedSamples) { speedSamples.clear() }
+        measuredSpeedValue = null
         try { track.setVolume(1.0f) } catch (_: Exception) { }
         // v1.0.7 — LoudnessEnhancer: boost the dub voice beyond the
         // 1.0f gain ceiling (+8 dB target). Try 800 mB, then 500, then
@@ -436,6 +487,9 @@ class VoicePlayer(
                     // dead track). setPlaybackParams is Sonic inside
                     // the framework: faster without changing pitch.
                     applyPendingSpeed()
+                    // v1.0.24 — tốc độ thật bằng độ dốc playhead
+                    // (mỗi vòng lặp, throttle 50 ms bên trong).
+                    samplePlayheadForSpeed()
                     // v1.0.17 — even with no chunk due, poll the
                     // playhead: a burst-start confirmation may be
                     // waiting for its first frame to render.
@@ -454,7 +508,7 @@ class VoicePlayer(
                     val dueMs = dueInfo.second
                     // v1.0.19 — loop lateness (take − due): how far
                     // behind the player loop is. The tracker raises
-                    // the stretch to 1.5x when this exceeds 200 ms
+                    // the stretch to 1.35x when this exceeds 200 ms
                     // (a 2.5x generation burst sits at ~330 ms
                     // median, a 1.5x one at ~40 ms).
                     try { onWriteLate((takeNow - dueMs).coerceAtLeast(0L)) } catch (_: Exception) { }
@@ -693,7 +747,7 @@ class VoicePlayer(
             Log.i(TAG, "burst seq=%d arrival=%d hold=%d due=%d backlog=%d play=%d pipeline=%d est=%b (stretch %.2fx, predicted)"
                 .format(confirm.seq, confirm.arrivalWallMs, confirm.holdMs,
                     confirm.dueWallMs, confirm.backlogMs, playWall, pipeline, true, currentSpeed))
-            try { onBurstPlayed(confirm.seq, playWall, pipeline, true, confirm.backlogMs) } catch (_: Exception) { }
+            try { onBurstPlayed(confirm.seq, playWall, pipeline, true, confirm.backlogMs, measuredSpeed ?: 0.0) } catch (_: Exception) { }
             return
         }
         val head = try { readPlayhead() } catch (_: Exception) { null }
@@ -709,7 +763,7 @@ class VoicePlayer(
             Log.i(TAG, "burst seq=%d arrival=%d hold=%d due=%d backlog=%d play=%d pipeline=%d est=%b"
                 .format(confirm.seq, confirm.arrivalWallMs, confirm.holdMs,
                     confirm.dueWallMs, confirm.backlogMs, nowWall, pipeline, false))
-            try { onBurstPlayed(confirm.seq, nowWall, pipeline, false, confirm.backlogMs) } catch (_: Exception) { }
+            try { onBurstPlayed(confirm.seq, nowWall, pipeline, false, confirm.backlogMs, measuredSpeed ?: 0.0) } catch (_: Exception) { }
             return
         }
         if (nowWall - confirm.queuedAtWallMs >= CONFIRM_TIMEOUT_MS) {
@@ -721,7 +775,7 @@ class VoicePlayer(
             Log.i(TAG, "burst seq=%d arrival=%d hold=%d due=%d backlog=%d play=%d pipeline=%d est=%b (timeout)"
                 .format(confirm.seq, confirm.arrivalWallMs, confirm.holdMs,
                     confirm.dueWallMs, confirm.backlogMs, playWall, pipeline, true))
-            try { onBurstPlayed(confirm.seq, playWall, pipeline, true, confirm.backlogMs) } catch (_: Exception) { }
+            try { onBurstPlayed(confirm.seq, playWall, pipeline, true, confirm.backlogMs, measuredSpeed ?: 0.0) } catch (_: Exception) { }
         }
     }
 
@@ -831,16 +885,29 @@ class VoicePlayer(
 
     /**
      * v1.0.19 — TIME-STRETCH catch-up. The service pushes the
-     * tracker's target speed (1.0–1.5x) here; the player loop
+     * tracker's target speed (1.0–1.35x) here; the player loop
      * applies it via [applyPendingSpeed]. setPlaybackParams is
      * Sonic inside the framework (faster, same pitch). If the
      * device does not support it, the call throws: the player
-     * then stays at 1.0x forever ([stretchSupported] = false) and
-     * the tracker falls back to dropping late words. Never throws.
+     * then stays at 1.0x for THIS track ([stretchSupported] =
+     * false) and the tracker falls back to dropping late words.
+     * v1.0.24 — trần 1,35× (was 1,5×: user 12:11 "Giọng bị méo
+     * khi bắt kịp"). Khi stretch không được hỗ trợ thì KHÔNG
+     * return im lặng nữa: log cảnh báo một lần/track (service
+     * đọc [isStretchSupported] để hiện lên HUD thay vì để HUD
+     * in target 1,35× trong khi giọng chạy 1,0×).
+     * Never throws.
      */
     fun setPlaybackSpeed(speed: Double) {
-        if (!stretchSupported) return
-        pendingSpeed = speed.coerceIn(1.0, 1.5)
+        if (!stretchSupported) {
+            if (!stretchUnsupportedLogged) {
+                stretchUnsupportedLogged = true
+                Log.w(TAG, "setPlaybackSpeed(%.2f) ignored: stretch unsupported on this device, voice runs at 1.0x (tracker target is NOT the applied speed)"
+                    .format(speed))
+            }
+            return
+        }
+        pendingSpeed = speed.coerceIn(1.0, 1.35)
     }
 
     /** Current applied stretch speed (1.0 when unsupported). */
@@ -852,7 +919,13 @@ class VoicePlayer(
     /** v1.0.19 — apply [pendingSpeed] to the live track (player
      * thread only). A rebuild resets the speed to 1.0: re-apply
      * the pending value after a rebuild too (buildTrack calls
-     * this once via the loop's first tick). */
+     * this once via the loop's first tick).
+     *
+     * v1.0.24 — READBACK: sau setSpeed thành công, đọc lại
+     * track.playbackParams.speed và lưu vào [appliedSpeedReadback];
+     * lệch >0,02 thì log cảnh báo + [appliedSpeedMismatch]. Đây
+     * là nửa đầu của thiết bị đo tốc độ thật (nửa sau là độ dốc
+     * playhead trong [samplePlayheadForSpeed]). */
     private fun applyPendingSpeed() {
         val want = pendingSpeed
         if (want == currentSpeed) return
@@ -865,15 +938,70 @@ class VoicePlayer(
         try {
             track.playbackParams = PlaybackParams().setSpeed(want.toFloat())
             currentSpeed = want
-            Log.i(TAG, "playback speed -> %.2fx".format(want))
+            val readback = try {
+                track.playbackParams.speed.toDouble()
+            } catch (_: Exception) {
+                want
+            }
+            appliedSpeedReadback = readback
+            appliedSpeedMismatch = kotlin.math.abs(readback - want) > 0.02
+            if (appliedSpeedMismatch) {
+                Log.w(TAG, "playback speed -> target %.2f (readback %.2f) MISMATCH — track runs slower than asked".format(want, readback))
+            } else {
+                Log.i(TAG, "playback speed -> %.2f (readback %.2f)".format(want, readback))
+            }
         } catch (e: Exception) {
             Log.w(TAG, "setPlaybackParams(%.2f) unsupported on this device, staying at 1.0x".format(want), e)
             stretchSupported = false
+            stretchUnsupportedLogged = true
             pendingSpeed = 1.0
             currentSpeed = 1.0
+            appliedSpeedReadback = 1.0
+            appliedSpeedMismatch = false
             try {
                 track.playbackParams = PlaybackParams().setSpeed(1.0f)
             } catch (_: Exception) { }
+        }
+    }
+
+    /**
+     * v1.0.24 — TỐC ĐỘ THẬT BẰNG ĐỘ DỐC PLAYHEAD (port từ
+     * v1.0.23): lấy mẫu readPlayhead() mỗi vòng lặp player
+     * (throttle 50 ms), giữ cửa sổ 2 s; tốc độ thật =
+     * (dFrames/dWall)/24000. framePosition đếm frame ĐẦU RA sau
+     * stretch nên độ dốc chính là tốc độ áp dụng thật — không phụ
+     * thuộc công thức ánh xạ input/output như confirmPlayStart.
+     * Khi track đứng yên (không phát) thì dFrames = 0 → null.
+     * Chạy cả khi speed != 1.0 (khác confirmPlayStart, vốn bỏ poll
+     * khi stretch bật vì sợ check firstFrame fire sớm).
+     */
+    private fun samplePlayheadForSpeed() {
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastSpeedSampleAtMs < 50L) return
+        lastSpeedSampleAtMs = nowMs
+        val head = try { readPlayhead() } catch (_: Exception) { null } ?: return
+        val framePos = head.first
+        val wallMs = head.second
+        synchronized(speedSamples) {
+            speedSamples.addLast(wallMs to framePos)
+            while (speedSamples.isNotEmpty() &&
+                wallMs - speedSamples.first().first > 2000L
+            ) {
+                speedSamples.removeFirst()
+            }
+            while (speedSamples.size > 60) speedSamples.removeFirst()
+            val first = speedSamples.firstOrNull()
+            val last = speedSamples.lastOrNull()
+            if (first != null && last != null) {
+                val dWall = last.first - first.first
+                val dFrames = last.second - first.second
+                measuredSpeedValue = if (dWall >= 500L && dFrames > 0L) {
+                    ((dFrames / 24000.0) / (dWall / 1000.0))
+                        .coerceIn(0.5, 2.0)
+                } else {
+                    null
+                }
+            }
         }
     }
 

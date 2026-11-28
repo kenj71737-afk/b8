@@ -79,20 +79,33 @@ class LatencyEma(
      * below the deadband — except the creep (v1.0.14): when the
      * deadband would trap D at the clamp, D crawls [creepMs] toward
      * the target instead of freezing.
+     *
+     * v1.0.24 Fix B (sim1030/1031 — the r=1.40 explosion): an upward
+     * D jump is capped at +[creepMs] (250 ms) per accepted sample,
+     * the same as the downward creep. A wrong S-b trial ref used to
+     * jack D +1600 ms in ~15 s (5161 → 6758) because correct ~4.5 s
+     * slices were D-check-rejected while wrong ~6.5 s slices fed the
+     * EMA — the uncapped jump turned a measurement error into a hold
+     * jack (562 → 2399) and a 1940 ms end-burst. The EMA state still
+     * updates fully; only the returned D is rate-limited. Downward
+     * big jumps stay instant (the EMA target already fell). The
+     * upward creep below the deadband is dropped, like the sim's
+     * LatencyEma31 (only the downward creep remains): D rises only
+     * through the capped jump path, never by creep.
      */
     fun sample(latencyMs: Long, currentDelayMs: Long, deadbandMs: Long = 500L): Int? {
         val sample = latencyMs.coerceIn(0L, maxDelayMs - marginMs)
         emaMs = if (emaMs == null) sample else (emaMs!! * 7 + sample * 3) / 10
         val newDelay = (emaMs!! + marginMs).coerceIn(minDelayMs, maxDelayMs)
+        if (newDelay - currentDelayMs >= deadbandMs) {
+            return minOf(newDelay, currentDelayMs + creepMs).toInt()
+        }
         if (kotlin.math.abs(newDelay - currentDelayMs) >= deadbandMs) {
             return newDelay.toInt()
         }
         val target = targetDelay() ?: return null
         if (target < currentDelayMs) {
             return maxOf(target, currentDelayMs - creepMs).toInt()
-        }
-        if (target > currentDelayMs) {
-            return minOf(target, currentDelayMs + creepMs).toInt()
         }
         return null
     }

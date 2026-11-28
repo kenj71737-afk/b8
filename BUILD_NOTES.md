@@ -1,9 +1,178 @@
+# DubLive v1.0.24 — BƯỚC 3 XONG: PORT B+C3+D+TB + THIẾT BỊ ĐO TỐC ĐỘ THẬT SANG KOTLIN (28/11/2026 ~16:30 VN)
+
+**Bước 3 XONG.** Ship config B+C3+D+TB (KHÔNG Fix A), cap 1,35×, prompt ngắn gọn r=1,35 — đã port đầy đủ sang Kotlin, kiểm chứng bằng đọc kỹ (không có kotlinc local; build Actions sẽ là kiểm chứng biên dịch — coi chừng smart-cast, lỗi build-1 của v1.0.22 là `rec.latTx`). **Bước 5 (build/no-build) là bước còn lại — chờ parent/user chốt trên gate seed-28 PASS + hồi quy không tụt (so cùng cap).** Tham chiếu diff v1.0.23: file `/tmp/VoicePlayer23.kt`, `/tmp/DubbingService23.kt`, `/tmp/DubDelayTracker23.kt` (lấy từ GitHub commit `0caeb1b7`).
+
+## Đã sửa — file nào, cái gì
+- **`LatencyEma.kt` — Fix B:** `sample()` kẹp chiều tăng ≥500 ms ở +250 ms (`minOf(newDelay, currentDelayMs + creepMs)`), chiều giảm lớn vẫn nhảy tức thì, bỏ nhánh creep chiều lên. Y hệt sim `LatencyEma31`.
+- **`DubDelayTracker.kt`:**
+  - `MAX_STRETCH_SPEED` 1,5 → **1,35** (noteLevel kẹp ở `STRETCH_LEVEL_CAP` 1,25 anyway; constant mới bao cả đường error-driven, level, ratio-floor).
+  - **Fix C3:** `robustHoldMs` slew đối xứng `minOf(prev+300, maxOf(prev−300, robust))`, robust = D − `lagEstimateMs(now)` − pipeline. **MỌI return trong `onDubBurst` (11 điểm) đều qua `robustHoldMs`** — kể cả no-marker và D-check-reject (8 điểm `return lastHoldMs to null` cũ đã thay; 3 điểm marker vốn đã gọi hàm). Guard đơn điệu trong `onDubAudioArrival` (`hold = maxOf(hold, lastDueMs − nowMs)`) giữ nguyên.
+  - **Fix D:** `finalizePrevBurstEnd()` — tính cuối-burst THẬT của burst ĐÃ PHÁT trước đó tại ranh giới burst tiếp theo (từ pairing log đầy đủ: entry cuối theo `dubCumMs`, `playSliceWall = playWall + off/tốc-độ-thật`, `end = playSliceWall − sourceWall − D-lúc-phát`), gọi đầu `onDubBurst`; `armTailValveD(holdMs)` — trung vị 3 end đã hoàn thành > 2000 ms VÀ hold ≤ `dynamicMarginMs()` thì arm van CŨ 2000/1500/500 (mỗi play report 1 lần qua `vbValveUsedSeq`), gọi từ `onDubAudioArrival` ngay sau `onDubBurst` (cổng hold thấy hold sau slew). Khối arm V-c cũ (nhiễu `_vb_end_lag` + cổng tốc độ ≥1,49) đã XÓA. State xóa ở `stop()` (toàn bộ) và `resetForStall`/`resetForReconnect` (chỉ end đã hoàn thành — đo trước stall/reconnect không được arm van).
+  - **TB:** `TRIAL_BUDGET_MS = 500L`; `sbTrialStartDelayMs` latch trong `sbStartTrial` (= `delayMs` lúc trial bắt đầu), xóa ở `sbEndTrial`/`stop()`; kẹp trong `flushWindowIfDue` sau `latencyEma.sample(median, delayMs)`: nếu `sbTrialActive` thì `newDelay.coerceIn(trialStart ± 500)` trước `capDelayMs`. **TB chỉ kẹp `flushWindowIfDue`; seeding, `saCorrect`, adjust tay không kẹp** (one-time / user-initiated). Kotlin chỉ có 1 cờ trial (`sbTrialActive`; `refLagMs()` trả trial ref trong trial — như Old, KHÔNG Fix A).
+  - **Thiết bị đo tốc độ thật** (port từ v1.0.23, CHỈ ĐO): field `lastAppliedReadback`/`lastMeasuredSpeed`/`lastStretchSupported`; `noteAppliedSpeed(readback, measured, supported)` (chỉ nhận giá trị 0,5..2,0); `onBurstPlayed` thêm tham số `trueSpeed: Double = 0.0` — lưu `lastMeasuredSpeed` khi 0,5..2,0, log "applied speed mismatch" khi |true − target| > 0,05, **chia offset dub cho `(lastMeasuredSpeed ?: targetSpeed).coerceIn(1.0, 2.0)`**; HUD `speedPart` trong `diagnostics()`: "tốc độ \<target\>× (thật \<đo\>×)" + " CHÊNH!" khi lệch >0,05 + "[stretch KHÔNG hỗ trợ — kẹt 1,0×]" + "[readback X]" khi readback lệch target >0,02.
+- **`VoicePlayer.kt` — thiết bị đo (port v1.0.23, trần 1,35):**
+  - `onBurstPlayed` 5 → **6 tham số** (thêm `trueSpeed: Double`); cả 3 call site truyền `measuredSpeed ?: 0.0`.
+  - Field mới: `appliedSpeedReadback`, `appliedSpeedMismatch`, `stretchUnsupportedLogged`, `speedSamples` (ArrayDeque wall→frame), `lastSpeedSampleAtMs`, `measuredSpeedValue` + getter `measuredSpeed`/`appliedSpeed`/`isAppliedSpeedMismatch` (`isStretchSupported` đã có).
+  - `buildTrack` reset: `stretchSupported = true` (thử lại mỗi track mới — **KHÔNG còn false vĩnh viễn**: hành vi cũ "1 lần throw → kẹt 1,0× cả phiên, im lặng" là ứng viên số 1 cho số hạng ~1800 ms), `stretchUnsupportedLogged = false`, readback 1,0, mismatch false, clear `speedSamples`, `measuredSpeedValue = null`.
+  - Vòng lặp player gọi `samplePlayheadForSpeed()` mỗi vòng (throttle 50 ms, cửa sổ 2 s, `measuredSpeed = (dFrames/dWall)/24000`, null khi không phát, coerce 0,5..2,0, tối đa 60 mẫu). framePosition đếm frame ĐẦU RA sau stretch → độ dốc = tốc độ thật.
+  - `setPlaybackSpeed`: kẹp **1,35** (v1.0.23 dùng 1,25 — KHÔNG copy), khi unsupported thì log cảnh báo 1 lần/track thay vì return im lặng.
+  - `applyPendingSpeed`: **readback** `track.playbackParams.speed` ngay sau set, log "playback speed -> target X (readback Y)", warn khi lệch >0,02.
+- **`DubbingService.kt`:** ticker 1 s đẩy `tracker?.noteAppliedSpeed(vp.appliedSpeed, vp.measuredSpeed ?: 0.0, vp.isStretchSupported)` (try/catch, `Log.w` khi lỗi); lambda `onBurstPlayed` 5 → 6 tham số, forward `trueSpeed`; comment "1.5x" → 1,35x ở ticker + `onPipelineSample`.
+- **`GeminiLiveClient.kt` — prompt ngắn gọn (verbatim v1.0.23):** nhánh translate: "keep every line SHORT: cut filler words, drop politeness padding and repetitions, use short sentences, say the same meaning in fewer words" + "Every translated line must be SHORTER than the original line it replaces — aim for about three quarters of its length — so the Vietnamese voice finishes BEFORE the character's mouth stops moving. Never make a line longer than the original." Nhánh Việt: "nói lại bằng tiếng Việt tự nhiên NGẮN GỌN — bỏ từ đệm, câu ngắn, giữ nguyên nghĩa, câu tiếng Việt chỉ dài khoảng 3/4 câu gốc, không bao giờ dài hơn câu gốc — giọng lồng tiếng truyền hình ấm áp, rõ ràng, khớp đúng lúc nhân vật mở miệng và nói hết TRƯỚC KHI nhân vật ngừng mở miệng." (Mục tiêu r=1,35, cứng ≤1,40.)
+- **`app/build.gradle.kts`:** versionCode 23 → **25**, versionName "1.0.22" → **"1.0.24"**.
+
+## KHÔNG mang lại từ v1.0.23 (kiểm chứng)
+Trễ cố định 40 s — KHÔNG. Snapshot JPEG — KHÔNG. Overlay pre-roll — KHÔNG. D cố định — KHÔNG. Chờ khởi động giữ mức giây (v1.0.22). Trễ hình = canvas vẽ trực tiếp của v1.0.22. Câu hỏi chẩn đoán v1.0.23 (màn đen kẹt "0:40/0:40" hay video live ngay từ đầu?) **vẫn mở** — user chưa trả lời.
+
+## Mapping sim → Kotlin (để đối chiếu khi đọc log máy)
+| Sim | Kotlin |
+|---|---|
+| `_ref_lag` / trial refs (S-b, B-c) | `refLagMs()` / `sbTrialActive` — trial ref CÓ hiệu lực trong trial (như Old, KHÔNG Fix A) |
+| `LatencyEma.sample` (Fix B) | `LatencyEma.sample` — cùng code |
+| hold slew C3 | `robustHoldMs` (đối xứng ±300, mọi return trong `onDubBurst`) |
+| cò van D | `finalizePrevBurstEnd` + `armTailValveD` (trung vị 3 end đã hoàn thành > 2000 ms + hold ≤ margin) |
+| `_set_delay` (Fix B áp ở đây trong sim) | `flushWindowIfDue` (TB kẹp ở đây) |
+| `_vb_end_lag` (nhiễu, lúc phát) | `lastCorrectedEndLagMs` — VẪN DÙNG cho hệ số V-b ratio-floor, chỉ KHÔNG dùng làm cò van nữa |
+
+## Lưu ý tốc độ Fix B trên máy (khác sim)
+Kotlin gọi `LatencyEma.sample` **1 lần / cửa sổ 4 s** (trung vị mẫu trong cửa sổ), không phải mỗi mẫu như sim — tốc độ slew lên là +250 ms/4 s (62 ms/s) thay vì ~500 ms/s trong sim. Step recovery vẫn dư headroom lớn (32 s để leo 2 s ≪ gate 5 phút), và TB (±500) mới là ràng buộc chính trong trial. Không đổi hành vi, chỉ ghi để khỏi ngạc nhiên khi D leo chậm hơn sim.
+
+## Kiểm chứng port (28/11 ~16:30, bằng đọc — không có kotlinc local)
+- Mọi return trong `onDubBurst` (11 điểm) đều qua `robustHoldMs`; 0 `return lastHoldMs` còn sót. `robustHoldMs` định nghĩa 1 lần, dùng `lagEstimateMs(now)` như gốc (chỉ đổi slew thành đối xứng).
+- `stop()` xóa toàn bộ state mới (readback/measured/supported, fxd*, sbTrialStartDelayMs, vbValveUsedSeq); `resetForStall`/`resetForReconnect` xóa `fxdCompletedEnds/Done`.
+- Không còn cổng tốc độ van cũ (`MAX_STRETCH_SPEED - 0.01` = 0 kết quả); `MAX_STRETCH_SPEED = 1.35` duy nhất.
+- `onBurstPlayed` 6 tham số: chỉ 3 file dùng (VoicePlayer/DubbingService/DubDelayTracker), không còn caller 5 tham số nào khác; `noteAppliedSpeed` định nghĩa 1 + gọi 1.
+- Lỗi type đã sửa: `fxdCompletedDone.remove(fxdCompletedDone.minOrNull())` — `minOrNull()` trả `Long?`, `remove` cần `Long` → dùng `val oldest = minOrNull() ?: break`.
+- Brace cân bằng cả 5 file đã sửa (DubDelayTracker 327/327, VoicePlayer 177/177, DubbingService 619/619, GeminiLiveClient 89/89, LatencyEma 9/9). Prompt nối chuỗi kiểm tra nguyên vẹn cả 2 nhánh.
+- **Rủi ro còn lại:** không biên dịch local được (kotlinc không có; Android SDK stubs thiếu) — build Actions lần 1 là kiểm chứng biên dịch thực. Coi chừng smart-cast trên `var` nullable (v1.0.22 build-1 từng fail `rec.latTx`) — code mới dùng local val sau `?: return` / null-check ở mọi chỗ nhạy cảm (`finalizePrevBurstEnd`, `armTailValveD`, `speedPart`, TB clamp).
+
+## Quyết định build (parent/user — bước 5)
+Port xong, gate sim đã chốt (seed-28 PASS 10/10 + nhạy r + step recovery; hồi quy không tụt so cùng cap; hạn chế đã biết: seed 29/30 + sim1018-drop ở cap 1,35). **Nếu chốt build:** versionCode 25 / 1.0.24, tag `v1.0.24-dublive`, tối đa 3 lần build qua GitHub Actions nhánh `dublive-v1` repo `kenj71737-afk/b8`, verify aapt2 + dex + MD5, giao APK vào `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.24.apk` + symlink `~/workspace/your_files/DubLive-v1.0.24.apk`.
+
+# DubLive v1.0.24 — SHIP CONFIG: B+C3+D+TB, cap 1,35× — GATE SEED-28 PASS, HỒI QUY KHÔNG TỤT (28/11/2026 ~15:40 VN)
+
+User chốt 28/11 14:19: **"Sửa cò van + đo tốc độ thật, rồi thử lại 1,35×"**. Nền v1.0.22. Bước 1 (trace sim1030) + bước 2 (sửa cò van sim1031) XONG. **Bước 4 (sim gate) XONG — ship config là B+C3+D+TB (KHÔNG Fix A), cap 1,35×.** Bước 3 (port thiết bị đo tốc độ thật + các fix sang Kotlin) XONG (xem mục trên, 28/11 ~16:30). Bước 5 (build/no-build) đang chờ parent/user chốt trên gate này. File bằng chứng: sim1032.py, sim1033.py (+sim1033b.py), sim1034.py, sim1035.py, sim1036.py, sim1037.py, sim1038.py (cap control), regone31/34/34nv/36/37/38.py (+ các file *_k*.txt).
+
+## Ship config — B + C3 + D + TB (KHÔNG A), cap 1,35×, van CŨ 2000/1500/500
+- **B: slew D chiều lên +250 ms/mẫu** (`LatencyEma.sample`: EMA state vẫn update đủ, chỉ giá trị D trả về bị giới hạn tăng).
+- **C3: hold slew đối xứng ±300 ms/burst** — hold tiến về robust = D − lag_est − pipe tối đa ±300 ms mỗi burst, MỌI burst (marker hay không). THAY THẾ C1 (kẹp cứng hold ≤ margin) + C2 (chỉ decay, không tăng) của sim1031.
+- **D: cò van sửa** — van chỉ nổ khi trung vị cuối-burst THẬT của 3 burst ĐÃ HOÀN THÀNH > 2000 ms VÀ hold ≤ margin; giữ sức van CŨ 2000/1500/500. Van là lưới an toàn, không phải vòng điều khiển.
+- **TB: trial budget** — trong lúc trial (S-b hoặc B-c) D chỉ được lệch tối đa ±500 ms so với giá trị lúc trial bắt đầu (EMA state vẫn update đủ; nới khi adopt).
+- **KHÔNG Fix A** (trial ref không có hiệu lực trước adopt) — xem dưới: Fix A phá hồi phục bước lag (step recovery), lỗi nghiêm trọng hơn vụ nổ nó sửa.
+
+## Vì sao Fix A bị LOẠI (sim1032 + sim1033 — bằng chứng, không phải ý kiến)
+- sim1032 (ABCD): gate seed-28 PASS toàn bộ (filmA/dense/choppy r=1,35 + lag 7,8: 74–292 ms, 0,0% bỏ; r=1,40: 290–353 ms; r=1,45: 188–490 ms, van nổ 3 lần đầu tiên có ích). NHƯNG **step recovery FAIL**: bước lag +2000 ms lúc t=120 s, Old hồi <500 ms ở phút 5, ABCD KHÔNG hồi tới phút 9 (trung vị cuối-burst phút 5–9: 1655→2475 ms).
+- Cơ chế (sim1033b đo trên Old): hồi phục đến từ ADOPTION — trial 1 (180 s, ref 4331→7138) bị reject nhưng "mồi" trial 2 (289 s, ref 3976→7055) ADOPT (max_run 5, med_cand 570) → ref nhảy ~6604, D nhảy 7353, hồi ở phút 5. Fix A chặn trial ref có hiệu lực trong trial → trial 1 không mồi được trial 2 → cả hai đều reject → D không bao giờ lên. Trial ref có hiệu lực TRONG trial là một phần của đường hồi phục, không thể bỏ đơn giản.
+- **Fix A3 (trial ref chỉ có hiệu lực nếu trung vị 8 neo tx gần nhất trong 1000 ms) — BÁC.** Tiền đề sai: neo tx KHÔNG nhảy theo bước lag (lat_tx = arrival − start_est, start_est dịch cùng arrival → lat_tx bất biến ~3,3–4,7 s suốt 9 phút sau bước). Step vẫn FAIL; vụ nổ vẫn sửa (290 ms). A3 chết, đừng hồi sinh ý tưởng corroboration bằng tx.
+- **Fix D2 (van chỉ nổ khi |D − lag_est| ≤ 1500 ms) — BÁC, vô dụng.** |D − lag_est| trung vị ~787–826 ms CẢ ở seed 29/30 (lag_est bám D vào mode sai) — cổng không bao giờ chặn. Bỏ D2.
+
+## sim1034 — Bỏ Fix A, chỉ giữ B+C+D: vụ nổ vẫn sửa, step recovery hồi (28/11 ~15:20)
+- BCD (B+C+D, KHÔNG A): filmA r=1,40 seed 28: **357 ms / 0,2%** (Old 1940, ABCD 353) — vụ nổ sửa bằng kẹp hold + slew D, không cần Fix A. Step recovery **PASS** (như Old). r=1,35 control: 370 ms / 0,0%.
+- TB (BCD + trial budget ±500): **y hệt BCD mọi con số** (357/370 ms) — budget không đổi cuối-burst (kẹp hold đã bảo vệ), NHƯNG giới hạn độ lệch trễ hình D trong trial ở +500 ms (D max 5510 vs BCD 5760 vs Old 6758). TB là ship candidate (an toàn hơn cho mắt trên máy, giá 0 ms trong sim).
+- Seed 29/30 (lượt dài): BCD/TB filmA r=1,35: 3033/3322 ms (ABCD 2515/2494, Old r=1,40: 2691/3014) — tệ hơn ABCD ~0,5 s vì 1 trial adopt sai (sbT 3/1 vs ABCD 3/0). Tất cả đều FAIL (neo seed sai +1,8–1,9 s, xem dưới); chênh lệch ~0,5 s là nhiễu trong vùng neo vỡ, không phải tín hiệu chọn config.
+- Lưu ý metric: `_d_max31` = 8000 ở mọi run là ARTIFACT seeding t=0 (chunk dub đầu tới ~7,5 s sau session start → nd = min(el+margin, 8000)); D max thật đọc ở dòng "D range" của run (BCD r=1,40: 5760; TB: 5510).
+
+## sim1035 — FINAL GATE cho TB (28/11 ~15:25, cap 1,35)
+- **G seed 28 r=1,35 — PASS 4/4:** filmA lag4,6 **370 ms / 0,0%**, dense **288 / 0,0%**, choppy lag4,5 **174 / 0,0%**, filmA lag7,8 **74 / 0,0%** (B2 fail ở đây với 4,2% bỏ — TB sửa hoàn toàn, van 0 lần).
+- **S nhạy r seed 28 — PASS 6/6:** r=1,40: filmA 357/0,2% (van 2×/1000 ms), dense 347/0,2%, choppy 194/0,0%; r=1,45: filmA 411/0,3% (van 5×/2500 ms), dense 433/0,0%, choppy 188/0,0%. **Không còn vụ nổ ở bất kỳ r nào.**
+- **M seed 29/30 — FAIL cuối-burst (~2,8–3,3 s) cho MỌI config kể cả Old** (xem dưới). TB dense s29 r=1,35 bỏ 2,2% (vượt nhẹ mốc 2% — van nổ 20×/10 s trên neo vỡ, mất chữ thuần, không sửa được cuối-burst).
+- **R step recovery: OLD PASS / TB PASS.**
+
+## sim1036 — Fix C3 thay C1+C2: gate seed-28 PASS, tốt hơn ở control (28/11 ~15:30)
+- **G seed 28 r=1,35 — PASS 4/4:** filmA **213 ms / 0,0%** (TB 370), dense **323 / 0,0%**, choppy **174 / 0,0%**, filmA lag7,8 **173 / 0,0%**. holdMax 900–1772 (được phép lớn hơn TB, theo thiết kế).
+- **S seed 28 — PASS 6/6:** r=1,40: filmA 490/0,2%, dense 436/0,2%, choppy 194/0,0%; r=1,45: filmA 530/0,3%, dense 568/0,0%, choppy 188/0,0%. Hơi tệ hơn TB ở r cao (hold được tăng +300/burst) nhưng đều ≪1000 ms.
+- **M seed 29/30:** y hệt TB (2772–3322 ms) — neo seed vỡ chi phối. **R step recovery: OLD PASS / C3 PASS.**
+
+## Hồi quy — KẾT LUẬN ĐÃ ĐẢO NGƯỢC 2 LẦN, ĐÃ CHỐT BẰNG CONTROL (regone34/34nv/36/37/38)
+- **Lần 1 (sai):** regone34 (TB, valve ON): v6 1/3, sim1018 0/3, bỏ NEW 16,0/16,2/19,0% vs OLD 8,3/7,7/10,3% — tưởng là fix gây hồi quy (như vòng B).
+- **Ablation đơn (đều KHÔNG đổi bỏ):** valve OFF 15,9/16,0/19,0% (van vô tội); minus-B 16,2/16,2/19,2%; minus-C3 16,3/15,6/17,3%; minus-TB 16,2/16,0/20,5%; double ablation (mBmC3/mBmTB/mC3mTB) 15,6–20,5%. Không một fix nào — kể cả cặp fix nào — gây ra bỏ tăng.
+- **Lần 2 (đúng): regone38 CAP CONTROL — winner v1.0.22 + cap 1,35, KHÔNG fix nào: bỏ 16,3/16,0/18,9% — Y HỆT mọi biến thể fix.** Pure winner ở cap 1,5: 9,5/6,8/8,0%. **Bỏ tăng gấp đôi là 100% HIỆU ỨNG TRẦN (cap 1,35 < r ~1,4–1,5 của thế giới sim1018 → dub không kịp → backlog → chunk stale), 0% do fix.** Mọi fix được minh oan hoàn toàn.
+- **Verdict hồi quy (so sánh cùng cap — mới là so sánh đúng):**
+  - v6: C3 **1/3** = winner cap-1,5 1/3 = cap-control 1/3. KHÔNG TỤT. (Chi tiết: C3 line-start k=0: 364 ms — tốt nhất trong 3; k=1: 320 — tốt nhất; k=2: 843 vs control/winner 689 — tệ hơn +154 ms ở 1 tiêu chí phụ; pairs k=1/k=2 fail cho cả 3 config như nhau.)
+  - sim1018: mốc "NEW ≤ OLD" fail cho BẤT KỲ tracker nào ở cap 1,35 (kể cả control không fix) — mốc đó được đặt bởi OLD thời cap 1,5, không đạt được ở cap 1,35 theo cấu tạo. So cùng cap (C3 vs control): bỏ 16,2/16,0/20,5% vs 16,3/16,0/18,9% — KHÔNG TỤT do fix (k=2 +1,6pp, trong nhiễu). **Chất lượng đồng bộ của C3 TỐT HƠN control ở mọi k:** line-start 1341/210/429 ms vs 2822/332/486 ms; pairs 26/24/21 vs 16/24/21 (k=0: pairs 26 vs 16, line-start 1341 vs 2822 — C3 tốt hơn rõ).
+  - **Giá của trần 1,35× (user yêu cầu — 1,5× méo giọng):** trong thế giới sim1018 (khắc nghiệt hơn phim thật — OLD ở cap 1,5 đã bỏ 8–10%), mọi tracker ở cap 1,35 bỏ ~16–19%. Trong các thế giới gate mô phỏng phim user (filmA/dense/choppy, r=1,35–1,45), C3 bỏ 0,0–0,3%. Đây là giá của trần, không phải hồi quy của fix — báo cáo thẳng, không giấu.
+- Lưu ý: bỏ C3 hoàn toàn (mC3) làm v6 tụt 1/3 → 0/3 (k=0 fail) — C3 CẦN THIẾT cho v6, không phải trang trí.
+
+## Hạn chế ĐÃ BIẾT còn lại (không giấu — quyết định build dựa trên đó)
+1. **Seed 29/30 lượt dài FAIL cuối-burst (~2,8–3,3 s) cho MỌI config kể cả Old.** Nguyên nhân: Sa2 SEED sai +1,8–1,9 s (seed 29: seed 6367, err +1813 ms, lag thật 4452; seed 30: seed 6482, err +1928 ms; nhóm chọn (1140, 1831, 40.0), 2 ứng viên). D kẹt ~7,4–8,0 s. Không trial/valve/hold nào sửa được seed sai — cần sửa SEED (multi-hypothesis seeding / kiểm chứng seed bằng tx), là việc riêng ngoài vòng này. Phim user là lượt dài — rủi ro này là thật trên máy.
+2. **Van nổ vô ích trên neo vỡ:** seed 29/30 van nổ 7–20× (3,5–10 s bỏ, 0,7–2,2%) mà cuối-burst không cải thiện (trễ là cấu trúc, không phải backlog). Van giữ BẬT (lưới an toàn cho backlog thoáng qua >2 s; lợi ích trên máy chưa đo được trong sim; tắt van chỉ là 1 cờ nếu thử máy thấy mất chữ).
+3. **Cổng hold-gate của van (D) không chặn được trong chuỗi C3** (van đọc hold SAU kẹp C1/C2 — luôn ≤ margin — trước khi C3 sửa hold). Wart nhỏ, không phải driver (van ON = valve OFF trong hồi quy).
+4. **Slice-play p90 vẫn ~2,1–2,4 s** ở mọi run — số hạng ~1800 ms chưa giải thích; bước 3 (đo tốc độ thật trên máy) xử lý.
+
+## Quyết định build (parent/user — dựa trên gate trên)
+- Seed-28 PASS toàn bộ (10/10 run gate + nhạy r + step recovery). Hồi quy không tụt (so cùng cap). Ship config B+C3+D+TB, cap 1,35×, van Fix D (OLD strength). Seed 29/30 + sim1018-drop là hạn chế đã biết của trần 1,35× và neo Sa2, không phải hồi quy mới — ghi rõ khi giao, không claim pass đa seed.
+- Bước tiếp theo: (3) port B/C3/D/TB + thiết bị đo tốc độ thật sang Kotlin; (4) build v1.0.24 (versionCode 25, tag v1.0.24-dublive, tối đa 3 lần build) NẾU parent chốt sau khi xem gate này.
+
+# DubLive v1.0.24 — VÒNG MỚI: SIM1030 TRACE VỤ NỔ r=1,40 — ĐÃ GIẢI THÍCH ĐƯỢC (28/11/2026 ~14:40 VN)
+
+User chốt 28/11 14:19: **"Sửa cò van + đo tốc độ thật, rồi thử lại 1,35×"**. Nền v1.0.22. Bước 1 (trace) XONG — vụ nổ đã có lời giải bằng chứng cứ, không phải đoán. File: sim1030.py (+sim1030_trace_run.txt), sim1030c.py (D spike), sim1030d.py (D-check inversion).
+
+## Kết luận trace — vụ nổ r=1,40 KHÔNG phải thâm hụt xả, KHÔNG phải van, KHÔNG phải hàng đợi
+Chuỗi nhân quả đầy đủ (T2 filmA r=1,40, seed 20261128, van CHẾT — 0% bỏ, backlog ~0, 0 chunk stale):
+1. **58,2 s: S-b trial nổ.** Trung vị 3 burst S-b gần nhất = **6477 ms** vs ref 4148 (lệch +2329 > ngưỡng trial). 3 trung vị S-b ~+2 s do neo lượt sai ở burst 12–14.
+2. **Trong trial (58–75 s), `_ref_lag()` trả về TRIAL ref 6477** (sim1025:372) → `_d_based_lag()` = 6477 → **D-check lát cắt ĐẢO NGƯỢC**: lát đúng ~4,5 s bị LOẠI (|4500−6477| = 1977 > 1500), lát sai ~6,5 s được NHẬN (|6500−6477| = 23).
+3. **Lát 6,5 s vào EMA 0,3 → D nhảy tức thì (không có slew lên): 5161 → 5895 (+734, 65,3 s) → 6145 → 6758 (+613, 73,3 s).** Chiều xuống chỉ creep 250/sample.
+4. **74,8 s: trial bị REJECT đúng** (trung vị trial lệch trial-ref 2396 ms; 1 trial / 0 adopt). Ref về 4148 — nhưng D kẹt ở 6758 (chỉ creep xuống).
+5. **77,8 s burst 21 (có marker): robust = D − lag_est − pipe = 6758 − 4148 − 211 = 2399 → hold bị jack 562 → 2399.**
+6. **Hold chỉ decay 300 ms / burst CÓ MARKER; 155/175 burst không marker** → hold 2399 (phút 1–2) → 2099 (phút 3–4) → 1499 → 899 → 641 (phút 7). Cuối-burst ≈ hold − ~610 ms → trueEnd trung vị 1597–1964 ms phút 1–5, p90 **1928–1964 ms → GATE FAIL**.
+7. **Vì sao r=1,40 mà r=1,35/1,47 không nổ: sự kiện rời rạc** — 3 trung vị S-b tụ lại ở +2 s là xổ số lấy mẫu, phụ thuộc pattern tới chunk dub theo r. T1/T3/T6: không trial → không D spike → pass (317/463/202 ms). T4 dense r=1,40: trial + jack Y HỆT (cùng timestamp, D 6783, hold 491→2292) → fail 1662 ms. **Câu chuyện "thâm hụt 0,05 nổ, 0,12 không nổ" CHẾT: không có backlog, không có drain.**
+8. **Van STRONG (T5) chỉ thêm mất chữ:** cùng cuối-burst 1892 ms + **46,8 s bỏ (6,2%)**. Van không gây ra cũng không chữa được vụ nổ — vì nguyên nhân là hold, không phải đuôi burst.
+9. **Mong manh nền:** burst 3 ở phút 0 có robust 1566–1988 ở MỌI r (lagEst tụt thoáng qua ~3,2–3,4 s) — chỉ lành vì burst 3 không có marker. Hệ thống cách một lần trùng hợp là jack hold ở bất kỳ r nào.
+
+## Sửa cụ thể (từ trace — làm ở sim1031 trước, rồi port sang Kotlin)
+- **A (gốc): trial ref KHÔNG được có hiệu lực trước khi adopt.** `_ref_lag()`/`_d_based_lag()` trả ref cụm ĐÃ THIẾT LẬP trong lúc trial; trial ref chỉ dùng để chấm trial. Một dòng ngữ nghĩa — giết đảo ngược D-check. (Trial vẫn chạy, vẫn bị reject đúng như cũ.)
+- **B (phòng thủ): slew D chiều lên** — giới hạn D tăng mỗi mẫu nhận (vd +250 ms/mẫu như chiều xuống) trong `LatencyEma.sample`.
+- **C (phòng thủ): kẹp hold + decay mọi burst** — kẹp robust/hold ≤ dynamic_margin (~1000 ms); chạy slew decay 300 ms ở MỌI burst, không chỉ burst có marker (lag_est đã được guard ±1000 của d_based).
+- **D (cò van, bước 2): van chỉ nổ khi (a) trung vị cuối-burst THẬT của 3 burst ĐÃ HOÀN THÀNH > ngưỡng VÀ (b) hold ≤ margin** (trễ là vấn đề hold thì xả đuôi chỉ mất chữ, không sửa được gì); giữ sức van CŨ 2000/1500/500. Van giữ vai trò lưới an toàn, tỉ lệ nổ kỳ vọng ~0 như v1.0.22. Ablation: cap 1,35 + van sửa cò vs cap 1,35 + van cũ — cuối-burst y hệt, bỏ ≤ van cũ.
+
+## sim1031 — SỬA A/B/C/D KIỂM CHỨNG XONG (28/11 ~15:00 VN, seed 20261128, cap 1,35)
+File sim1031.py (+sim1031_run.txt). Cuối-burst p90 TRUE steady / bỏ audio / van:
+- filmA r=1,40: Old **1940 ms / 0,0%** → **A 460** → AC 387 → **ABC 353** → **ABCD 353 ms / 0,0%, van 0 lần**. Strong: 1928 ms / 6,2% (41 lần / 46,8 s).
+- dense r=1,40: Old 1598 → A 363 → **ABCD 290 ms / 0,0%**.
+- filmA r=1,35: Old 209 → ABCD 200 ms / 0,0% (không tụt). Choppy r=1,40: Old 199 → ABCD 194 ms / 0,0% (không tụt).
+- **Fix A một mình đã sửa vụ nổ (1940→460).** D max: Old 6758 → A 5572 (boundary sample vẫn vào EMA, nhưng lát slice đã bị chặn đúng) → ABC/ABCD **5260** (slew +250/mẫu; D chỉ đổi 8 lần/10 phút). Hold max: A 862 → AC/ABC/ABCD 770 (kẹp margin hoạt động; hold jack 2399 không còn xuất hiện). Trial S-b vẫn nổ 1 lần / 0 adopt ở r=1,40 — nhưng ref không nhúc nhích nữa nên không gây hại.
+- **Ablation van (D vs cũ): y hệt** — ABCD van 0 lần / 0 ms ở mọi run, cuối-burst = ABC từng mili-giây. Van sửa cò không tệ hơn van cũ (0% bỏ cả hai) và không bao giờ nổ trên nhiễu at-play (Strong nổ 41 lần cùng điều kiện). Van giữ vai trò lưới an toàn, không phải vòng điều khiển.
+- Lưu ý: slice-play p90 vẫn ~2,1–2,4 s ở mọi run kể cả ABCD (như nền) — đó là số hạng đo chưa giải thích (~1800 ms), bước 3 (thiết bị đo tốc độ thật) xử lý trên máy, không phải bằng sim.
+
+# DubLive v1.0.24 — VÒNG B SIM GATE FAIL, KHÔNG BUILD (28/11/2026 ~14:00 VN)
+
+Config B (trần 1,35× + van STRONG 1000/500/2000 không cổng tốc độ + skip-ahead 2000 ms + prompt ngắn gọn r=1,35) trên nền v1.0.22: **GATE29 FAIL — KHÔNG build v1.0.24, không commit/tag/APK nào được tạo.** Không một dòng Kotlin nào bị sửa. File bằng chứng (~/workspace/dub-live-moi/): sim1029.py (+sim1029_ship/sens/abl/step_run.txt), sim1029b.py, sim1029c.py, sim1029d.py, regone29.py (+regone29_k0/k1/k2.txt).
+
+## Kết quả gate chính (r=1,35, thế giới seed 20261128 = sim1026/1027)
+- B1 filmA r1.35 lag4.6: **PASS** — cuối-burst p90 204 ms, bỏ audio 1,3%, cặp min 14, mẫu min 109, van 10000 ms / 5 lần, skip 0, tốc độ max 1,35.
+- B2 filmA r1.35 lag7.8: **FAIL — chỉ ở bỏ audio 4,2% (>2%)**; cuối-burst p90 161 ms, van 20999 ms / 12 lần (tới 6000 ms trong 1 phút), D ghim 100% (artifact trần 8 s đã biết).
+- B3 dense r1.35 lag4.6: **PASS** — 351 ms, 1,2%, van 6000 ms / 3 lần.
+- B4 choppy r1.35 lag4.5: **PASS** — 195 ms, 0,7%, van 3369 ms / 4 lần.
+- Hồi phục (lag step +2000 ms lúc t=120 s): PASS về trung vị (về <500 ms sau 3 phút, như nền R0) NHƯNG R1 bỏ 23,4 s (2,8%) so với R0 5,5 s (0,7%) — pass mua bằng mất chữ.
+
+## Phân tích nhạy r — ĐIỂM GIẾT (prompt là chỉ dẫn mềm cho LLM, r=1,40 hoàn toàn có thể xảy ra)
+- r=1,40: filmA cuối-burst p90 **1928 ms / bỏ 6,2%** (van 41 lần / 46781 ms), dense **1437 ms / 4,9%** — FAIL NẶNG; choppy PASS (203 ms / 0,3%).
+- r=1,45: filmA 514 ms / 2,2% (bỏ vượt biên), dense 447 ms / 1,6% PASS, choppy PASS.
+- r=1,47 (prompt hỏng hẳn): filmA 483 ms / 1,1% PASS, dense 591 ms / 2,2% (bỏ vượt biên), choppy PASS.
+- **KHÔNG đơn điệu theo r: r=1,40 tệ thảm hại trong khi r=1,45/1,47 pass** — kết quả phụ thuộc quỹ đạo (trajectory/bifurcation), không phải liều lượng. Không thể ship một cấu hình mà r lệch +0,05 so với mục tiêu là vỡ.
+
+## Cơ chế — đã chứng minh bằng ablation (sim1029b/c/d)
+1. **Van STRONG không mua được gì, chỉ gây mất chữ.** Cap 1,35 + van CŨ (chết: cổng tốc độ không bao giờ nổ ở 1,35) cho cuối-burst Y HỆT van STRONG với **0% bỏ**: r=1,35 filmA 209 vs 204 ms, dense 352 vs 351, choppy 195 vs 195, lag7,8 **139 ms / 0,0%** (B2 FAIL 4,2% là HOÀN TOÀN do van). r=1,47 cũng y hệt (483/601 ms, 0%). Van MEDIUM (1500/1000/1000) cũng không cứu gì: r=1,40 vẫn FAIL (1953/1641 ms), lag7,8 vẫn 2,2%.
+2. **Van nổ trên NHIỄU ĐO, không phải trễ thật.** _vb_end_lag lúc phát (pairing log từng phần + sai số neo p90 ~1500–2500 ms) vượt ngưỡng 1000 ms trong khi cuối-burst THẬT chỉ ~200 ms. Ngay ở r=1,25 (cuối-burst thật 202 ms) van STRONG vẫn xả 10,5 s (2,1%); lag7,8 xả 32,3 s (6,4%). Ngưỡng 1000 ms nhỏ hơn nhiễu đo — van nào nổ trên số này cũng mất chữ.
+3. **Vụ nổ r=1,40 là do TRẦN, không phải van.** Van CŨ (chết) ở r=1,40 cho cùng 1940/1598 ms với 0% bỏ — van không gây ra cũng không chữa được. Thâm hụt xả 0,05×duty làm backlog nổ phút 1–5 (trung vị cuối-burst tới ~2 s) rồi tự hồi phút 7–8. Vì sao 0,05 nổ mà 0,12 (r=1,47) không nổ vẫn chưa có lời giải — cần trace phút nổ (D/hold/neo/hàng đợi), không phải đoán.
+4. **Skip-ahead: 0 lần nổ trong TẤT CẢ ~35 run.** Lệch vòng lặp lúc bắt đầu burst trong sim không bao giờ vượt 1000 ms — không kiểm chứng được bằng sim; trên máy pipeline TB 374 ms nên có thể cũng hiếm nổ. Lưới an toàn chết, không phải thành phần đóng góp.
+5. **Hồi quy (regone29, k=0/1/2): v6 1/3 (= nền; chỉ fail vạch pairs giòn, số nhỏ) — sim1018 0/3: bỏ audio 25,7% / 18,5% / 27,9% vs OLD 8,3% / 7,7% / 10,3%.** Cùng mẫu thảm họa như v1.0.23 cap125V (25,7/24,5/28,8%). Van STRONG xả hàng loạt trên thế giới stress sim1018. (k=0 ra đúng 25,7% như regone27 — trùng số, đã kiểm chứng monkeypatch chạy đúng tracker B: nền sa2sb3 cho 9,5/6,8/8,0%.)
+
+## Kiểm chứng đối chứng — seed thế giới khác 20261129 (sim1029c)
+- **Nền v1.0.22 CŨNG FAIL trên seed 29** (filmA r1,42: 3111 ms / 4,2%; dense r1,42: 3382 ms / 1,9%; sai số neo trung vị ~3–4 s, D ghim trần 8000) — thế giới lượt dài (trung vị 66 s, max 308 s) phá neo Sa2/Sb3 thành mode sai bất động. Đây là **mong manh của KIẾN TRÚC, không riêng config B** (B trên seed 29: 3350 ms, không tệ hơn nền về cuối-burst nhưng tệ hơn về bỏ: 20% vs 4,2% — lại là van nổ trên trễ ảo). Nền seed 28 tái hiện đúng (447/393 ms vs winner 501/420). Hệ quả: B chỉ được kiểm chứng trên ĐÚNG 1 seed thế giới; nội dung máy thật thay đổi (đã thấy cả lượt 54 s lẫn choppy 35 lượt/60 s) nên không được claim robust.
+
+## Hướng tiếp theo (parent quyết — KHÔNG tự build)
+1. **Cap 1,35 + KHÔNG van (van cũ/chết) + prompt r=1,35: pass gate seed-28 4/4 với 0% bỏ** (209/139/352/195 ms) — nhưng VẪN FAIL r=1,40 (1940/1598 ms). Chỉ ship được nếu (a) prompt giữ r ≤ ~1,35 đáng tin VÀ (b) vụ nổ r=1,40 được hiểu/sửa. Cần sim1030 trace phút nổ, không phải thêm van.
+2. **Sửa cò nổ của van, đừng tăng sức van.** Van chỉ được nổ trên cuối-burst THẬT (hoặc trung vị nhiều burst), không nổ trên _vb_end_lag nhiễu. Van v1.0.22 (2000/1500/500) là van duy nhất chưa từng gây hồi quy.
+3. **Prompt là phần chịu tải:** r phải ≤ trần với biên an toàn; đo r thật trên máy (HUD đã hiện giọng/gốc) TRƯỚC khi chốt trần. Thiết bị đo tốc độ thật (readback + độ dốc playhead + CHÊNH!) vẫn đáng ship RIÊNG (chỉ đo, không đổi đồng bộ — như phương án D của v1.0.23) để đóng số hạng ~1800 ms; nó không bị FAIL này chặn, nhưng cần parent chốt riêng — không tự build.
+4. **Mong manh neo trên lượt dài (seed 29) cần một vòng sim riêng** (đa seed) trước khi claim robust cho bất kỳ bản ship nào.
+
 # DubLive — REVERT VỀ v1.0.22 (28/11/2026 ~13:20 VN)
 
 User quyết 13:20 ngày 28/11 (nguyên văn): "Bỏ bản 23 đi, lấy 22 tiếp tục hoàn thiện" + bấm chọn phương án B "Làm vòng mô phỏng mới (1,35× + van mạnh hơn + câu dịch ngắn gọn)".
 - Bỏ v1.0.23 (trễ cố định 40 s + prompt ngắn gọn + trần 1,25× + snapshot JPEG + thiết bị đo tốc độ thật). Lý do user 13:22 (nguyên văn): "Không hoạt động được. Hình không trễ. Chờ lâu" — user ĐÃ THỬ v1.0.23 trên máy thật: KHÔNG HOẠT ĐỘNG ĐƯỢC, HÌNH KHÔNG TRỄ, CHỜ LÂU.
 - Nền hiện tại = đúng tree của commit v1.0.22 `52f8af680f4c7d1e49f40fffbc944fbeea00ac19` (versionCode 23, versionName 1.0.22; APK đã giao 11:32 ngày 28/11, MD5 cfc728dba2eb9aa19d1f9b2e66fb4f65).
-- Commit revert: `<sẽ điền sau khi push>` (parent = cb75284dd777f3c1918626991d5e539aa315bccd; tree = tree v1.0.22 + BUILD_NOTES.md này).
+- Commit revert: `690643b02199303e6673a342bea1d1166e5b19d4` (parent = cb75284dd777f3c1918626991d5e539aa315bccd; tree = tree v1.0.22 + BUILD_NOTES.md này; tree mới c374d9285de8823e3ac72a8e8d997867bde738ad — đã kiểm chứng khớp tree v1.0.22 trừ BUILD_NOTES.md, 84 entry so khớp).
 - Code v1.0.23 vẫn còn nguyên trong lịch sử nhánh `dublive-v1` (commit `0caeb1b7...` v1.0.23 + doc commit `cb75284d...`) nên khôi phục lại được bất cứ lúc nào nếu cần. APK v1.0.23 trong thư mục goal được GIỮ nguyên làm lịch sử, không xóa. Không trigger build mới; PR #1 vẫn KHÔNG merge.
 - Tiếp theo: vòng mô phỏng B trên nền v1.0.22 — trần stretch 1,35× + van mạnh hơn + prompt dịch ngắn gọn (mục tiêu r=1,35, cứng ≤1,40). Được phép mang theo DUY NHẤT thiết bị đo tốc độ áp dụng thật từ v1.0.23 (chỉ đo, không đổi hành vi đồng bộ). Mọi thứ khác của v1.0.23 (trễ cố định 40 s, snapshot JPEG, overlay pre-roll, D cố định) KHÔNG mang theo. Vòng B TUYỆT ĐỐI không đưa lại chờ dài cố định — "chờ lâu" đã xác nhận 40 s là không chấp nhận được; mọi thiết kế trễ phải giữ chờ khởi động ở mức giây, không phải chục giây. Cơ chế trễ hình dùng lại canvas vẽ trực tiếp của v1.0.22 (đã chạy được trên máy thật 12:00) — không mang snapshot JPEG sang.
 

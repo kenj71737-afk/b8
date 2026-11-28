@@ -1,0 +1,805 @@
+CLOCK CHECK: buggy lech -135043353 ms, khung -135043346 ms, phat 0 ms (estimated) — reproduces the device screenshot exactly (suspend = 135035353 ms = 37.5 h)
+CLOCK CHECK: System.nanoTime() reference + |.| > 60 s guard rejects the garbage, accepts sane values: PASS
+
+#### OLD valve (dead) at lag7.8, r=1.35 ####
+##### D-oldV-filmA r1.35 lag7.8: 29508 vad events, 10 VAD turns (205 lines), 6031 dub chunks, 395 tx-in fragments #####
+=== D-oldV-filmA r1.35 lag7.8 ===
+D changes: 99   D range: 5000..8000 ms (max 8000)   D last 60 s: [8000, 7992.0, 7976.0, 7992.0, 8000, 8000, 7983.0, 7979.0, 7979.0, 8000, 7987.0, 8000]
+last sample: 7.3 s   samples/60s: 139   queue: 16   deferred: 0   dropped: 0/0   empty: 0
+turn pairs: total 186, last 60 s: 19   bursts: 193   hold saturated (hold=0): 16
+tc: recv 0 (no-marker 0, anchor-back 0, consist 0, ok 0, fallback 0)
+burst: recv 191 (no-marker 171, anchor-back 0, consist 11, ok 9, fallback 3)
+marker splitting: splits 0
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 0, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median -21 ms, p10 -414, p90 +211 | |err| median 153 ms, p90 423 ms, n=188
+slice-sample err vs true lag: median -23 ms, p10 -455, p90 +344, n=1171
+BURST SYNC ERROR, TRUE render (n=193): signed median -13 ms, p10 -105, p90 +139 | |err| median 84 ms, p90 141 ms, n=193
+LINE-START SYNC ERROR, ACTUAL hold (n=194): signed median -13 ms, p10 -105, p90 +139 | |err| median 84 ms, p90 141 ms, n=194
+LINE-START ACTUAL, steady regimes only (n=154): signed median -39 ms, p10 -108, p90 +141 | |err| median 91 ms, p90 143 ms, n=154
+LINE-START FRESH-HOLD (n=15): signed median -111 ms, p10 -151, p90 +1739 | |err| median 123 ms, p90 1739 ms, n=15
+SLICE-PLAY SYNC ERROR (n=1170): signed median +1104 ms, p10 +208, p90 +2167 | |err| median 1104 ms, p90 2167 ms, n=1170
+SLICE-PLAY, steady regimes only (n=923): signed median +1083 ms, p10 +198, p90 +2145 | |err| median 1083 ms, p90 2145 ms, n=923
+MEASURED pipeline (what the tracker eats): median 52 ms, p90 54 ms, max 54 ms, n=193
+TRUE pipeline (render - due): median 173 ms, p90 287 ms, max 551 ms
+backlog ahead at burst write: median 0 ms, p90 0 ms, max 0 ms
+DROPPED audio (hold queue, >500 ms overdue): 0 ms of 592353 ms (0.0%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 0 ms of 462510 ms (0.0%)
+mid-burst pipeline samples (every 20th chunk): median 172 ms, p90 282 ms, n=298
+DECOMP (steady, first slice of each played chunk): pipeline median 173 ms, hold median 115 ms, sample median 7602 ms (true lag median 7653 ms), D median 7997 ms, lag_est median 7655 ms, implied slice-play median -77 ms
+STRETCH actually used at chunk feeds: {1.0: 36, 1.1: 31, 1.2: 4, 1.25: 79, 1.248180959432204: 1, 1.35: 5177, 1.3286561898652984: 30, 1.3452103832991735: 71, 1.3132025304980646: 3, 1.3405779786802585: 23, 1.3427899961657148: 2, 1.3151539997248254: 22, 1.3151321744377658: 24, 1.3152782258951556: 10, 1.3148903596160775: 1, 1.3181834124914902: 39, 1.3179060926186261: 25, 1.3191563545773617: 36, 1.3204152313931765: 28, 1.3208091864912541: 30, 1.316804295333703: 35, 1.315265190145684: 36, 1.315884130617362: 22, 1.3159635144083912: 1, 1.318228107621838: 30, 1.3216136821225761: 31, 1.3225874522367433: 36, 1.3220874585494293: 2, 1.324170800306827: 63, 1.3244454311593246: 3, 1.2580322013221168: 34}
+LOOP lateness (busy_until - due) at feed: median 0 ms, p90 0 ms, max 249 ms, n=5965
+ratio (speech/dub): tracker 0.795 vs true 0.741   (per-turn sums: counted 618303 / dub 777636)
+burst-successor ratio measurements: 5
+slice D-check: rejected 24 samples, D-based re-anchors 0
+stretch speed distribution: {1.0: 1, 1.25: 3, 1.35: 170, 1.3286561898652984: 1, 1.3452103832991735: 1, 1.3405779786802585: 1, 1.3151539997248254: 1, 1.3155999323098069: 1, 1.3181834124914902: 1, 1.318632382074281: 1, 1.3191563545773617: 1, 1.3204152313931765: 1, 1.3208091864912541: 1, 1.318296677054238: 1, 1.315265190145684: 2, 1.318228107621838: 1, 1.3216136821225761: 1, 1.3225874522367433: 1, 1.3220874585494293: 1, 1.324170800306827: 1, 1.2580322013221168: 1}
+pipeline EMA now: 304.0 ms   dynamic margin now: 1104 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 193/205 (94%)   longest unexplained inter-burst gap: 8520.0 ms (over 157 gaps)
+VOICE CONTINUITY (render-level): lines with >= 1 rendered chunk: 194/205 (95%)   longest unexplained inter-render gap: 5096.530864197586 ms (over 5891 gaps)
+VAD/feed: turns started 10   tracker-fed speech 589760 ms   gate-rejected frames 143
+sent to Live: 589760 ms / true speech 457892 ms (129%)   total dub 592353 ms
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 0
+ratio display (dub/speech): 1.26x (true 1.35x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 168.0 ms, p90 141.0 ms (n=193); slice-play steady |err| max 3029.4814814814745 ms, p90 2145.222222222248 ms (n=923); per-burst END lateness |err| max 3029.4814814814745 ms, p90 2742.6666666665114 ms (n=193 bursts)
+D-based selection: 6 picks (21a)   split attempts: Kotlin-count 8 vs fixed-count 0 (== splits 0) (21c)
+TRANSCRIPTION ANCHOR (21b): sentences seen 392   ok 179 / no-mk 8 / cons 1 / agree 7   asrLag EMA 600 ms (calibrated from 0 short turns)
+VAD/feed: turns started 10 (1 in last 60 s)   tracker-fed speech 589760 ms (60040 ms in last 60 s)   gate rejects: start-path 17 + in-turn 143
+FIRST 60 s (restart gate): pairs 15, first sync error at 10450.0 ms, D pinned (>=7.9 s) 98% of the session
+
+KOTLIN-REPORTED vs TRUE (22, §2): 193 bursts with slice records; TRUE end lateness (chunk-level, last chunk) median 89 / p90(|.|) 138.77777777786832 / max 184.23456790155615 ms (steady-window p90(|.|) 139.11111111118225 ms); KOTLIN-FULL (same last slice, 1.0x + anchor) median 991 / p90(|.|) 1415.0 / max 6432.0; KOTLIN-AT-PLAY (partial burst, what the HUD shows) median 595 / p90(|.|) 1267.0 / max 8496.333333333314; TRUE err of the last pairing entry's audio (chunk-referenced, same D) median 89 / p90(|.|) 134.0370370370365 ms
+  bias per burst (kotlin - true), decomposed on the last pairing entry (p90 = p90 of |value|, sim convention): TOTAL median 988 / p90 1377 / max 6343 / min -961 ms = PURE 1.0x bias median 742 / p90 1036 / max 1343 / min -4231 + ANCHOR error median 327 / p90 1734 / max 5667 / min -1132 ms (pure bias is 26% / p90 29% of the burst's dub offset); anchor error over all slices median 228 / p90 593 ms; AT-PLAY minus FULL median 493 ms = the partial-burst effect; slice-level |err| p90 TRUE 137.44444444437977 ms (steady 139.64197530865204 ms, n=5960 chunks)
+PER-WINDOW (60 s): pairs [15, 18, 19, 22, 18, 18, 17, 20, 20, 19]; samples [108, 126, 138, 153, 133, 130, 135, 138, 135, 139]; tx ok [15, 17, 19, 21, 18, 18, 14, 19, 20, 18]; tx no-mk [0, 0, 0, 0, 0, 4, 2, 0, 0, 2]
+TX NO-MK REASONS (22, §3/§4): {'b-residual': 8} (a-no-group = no closed group in window; b-residual = merged-group start seconds off; c-refallback = audioAt null + marker >2500 ms)
+TX GROUPS: seen 392, open at end 1
+LAG / 12 s (22, §2): true lag median 7653 / p90 7743.333333333343 / max 7787.962962962978 ms; per-minute true-lag medians [7648, 7651, 7651, 7656, 7645, 7659, 7647, 7663, 7655, 7653]; chunks with true lag >12 s: 0, >20 s: 0; last feed sample (incl. D-check rejects) 7260 ms at 599555.3333333334 ms, D end 8000 ms (gap -740 ms); D 60 s 7990.0 / 300 s 8000 / max 8000; dropped samples LARGE (>20 s) 0, SMALL (deferred) 0, dropped slices 0; ratio display 1.26x
+STRETCH (22): ratio measurements burst-successor 5, tx-ok 150; floor median 1.35 (first 60 s 1.35, steady 1.35); mean speed used 1.35 (0% of chunks at 1.5x); corrected endLag of last burst 0 ms (kotlin-reported 0 ms); valve fires 0, valve-dropped 0 ms over 0 chunks; chase accepts 0 (runs []), chase rejects seen 0, D-reanchors 0
+
+GATE22 D-oldV-filmA r1.35 lag7.8:
+  lines with dub >= 90% (render-level)           PASS
+  max unexplained inter-render gap <= 3000 ms    FAIL
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60s >= 40 (min over windows)           PASS
+  D max <= 8000                                  PASS
+  D pinned 0% of session                         FAIL
+  combined burst unpaired fraction < 0.70        PASS
+  slice-play steady |err| median < 500 (TRUE chunk) PASS
+  slice-play steady |err| p90 < 1000 (TRUE chunk) PASS
+  per-burst END lateness p90 (TRUE chunk) < 1000 PASS
+  sync err (burst-start) max < 1000              PASS
+  sync err (burst-start) p90 < 1000              PASS
+  line-start steady |err| median < 1200          PASS
+  dropped audio steady < 5%                      PASS
+  pairs in first 60 s > 0                        PASS
+  sync measurable in first 60 s (not '--')       PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  GATE22: FAIL
+
+device-signature check D-oldV-filmA r1.35 lag7.8 (09:10 film A: D 5.3 s, last sample 7.8 s, samples/60s 8, pairs/60s 0, pairs first60 4, D pinned 0%, burst 33: 11/18/4 (ok/no-mk/cons), turns60 1, fed60 53820, gate 136/60 s, ratio 1.42x, end-late p90 2448 (n=9), slice-play p90 2098, sync max/p90 1714/1267, dropped large 10, stall 0):
+  bursts 193 over 205 lines; burst ok/no-mk/cons/fb 9/171/11/3; samples/60s 139, pairs/60s 19, pairs first 60 s 15
+  D last 8000 ms, D max 8000 ms, D pinned 98%, last sample (accepted) 7.3 s, last feed sample (incl. rejects) 7260 ms, D gap -740 ms
+  true lag median 7653 / p90 7743.333333333343 / max 7787.962962962978 ms; >12 s: 0 chunks, >20 s: 0 chunks; dropped LARGE 0, SMALL 0, slices 0; stall episodes 0
+  turns/60s 1, fed/60s 60040 ms, gate rejects/60s ~16, ratio display 1.26x; TRUE end-late p90 138.77777777786832 ms, KOTLIN-AT-PLAY end-late p90 1267.0 ms
+
+DIAG23 D-oldV-filmA r1.35 lag7.8:
+  tx lat_tx err vs TRUE lag (ok, n=179): median 3 (signed) / p90|.| 411 / max 553 ms; frac >+600 ms 0.00; frac <-600 ms 0.02
+  tx lat_tx err (R-b blocked, n=1): median 963 (signed) / p90|.| 963 ms
+  boundary-sample err vs TRUE lag (tx, n=179): median 3 (signed) / p10 -377 / p90 250 / max 553; frac |err|>1500 0.00
+  boundary-sample err vs TRUE lag (vad, n=9): median 17 (signed) / p10 -1847 / p90 37 / max 37; frac |err|>1500 0.11
+  per-minute (D med / refLag med / true-lag med): [(7943, 7350, 7648), (7991, 7553, 7651), (7999, 7762, 7651), (8000, 7776, 7656), (8000, 7754, 7645), (8000, 7775, 7659), (7997, 7740, 7647), (7995, 7800, 7663), (8000, 7896, 7655), (7992, 7828, 7653)]
+  D end 8000 vs true lag med 7653 -> |err| 347.33333333333394 ms; D pinned steady 100%; R-b blocks 1
+  tx groups: 392 seen, frags/group median 1 (1-frag 99%, >=3-frag 0%); multi-frag group span median 205 ms
+  ratio pairs n=178 (consec 30%): counted/dub median 0.850 (true world fed/dub 0.776); pause-corrected/dub (K=0.40) median 0.722; pause ms/pair median 1318; floor median 1.35 (steady 1.35); ratio display 1.26x (true 1.29x)
+  ratio display check: tracker ratio() 0.795 vs true fed/dub 0.776; tx-ok ratio measurements 150 (rf meas 150 / skipped 0)
+
+DIAG24-bootstrap D-oldV-filmA r1.35 lag7.8:
+  seed: loop=10280.0 err=2508.0370370370365 ms; corrected=7338.0 err=-416.3333333333321 ms (mode Sa2, group first/last/closed/startEst=(4162, 5178, True, 3062.0)); true lag med 7653 ms
+  cluster mode switches (unintentional, >1500 ms jumps of the established ref): 0 
+  B-c: trials 0, adopted switches 0; log []
+  first tx-anchor decisions (now, seq, dlag, best_res, lat_tx, outcome):
+    t=10568 seq=1 dlag=10280 best_res=None lat_tx=None cons/agree
+    t=12322 seq=2 dlag=7338 best_res=43.0 lat_tx=7295.0 ok
+    t=15056 seq=3 dlag=7338 best_res=403.0 lat_tx=6935.0 ok
+    t=17671 seq=4 dlag=7338 best_res=482.0 lat_tx=7820.0 ok
+    t=20679 seq=5 dlag=7338 best_res=256.0 lat_tx=7082.0 ok
+    t=23346 seq=6 dlag=7338 best_res=12.0 lat_tx=7350.0 ok
+    t=26184 seq=7 dlag=7295 best_res=291.0 lat_tx=7586.0 ok
+    t=30564 seq=8 dlag=7350 best_res=560.0 lat_tx=7910.0 ok
+    t=32782 seq=9 dlag=7350 best_res=194.0 lat_tx=7156.0 ok
+    t=35395 seq=10 dlag=7350 best_res=251.0 lat_tx=7099.0 ok
+    t=41850 seq=11 dlag=7295 best_res=185.0 lat_tx=7480.0 ok
+    t=44409 seq=12 dlag=7350 best_res=550.0 lat_tx=7900.0 ok
+
+GATE23 D-oldV-filmA r1.35 lag7.8:
+  end-p90 TRUE steady < 1000 ms                  PASS
+  sync max < 1000 ms (full session)              PASS
+  sync p90 < 1000 ms                             PASS
+  sync max < 1000 ms (steady, t>60 s)            PASS
+  D pinned 0% steady (t>60 s)                    FAIL
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60 s >= 40 (min window)                PASS
+  dropped audio steady < 5%                      PASS
+  line-start steady median < 1200 ms             PASS
+  |D end - true lag| <= 1000 ms (anti-ratchet)   PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  end-p90/|D-lag| vs REPRO                       PENDING (no REPRO yet)
+  GATE23: FAIL (strict) / FAIL (ex-cold-start sync max)
+
+GATE24-bootstrap D-oldV-filmA r1.35 lag7.8:
+  |seed - true lag| <= 600 ms (first seed)       PASS (|seed err| -416.3333333333321 ms)
+  cluster mode switches after established = 0    PASS (unintentional 0, B-c adopted 0)
+  GATE24: FAIL (gate23 strict=False)
+
+DIAG25-seed/referee D-oldV-filmA r1.35 lag7.8:
+  (no NewTracker25 instance captured)
+
+GATE25 D-oldV-filmA r1.35 lag7.8:
+  end-p90 TRUE steady < 1000 ms                        PASS
+  sync max < 1000 ms (full session)                    PASS
+  sync p90 < 1000 ms                                   PASS
+  sync max < 1000 ms (steady, t>60 s)                  PASS
+  D pinned 0% steady (t>60 s)                          FAIL (WAIVED lag7.8 cap artifact: D wants ~8.7 s)
+  pairs > 0 in EVERY 60 s window                       PASS
+  samples/60 s >= 40 (min window)                      PASS
+  dropped audio steady < 5%                            PASS
+  line-start steady median < 1200 ms                   PASS
+  |D end - true lag| <= 1000 ms ABSOLUTE (main bar)    PASS
+  |seed - true lag| <= 600 ms (first seed)             PASS
+  cluster mode switches after established = 0          PASS
+  |D end - true lag| <= REPRO (reported only)          n/a (|D-lag| 347.33333333333394 vs REPRO None)
+  GATE25: FAIL (strict=False excold=True D-pin waived lag7.8)
+
+DIAG26 D-oldV-filmA r1.35 lag7.8:
+  true lag med 7653; D end 8000 (signed err 347); last sample 7260; hold end 75.0
+  end-burst TRUE t>60s: p90 138.77777777786832 / max 184.23456790155615 / median 31.000000000029104 (n=177); first-chunk median -34.037037037021946; within-burst growth median 33.333333333343035 / p90 65.35802469128976
+  slice-play t>60s: p90 2178.0246913580195 / max 3029.4814814814745 (n=1069); sync t>60s: max 168.0 / p90 140.0 (n=177)
+  stretch: mean 1.34, frac>=1.49 0.00, ratio-floor median 1.35; valve fires 0, dropped 0 ms total, max/60s 0 ms, last/60s 0 ms
+  pairs/60s [15, 18, 19, 22, 18, 18, 17, 20, 20, 19] (mean 18.6); samples/60s [108, 126, 138, 153, 133, 130, 135, 138, 135, 139] (mean 133.5); drop steady 0.0%; dropped slices 0; Sb trials 0 adopts 0; seedErr -416.3333333333321
+  end-burst median by minute [-102, 139, 127, 57, 63, -103, 76, -95, -23, -22] (rising = backlog accumulating faster than the drain); total dub 592353 ms; drain check dense-minute: net -0.48 s/min (claim at 1.5x/1.47: +1.76 s/min)
+
+SUM29B D-oldV-filmA r1.35 lag7.8          end90t60    139  drop  0.0%  valve     0 ms /  0 fires  skip None ms / None  speedMax 1.35  pairsMin 15  Dmax 8000
+
+#### B tracker at r=1.25 (stronger prompt) ####
+##### D-B-filmA r1.25: 29508 vad events, 10 VAD turns (205 lines), 5276 dub chunks, 395 tx-in fragments #####
+=== D-B-filmA r1.25 ===
+D changes: 125   D range: 5000..5548 ms (max 5548)   D last 60 s: [5307.0, 5385.0, 5276.0, 5330.0, 5330.0, 5381.0, 5441.0, 5399.0, 5383.0, 5375.0, 5455.0, 5542.0]
+last sample: 4.5 s   samples/60s: 128   queue: 10   deferred: 0   dropped: 0/0   empty: 0
+turn pairs: total 166, last 60 s: 20   bursts: 185   hold saturated (hold=0): 0
+tc: recv 0 (no-marker 0, anchor-back 0, consist 0, ok 0, fallback 0)
+burst: recv 183 (no-marker 163, anchor-back 0, consist 10, ok 10, fallback 2)
+marker splitting: splits 0
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 0, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median -38 ms, p10 -381, p90 +196 | |err| median 144 ms, p90 385 ms, n=168
+slice-sample err vs true lag: median -40 ms, p10 -474, p90 +340, n=1030
+BURST SYNC ERROR, TRUE render (n=178): signed median +64 ms, p10 -110, p90 +208 | |err| median 103 ms, p90 215 ms, n=178
+LINE-START SYNC ERROR, ACTUAL hold (n=185): signed median +64 ms, p10 -110, p90 +225 | |err| median 109 ms, p90 227 ms, n=185
+LINE-START ACTUAL, steady regimes only (n=148): signed median +65 ms, p10 -118, p90 +231 | |err| median 115 ms, p90 233 ms, n=148
+LINE-START FRESH-HOLD (n=17): signed median -166 ms, p10 -823, p90 +1803 | |err| median 172 ms, p90 2571 ms, n=17
+SLICE-PLAY SYNC ERROR (n=1006): signed median +1113 ms, p10 +231, p90 +2094 | |err| median 1113 ms, p90 2094 ms, n=1006
+SLICE-PLAY, steady regimes only (n=797): signed median +1102 ms, p10 +227, p90 +2101 | |err| median 1102 ms, p90 2101 ms, n=797
+MEASURED pipeline (what the tracker eats): median 52 ms, p90 54 ms, max 54 ms, n=178
+TRUE pipeline (render - due): median 193 ms, p90 329 ms, max 536 ms
+backlog ahead at burst write: median 0 ms, p90 0 ms, max 0 ms
+DROPPED audio (hold queue, >500 ms overdue): 10500 ms of 520675 ms (2.0%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 8500 ms of 401900 ms (2.1%)
+mid-burst pipeline samples (every 20th chunk): median 201 ms, p90 321 ms, n=256
+DECOMP (steady, first slice of each played chunk): pipeline median 192 ms, hold median 723 ms, sample median 4323 ms (true lag median 4380 ms), D median 5326 ms, lag_est median 4358 ms, implied slice-play median -46 ms
+STRETCH actually used at chunk feeds: {1.0: 44, 1.1: 64, 1.2: 95, 1.25: 518, 1.35: 1374, 1.2515933181269288: 12, 1.326408493224203: 29, 1.2866560189202265: 11, 1.2871938893488788: 29, 1.2962962962962965: 19, 1.3070493827160479: 31, 1.3014964788732397: 9, 1.2875295834714175: 26, 1.286237617115951: 10, 1.3188103640623863: 15, 1.318888420634599: 11, 1.2863137458014535: 30, 1.3127926576994293: 15, 1.2972992646733035: 9, 1.2711328531435568: 28, 1.272854705864463: 19, 1.273943216981209: 10, 1.3288817323277404: 27, 1.288296310559196: 20, 1.3319262516705492: 24, 1.3459783233282405: 56, 1.2628406486119366: 15, 1.2772106751937031: 11, 1.3171826389173524: 19, 1.3258058624866547: 10, 1.281575515498313: 25, 1.2788505284029308: 33, 1.288325537056333: 8, 1.3403518670420698: 9, 1.3328717997897848: 11, 1.2890666419092973: 23, 1.2972740560913625: 11, 1.3225389121610673: 17, 1.3212552800835333: 9, 1.2824179343152284: 25, 1.3309486468904803: 25, 1.326010432453671: 10, 1.3256997910726864: 26, 1.2769809318245626: 18, 1.2819093928757062: 8, 1.298019497280764: 19, 1.3083021426828343: 24, 1.3125699533020794: 31, 1.2771043875957724: 5, 1.313853726290289: 21, 1.280845854239191: 20, 1.2883884176659843: 8, 1.342298137857069: 28, 1.3405530692951206: 9, 1.2867134349927336: 13, 1.2898219416539083: 9, 1.2888115248390577: 18, 1.2928790511255652: 10, 1.3230051558354399: 12, 1.3246910948718245: 11, 1.326759127485616: 27, 1.294526599702381: 14, 1.300461516014836: 10, 1.2926865839487198: 25, 1.3188261741723337: 23, 1.3198730871473394: 12, 1.2825370097523328: 13, 1.2863856935583524: 10, 1.3035030250984747: 16, 1.3041604856865647: 11, 1.3334127264503248: 21, 1.3279769487762854: 11, 1.2789865076418825: 24, 1.2844842642531484: 11, 1.3334916656285314: 20, 1.3308832339250432: 10, 1.281365573217812: 15, 1.2820392363199038: 9, 1.2978534964421782: 26, 1.301119396126534: 29, 1.349061677834914: 34, 1.3069492026502967: 49, 1.301084246862135: 20, 1.3033411752646145: 12, 1.2640533924229178: 22, 1.2690972294819287: 11, 1.3381455973857865: 14, 1.3353832525052292: 13, 1.3267385611763662: 17, 1.3306816595512279: 12, 1.270112868436937: 1, 1.2697576010100484: 13, 1.3051348458231904: 20, 1.3044788487204886: 13, 1.298700898245076: 15, 1.3003042160735525: 12, 1.2820316297235057: 10, 1.2838067690961168: 11, 1.2688767343237355: 18, 1.269362540520605: 20, 1.2685554207820715: 12, 1.3138744488727172: 20, 1.3383389918758382: 22, 1.2863589110889895: 5, 1.225158695808988: 10, 1.2905821701651878: 35, 1.3490450067874735: 36, 1.3072502536665045: 16, 1.3176900757752166: 10, 1.255502652384532: 37, 1.2954645560419806: 24, 1.302013563563103: 11, 1.3281750976862936: 28, 1.3315325670538252: 10, 1.331817721637184: 11, 1.3051714560488497: 10, 1.2928951698978008: 56, 1.2902579362364206: 19, 1.289491263927196: 8, 1.2409734632443912: 4, 1.245284388029607: 2, 1.3291710139399633: 22, 1.2534538974178733: 17, 1.2474210539334154: 2, 1.2916031303223134: 27, 1.2951503849166022: 10, 1.3401659692725247: 23, 1.2419970340174582: 1, 1.243686946623065: 12, 1.305125081786244: 35, 1.246758813228483: 8, 1.337689089339952: 54, 1.2460862651207443: 1, 1.2890384903963148: 11, 1.287882133846809: 10, 1.296289880248997: 11, 1.291862250911759: 44, 1.3071480205509458: 12, 1.3067869445262839: 10, 1.3172492206414577: 18, 1.318543108096971: 11, 1.2500284354387523: 20, 1.2502670466892665: 11, 1.316021006884393: 23, 1.2716271062078994: 28, 1.273778160993218: 9, 1.2606458243980436: 22, 1.2613854917495904: 26, 1.2614207327243672: 9, 1.247395646779572: 2, 1.2480837682354937: 3, 1.2483988619922726: 10, 1.2509580205569535: 8, 1.2483092991909808: 2, 1.2589214557087292: 31, 1.338264820530595: 24, 1.3368196265056764: 9, 1.2450286562202553: 4, 1.2454856642174061: 3, 1.2777022267318394: 28, 1.3446983575162723: 13, 1.347794466941411: 11, 1.2659481137868007: 19, 1.2672163051179586: 9, 1.2589957660255915: 30, 1.3014523902349187: 16, 1.302293745561274: 18, 1.249962003034231: 11, 1.305715171981185: 27, 1.3053897297923849: 8, 1.249650457010325: 2, 1.2516026244561724: 8, 1.299748020223206: 22, 1.2737142708215745: 19, 1.2744229972215253: 10, 1.2836405137552693: 26, 1.2833009974220375: 5, 1.2882135818953875: 13, 1.288183080820947: 11, 1.3211910298507425: 13, 1.319009296183473: 10, 1.2498708040622406: 3, 1.3011988317490728: 26, 1.3042728200141058: 11, 1.3324328454435042: 16, 1.3324140547510284: 7}
+LOOP lateness (busy_until - due) at feed: median 0 ms, p90 18 ms, max 234 ms, n=5121
+ratio (speech/dub): tracker 0.798 vs true 0.800   (per-turn sums: counted 376343 / dub 471250)
+burst-successor ratio measurements: 2
+slice D-check: rejected 50 samples, D-based re-anchors 0
+stretch speed distribution: {1.35: 54, 1.326408493224203: 1, 1.2866560189202265: 1, 1.2871938893488788: 1, 1.3070493827160479: 1, 1.2962962962962965: 1, 1.2875295834714175: 1, 1.3188103640623863: 1, 1.2863137458014535: 1, 1.3127926576994293: 1, 1.2711328531435568: 1, 1.272854705864463: 1, 1.3288817323277404: 1, 1.288296310559196: 1, 1.3319262516705492: 1, 1.3459783233282405: 2, 1.2628406486119366: 1, 1.3171826389173524: 1, 1.281575515498313: 1, 1.2788505284029308: 1, 1.3403518670420698: 1, 1.2890666419092973: 1, 1.3225389121610673: 1, 1.2824179343152284: 1, 1.3309486468904803: 1, 1.3256997910726864: 1, 1.2769809318245626: 1, 1.298019497280764: 1, 1.3083021426828343: 1, 1.3125699533020794: 1, 1.313853726290289: 1, 1.280845854239191: 1, 1.342298137857069: 1, 1.2867134349927336: 1, 1.2888115248390577: 1, 1.3230051558354399: 1, 1.326759127485616: 1, 1.294526599702381: 1, 1.2926865839487198: 1, 1.3188261741723337: 1, 1.2825370097523328: 1, 1.3035030250984747: 1, 1.3334127264503248: 1, 1.2789865076418825: 1, 1.3334916656285314: 1, 1.281365573217812: 1, 1.2978534964421782: 1, 1.301119396126534: 1, 1.349061677834914: 1, 1.3069492026502967: 2, 1.301084246862135: 1, 1.2640533924229178: 1, 1.3381455973857865: 1, 1.3267385611763662: 1, 1.3051348458231904: 1, 1.298700898245076: 1, 1.2820316297235057: 1, 1.2688767343237355: 1, 1.269362540520605: 1, 1.3138744488727172: 1, 1.3383389918758382: 1, 1.25: 8, 1.2905821701651878: 1, 1.3490450067874735: 1, 1.3072502536665045: 1, 1.255502652384532: 1, 1.2954645560419806: 1, 1.3281750976862936: 1, 1.3315325670538252: 1, 1.3051714560488497: 1, 1.2928951698978008: 3, 1.2409734632443912: 1, 1.245284388029607: 1, 1.3291710139399633: 1, 1.2534538974178733: 1, 1.2916031303223134: 1, 1.3401659692725247: 1, 1.305125081786244: 2, 1.337689089339952: 2, 1.2890384903963148: 1, 1.296289880248997: 1, 1.291862250911759: 2, 1.3071480205509458: 1, 1.3172492206414577: 1, 1.2500284354387523: 1, 1.316021006884393: 1, 1.2716271062078994: 1, 1.2606458243980436: 1, 1.2613854917495904: 1, 1.247395646779572: 1, 1.2483988619922726: 1, 1.2589214557087292: 1, 1.338264820530595: 1, 1.2450286562202553: 1, 1.2454856642174061: 1, 1.2777022267318394: 1, 1.3446983575162723: 1, 1.2659481137868007: 1, 1.2589957660255915: 1, 1.3014523902349187: 1, 1.302293745561274: 1, 1.305715171981185: 1, 1.249650457010325: 1, 1.299748020223206: 1, 1.2737142708215745: 1, 1.2836405137552693: 1, 1.2882135818953875: 1, 1.3211910298507425: 1, 1.2498708040622406: 1, 1.3011988317490728: 1, 1.3324328454435042: 1}
+pipeline EMA now: 212.0 ms   dynamic margin now: 1012 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 185/205 (90%)   longest unexplained inter-burst gap: 9919.0 ms (over 148 gaps)
+VOICE CONTINUITY (render-level): lines with >= 1 rendered chunk: 185/205 (90%)   longest unexplained inter-render gap: 8051.78793449013 ms (over 5070 gaps)
+VAD/feed: turns started 10   tracker-fed speech 589760 ms   gate-rejected frames 143
+sent to Live: 589760 ms / true speech 457892 ms (129%)   total dub 520675 ms
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 0
+ratio display (dub/speech): 1.25x (true 1.25x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 344.0 ms, p90 215.0 ms (n=178); slice-play steady |err| max 2937.5925925925767 ms, p90 2100.8735590274446 ms (n=797); per-burst END lateness |err| max 2937.5925925925767 ms, p90 2539.4444444445544 ms (n=184 bursts)
+D-based selection: 6 picks (21a)   split attempts: Kotlin-count 8 vs fixed-count 0 (== splits 0) (21c)
+TRANSCRIPTION ANCHOR (21b): sentences seen 392   ok 158 / no-mk 21 / cons 6 / agree 8   asrLag EMA 600 ms (calibrated from 0 short turns)
+VAD/feed: turns started 10 (1 in last 60 s)   tracker-fed speech 589760 ms (60040 ms in last 60 s)   gate rejects: start-path 17 + in-turn 143
+FIRST 60 s (restart gate): pairs 10, first sync error at 8020.0 ms, D pinned (>=7.9 s) 0% of the session
+
+KOTLIN-REPORTED vs TRUE (22, §2): 178 bursts with slice records; TRUE end lateness (chunk-level, last chunk) median 84 / p90(|.|) 202.33781274897046 / max 371.0740740741021 ms (steady-window p90(|.|) 202.62005345721263 ms); KOTLIN-FULL (same last slice, 1.0x + anchor) median 764 / p90(|.|) 1165.0 / max 3357.666666666686; KOTLIN-AT-PLAY (partial burst, what the HUD shows) median 430 / p90(|.|) 813.3333333333139 / max 3024.0; TRUE err of the last pairing entry's audio (chunk-referenced, same D) median 80 / p90(|.|) 205.5231920303777 ms
+  bias per burst (kotlin - true), decomposed on the last pairing entry (p90 = p90 of |value|, sim convention): TOTAL median 778 / p90 1200 / max 3445 / min -745 ms = PURE 1.0x bias median 556 / p90 1258 / max 942 / min -7359 + ANCHOR error median 289 / p90 2506 / max 8200 / min -384 ms (pure bias is 24% / p90 35% of the burst's dub offset); anchor error over all slices median 223 / p90 543 ms; AT-PLAY minus FULL median 331 ms = the partial-burst effect; slice-level |err| p90 TRUE 188.5666919889627 ms (steady 197.51851851851825 ms, n=5032 chunks)
+PER-WINDOW (60 s): pairs [10, 18, 16, 18, 15, 19, 15, 17, 18, 20]; samples [72, 127, 125, 121, 114, 122, 112, 112, 114, 128]; tx ok [9, 17, 16, 17, 15, 19, 12, 16, 18, 19]; tx no-mk [2, 3, 4, 2, 4, 1, 4, 0, 0, 1]
+TX NO-MK REASONS (22, §3/§4): {'b-residual': 20, 'a-no-closed-group': 1} (a-no-group = no closed group in window; b-residual = merged-group start seconds off; c-refallback = audioAt null + marker >2500 ms)
+TX GROUPS: seen 392, open at end 1
+LAG / 12 s (22, §2): true lag median 4379 / p90 4527.666666666686 / max 4585.0 ms; per-minute true-lag medians [4376, 4364, 4365, 4382, 4370, 4388, 4379, 4384, 4384, 4383]; chunks with true lag >12 s: 0, >20 s: 0; last feed sample (incl. D-check rejects) 4526 ms at 599791.3333333334 ms, D end 5542 ms (gap -1016 ms); D 60 s 5471.0 / 300 s 5490.0 / max 5548; dropped samples LARGE (>20 s) 0, SMALL (deferred) 0, dropped slices 0; ratio display 1.25x
+STRETCH (22): ratio measurements burst-successor 2, tx-ok 121; floor median 1.30 (first 60 s 1.35, steady 1.29); mean speed used 1.31 (0% of chunks at 1.5x); corrected endLag of last burst 317 ms (kotlin-reported 597 ms); valve fires 6, valve-dropped 10500 ms over 105 chunks; chase accepts 0 (runs []), chase rejects seen 0, D-reanchors 0
+  valve cut lines [3, 16, 94, 99, 109, 151] (dropped ms per line {3: 2000, 16: 600, 94: 2000, 99: 2000, 109: 2000, 151: 1900})
+
+GATE22 D-B-filmA r1.25:
+  lines with dub >= 90% (render-level)           PASS
+  max unexplained inter-render gap <= 3000 ms    FAIL
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60s >= 40 (min over windows)           PASS
+  D max <= 8000                                  PASS
+  D pinned 0% of session                         PASS
+  combined burst unpaired fraction < 0.70        PASS
+  slice-play steady |err| median < 500 (TRUE chunk) PASS
+  slice-play steady |err| p90 < 1000 (TRUE chunk) PASS
+  per-burst END lateness p90 (TRUE chunk) < 1000 PASS
+  sync err (burst-start) max < 1000              PASS
+  sync err (burst-start) p90 < 1000              PASS
+  line-start steady |err| median < 1200          PASS
+  dropped audio steady < 5%                      PASS
+  pairs in first 60 s > 0                        PASS
+  sync measurable in first 60 s (not '--')       PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  GATE22: FAIL
+
+device-signature check D-B-filmA r1.25 (09:10 film A: D 5.3 s, last sample 7.8 s, samples/60s 8, pairs/60s 0, pairs first60 4, D pinned 0%, burst 33: 11/18/4 (ok/no-mk/cons), turns60 1, fed60 53820, gate 136/60 s, ratio 1.42x, end-late p90 2448 (n=9), slice-play p90 2098, sync max/p90 1714/1267, dropped large 10, stall 0):
+  bursts 185 over 205 lines; burst ok/no-mk/cons/fb 10/163/10/2; samples/60s 128, pairs/60s 20, pairs first 60 s 10
+  D last 5542 ms, D max 5548 ms, D pinned 0%, last sample (accepted) 4.5 s, last feed sample (incl. rejects) 4526 ms, D gap -1016 ms
+  true lag median 4379 / p90 4527.666666666686 / max 4585.0 ms; >12 s: 0 chunks, >20 s: 0 chunks; dropped LARGE 0, SMALL 0, slices 0; stall episodes 0
+  turns/60s 1, fed/60s 60040 ms, gate rejects/60s ~16, ratio display 1.25x; TRUE end-late p90 202.33781274897046 ms, KOTLIN-AT-PLAY end-late p90 813.3333333333139 ms
+
+DIAG23 D-B-filmA r1.25:
+  tx lat_tx err vs TRUE lag (ok, n=158): median -9 (signed) / p90|.| 353 / max 461 ms; frac >+600 ms 0.00; frac <-600 ms 0.01
+  tx lat_tx err (R-b blocked, n=6): median 966 (signed) / p90|.| 1083 ms
+  boundary-sample err vs TRUE lag (tx, n=158): median -9 (signed) / p10 -341 / p90 240 / max 461; frac |err|>1500 0.00
+  boundary-sample err vs TRUE lag (vad, n=10): median 20 (signed) / p10 -60 / p90 40 / max 40; frac |err|>1500 0.10
+  per-minute (D med / refLag med / true-lag med): [(5167, 4402, 4376), (5363, 4478, 4364), (5322, 4529, 4365), (5348, 4553, 4382), (5339, 4529, 4370), (5347, 4549, 4388), (5312, 4544, 4379), (5295, 4544, 4384), (5398, 4671, 4384), (5381, 4620, 4383)]
+  D end 5542 vs true lag med 4379 -> |err| 1163.0 ms; D pinned steady 0%; R-b blocks 6
+  tx groups: 392 seen, frags/group median 1 (1-frag 99%, >=3-frag 0%); multi-frag group span median 205 ms
+  ratio pairs n=157 (consec 24%): counted/dub median 0.950 (true world fed/dub 0.882); pause-corrected/dub (K=0.40) median 0.820; pause ms/pair median 1351; floor median 1.30 (steady 1.29); ratio display 1.25x (true 1.13x)
+  ratio display check: tracker ratio() 0.798 vs true fed/dub 0.882; tx-ok ratio measurements 121 (rf meas 121 / skipped 0)
+
+DIAG24-bootstrap D-B-filmA r1.25:
+  seed: loop=7080.0 err=2511.0 ms; corrected=4138.0 err=-389.66666666666697 ms (mode Sa2, group first/last/closed/startEst=(4162, 5178, True, 3062.0)); true lag med 4379 ms
+  cluster mode switches (unintentional, >1500 ms jumps of the established ref): 0 
+  B-c: trials 0, adopted switches 0; log []
+  first tx-anchor decisions (now, seq, dlag, best_res, lat_tx, outcome):
+    t=7368 seq=1 dlag=7080 best_res=None lat_tx=None cons/agree
+    t=11762 seq=2 dlag=4138 best_res=416.0 lat_tx=3722.0 ok
+    t=14528 seq=3 dlag=4138 best_res=519.0 lat_tx=4657.0 ok
+    t=23011 seq=4 dlag=4138 best_res=264.0 lat_tx=4402.0 ok
+    t=27321 seq=5 dlag=4138 best_res=555.0 lat_tx=4693.0 ok
+    t=32305 seq=6 dlag=4138 best_res=215.0 lat_tx=3923.0 ok
+    t=38621 seq=7 dlag=4402 best_res=127.0 lat_tx=4275.0 ok
+    t=41240 seq=8 dlag=4402 best_res=307.0 lat_tx=4709.0 ok
+    t=43848 seq=9 dlag=4402 best_res=92.0 lat_tx=4310.0 ok
+    t=46727 seq=10 dlag=4402 best_res=114.0 lat_tx=4516.0 ok
+    t=49141 seq=11 dlag=4402 best_res=2484.0 lat_tx=6886.0 no-mk
+    t=54553 seq=12 dlag=4402 best_res=None lat_tx=None no-mk
+
+GATE23 D-B-filmA r1.25:
+  end-p90 TRUE steady < 1000 ms                  PASS
+  sync max < 1000 ms (full session)              PASS
+  sync p90 < 1000 ms                             PASS
+  sync max < 1000 ms (steady, t>60 s)            PASS
+  D pinned 0% steady (t>60 s)                    PASS
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60 s >= 40 (min window)                PASS
+  dropped audio steady < 5%                      PASS
+  line-start steady median < 1200 ms             PASS
+  |D end - true lag| <= 1000 ms (anti-ratchet)   FAIL
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  end-p90/|D-lag| vs REPRO                       PENDING (no REPRO yet)
+  GATE23: FAIL (strict) / FAIL (ex-cold-start sync max)
+
+GATE24-bootstrap D-B-filmA r1.25:
+  |seed - true lag| <= 600 ms (first seed)       PASS (|seed err| -389.66666666666697 ms)
+  cluster mode switches after established = 0    PASS (unintentional 0, B-c adopted 0)
+  GATE24: FAIL (gate23 strict=False)
+
+DIAG25-seed/referee D-B-filmA r1.25:
+  (no NewTracker25 instance captured)
+
+GATE25 D-B-filmA r1.25:
+  end-p90 TRUE steady < 1000 ms                        PASS
+  sync max < 1000 ms (full session)                    PASS
+  sync p90 < 1000 ms                                   PASS
+  sync max < 1000 ms (steady, t>60 s)                  PASS
+  D pinned 0% steady (t>60 s)                          PASS
+  pairs > 0 in EVERY 60 s window                       PASS
+  samples/60 s >= 40 (min window)                      PASS
+  dropped audio steady < 5%                            PASS
+  line-start steady median < 1200 ms                   PASS
+  |D end - true lag| <= 1000 ms ABSOLUTE (main bar)    FAIL
+  |seed - true lag| <= 600 ms (first seed)             PASS
+  cluster mode switches after established = 0          PASS
+  |D end - true lag| <= REPRO (reported only)          n/a (|D-lag| 1163.0 vs REPRO None)
+  GATE25: FAIL (strict=False excold=False)
+
+DIAG26 D-B-filmA r1.25:
+  true lag med 4379; D end 5542 (signed err 1163); last sample 4526; hold end 804.0
+  end-burst TRUE t>60s: p90 202.33781274897046 / max 371.0740740741021 / median -49.96471987599216 (n=168); first-chunk median 18.0; within-burst growth median -66.65426713906345 / p90 167.78076954834978
+  slice-play t>60s: p90 2086.48811236606 / max 2896.731728445913 (n=941); sync t>60s: max 292.0 / p90 196.0 (n=167)
+  stretch: mean 1.30, frac>=1.49 0.00, ratio-floor median 1.301; valve fires 6, dropped 10495 ms total, max/60s 4000 ms, last/60s 0 ms
+  pairs/60s [10, 18, 16, 18, 15, 19, 15, 17, 18, 20] (mean 16.6); samples/60s [72, 127, 125, 121, 114, 122, 112, 112, 114, 128] (mean 114.7); drop steady 2.1%; dropped slices 0; Sb trials 0 adopts 0; seedErr -389.66666666666697
+  end-burst median by minute [59, -47, -78, -66, -25, 54, 32, -46, -148, -120] (rising = backlog accumulating faster than the drain); total dub 520675 ms; drain check dense-minute: net 3.08 s/min (claim at 1.5x/1.47: +1.76 s/min)
+
+SUM29B D-B-filmA r1.25                    end90t60    202  drop  2.1%  valve 10495 ms /  6 fires  skip 0 ms / 0  speedMax 1.35  pairsMin 10  Dmax 5548
+
+##### D-B-dense r1.25: 28711 vad events, 32 VAD turns (211 lines), 5698 dub chunks, 407 tx-in fragments #####
+=== D-B-dense r1.25 ===
+D changes: 133   D range: 4343..5597 ms (max 5597)   D last 60 s: [5278.0, 5329.0, 5259.0, 5301.0, 5265.0, 5275.0, 5306.0, 5232.0, 5273.0, 5273.0, 5262.0, 5221.0]
+last sample: 4.3 s   samples/60s: 146   queue: 9   deferred: 0   dropped: 0/0   empty: 1
+turn pairs: total 180, last 60 s: 22   bursts: 197   hold saturated (hold=0): 0
+tc: recv 0 (no-marker 0, anchor-back 0, consist 0, ok 0, fallback 0)
+burst: recv 195 (no-marker 129, anchor-back 0, consist 36, ok 30, fallback 9)
+marker splitting: splits 0
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 0, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median -40 ms, p10 -363, p90 +192 | |err| median 144 ms, p90 372 ms, n=182
+slice-sample err vs true lag: median -87 ms, p10 -459, p90 +313, n=1113
+BURST SYNC ERROR, TRUE render (n=192): signed median +151 ms, p10 -12, p90 +305 | |err| median 153 ms, p90 305 ms, n=192
+LINE-START SYNC ERROR, ACTUAL hold (n=197): signed median +151 ms, p10 -10, p90 +307 | |err| median 154 ms, p90 316 ms, n=197
+LINE-START ACTUAL, steady regimes only (n=152): signed median +150 ms, p10 -26, p90 +396 | |err| median 154 ms, p90 415 ms, n=152
+LINE-START FRESH-HOLD (n=47): signed median -144 ms, p10 -728, p90 +2394 | |err| median 201 ms, p90 2520 ms, n=47
+SLICE-PLAY SYNC ERROR (n=1093): signed median +1244 ms, p10 +346, p90 +2297 | |err| median 1244 ms, p90 2297 ms, n=1093
+SLICE-PLAY, steady regimes only (n=853): signed median +1290 ms, p10 +355, p90 +2359 | |err| median 1290 ms, p90 2359 ms, n=853
+MEASURED pipeline (what the tracker eats): median 52 ms, p90 54 ms, max 54 ms, n=192
+TRUE pipeline (render - due): median 192 ms, p90 335 ms, max 516 ms
+backlog ahead at burst write: median 0 ms, p90 0 ms, max 0 ms
+DROPPED audio (hold queue, >500 ms overdue): 8600 ms of 562325 ms (1.5%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 8600 ms of 428500 ms (2.0%)
+mid-burst pipeline samples (every 20th chunk): median 188 ms, p90 328 ms, n=278
+DECOMP (steady, first slice of each played chunk): pipeline median 193 ms, hold median 812 ms, sample median 4286 ms (true lag median 4369 ms), D median 5299 ms, lag_est median 4311 ms, implied slice-play median -24 ms
+STRETCH actually used at chunk feeds: {1.0: 39, 1.1: 48, 1.2: 78, 1.25: 348, 1.35: 1673, 1.321822030032661: 27, 1.245278887733319: 1, 1.2628492528267354: 11, 1.277704131380304: 20, 1.2010451956844577: 12, 1.2936858151115869: 26, 1.3203891717578857: 29, 1.2458018853690889: 5, 1.2655207571563707: 15, 1.2706879939506293: 13, 1.2932923082116363: 31, 1.2785437893925118: 5, 1.2807328707866574: 14, 1.2677269730067753: 23, 1.2698026641758295: 13, 1.3008371671397976: 30, 1.3427717180657017: 4, 1.245630957196345: 2, 1.336395932944051: 13, 1.3475425612200793: 13, 1.2560205318027222: 23, 1.3007626947789455: 22, 1.3142976617354816: 12, 1.341317414911273: 15, 1.3470191613284406: 10, 1.3446739187233971: 18, 1.3408780133870672: 12, 1.2669979548634782: 14, 1.2718431486333712: 11, 1.3271943197640592: 21, 1.3263116586614834: 12, 1.3178518122437426: 24, 1.3139801462418543: 12, 1.2643700132051998: 21, 1.265759002298326: 32, 1.2795835780521103: 28, 1.287810591538225: 8, 1.2524542713305173: 21, 1.265912161316002: 27, 1.257315605240948: 6, 1.2609488551242856: 5, 1.280295341672924: 13, 1.281681333173348: 11, 1.236781581106649: 3, 1.316115607447287: 31, 1.2363934359588389: 12, 1.2800793373627155: 30, 1.3403961795931947: 9, 1.34724513997291: 11, 1.329544951675682: 18, 1.3316737411490853: 11, 1.24428103476862: 3, 1.2475351076446466: 2, 1.2521735553896736: 23, 1.254705416611683: 9, 1.316461960787039: 10, 1.3179134889313602: 11, 1.2943390930031928: 14, 1.29589658858379: 11, 1.2844456771221857: 13, 1.2858576204346168: 11, 1.2602329310490337: 10, 1.2600409348294717: 11, 1.2686134164657872: 27, 1.27144094305531: 10, 1.3367164345585025: 26, 1.3359206381708375: 11, 1.2620975341926919: 9, 1.2630718461509622: 12, 1.3061575829000829: 16, 1.3065408919669446: 10, 1.3321722002639433: 28, 1.3333205055377788: 10, 1.300530943966221: 11, 1.2818686611596164: 13, 1.308001654186422: 29, 1.291172670678021: 21, 1.269639570504198: 15, 1.2708748352568238: 11, 1.3224081605824787: 21, 1.3231610663191853: 9, 1.293610079165668: 12, 1.2893591194851144: 12, 1.2785743462541348: 22, 1.2788281181020087: 11, 1.2547468718946875: 13, 1.2558271922940853: 10, 1.3469263910286284: 17, 1.3464755911440802: 11, 1.2389635809498494: 4, 1.2609043064142755: 9, 1.2613451799242867: 11, 1.3434415932173411: 16, 1.342749807549367: 9, 1.3243699373769362: 23, 1.3247481965323782: 11, 1.3433467634459366: 23, 1.293695634285711: 27, 1.2960836031046121: 10, 1.2606379269510841: 20, 1.2501699539799187: 22, 1.2900087031800738: 24, 1.2906868080071947: 11, 1.2548131901875323: 24, 1.255553886645766: 11, 1.2487551088310276: 1, 1.2616959117736586: 15, 1.2748957157758953: 51, 1.2946008054274314: 29, 1.268984016236839: 11, 1.2705300845963476: 10, 1.2541506339059145: 36, 1.3275543920470905: 27, 1.331424117683404: 11, 1.254257309217719: 26, 1.3290483712840455: 27, 1.332523807605593: 10, 1.3312983887256848: 26, 1.3307214792609565: 11, 1.302907022735533: 26, 1.3054162927975879: 10, 1.3331225818771648: 20, 1.332869951650019: 8, 1.3499971885427748: 37, 1.3011879363074779: 16, 1.3033298066537962: 9, 1.3383942850389716: 10, 1.3388085474346603: 11, 1.338265255658513: 15, 1.3367852884234726: 10, 1.2942718662624937: 8, 1.290247694690362: 12, 1.3002697673345656: 25, 1.2567324955116697: 22, 1.2580743949097957: 38, 1.2914600263315068: 31, 1.2971367047947593: 10, 1.3012834131747215: 10, 1.2598303293024244: 24, 1.3439869952998265: 35, 1.310268609592384: 28, 1.342157850213854: 14, 1.3389091860432927: 12, 1.2787967323846954: 19, 1.3258073929102852: 3, 1.2582266419419779: 22, 1.2841371348320734: 8, 1.2840782159486424: 11, 1.2910127852711286: 33, 1.294237360452128: 22, 1.2948570098049665: 11, 1.3086642830711765: 16, 1.3076779643390686: 13, 1.26995037654242: 19, 1.3336839738522273: 11, 1.331088435183284: 14, 1.3024153597964478: 9, 1.3013511449941764: 14, 1.3079910540825492: 22, 1.3076739215535633: 14, 1.3223120340313943: 7, 1.327094850713833: 13, 1.2623257496340041: 10, 1.261656335871895: 11, 1.257913237237341: 10, 1.2588359669879876: 12, 1.3126666046774467: 11, 1.3114508112252783: 13, 1.2848031867891585: 23, 1.2867044522913234: 12, 1.3244110899730615: 29, 1.3337031525644985: 49, 1.246055672557021: 6, 1.324307968793602: 38, 1.3204480670597296: 8, 1.313041733749861: 13, 1.3046242947627682: 23, 1.3054308142492284: 11, 1.2948572162410894: 24, 1.2975711203217288: 10, 1.3240174855505449: 33, 1.2785116165353385: 28, 1.2805579095869317: 8, 1.303377996537206: 12, 1.3028109231000162: 11, 1.2498917993487404: 4, 1.2502165003332735: 11, 1.2847029452413177: 12, 1.2859374608016312: 10, 1.298062996223877: 19, 1.297309207561976: 11, 1.2568536734871023: 6, 1.2537983135904227: 13, 1.334942354203162: 20, 1.3372138897943884: 10, 1.318341537026183: 11, 1.3190027214527882: 11, 1.2924415254270487: 22, 1.2912394036136294: 12, 1.290005663116358: 21, 1.2900491384318375: 10, 1.30850481259301: 10, 1.3080300237953122: 11, 1.3016856438552744: 19, 1.3030846488622925: 10, 1.2834588557741018: 21, 1.3137210605698975: 31, 1.3286886188677967: 19, 1.330224391364892: 13, 1.2382824430983248: 4, 1.3153333271282228: 22, 1.284312880882344: 5}
+LOOP lateness (busy_until - due) at feed: median 0 ms, p90 23 ms, max 213 ms, n=5562
+ratio (speech/dub): tracker 0.808 vs true 0.800   (per-turn sums: counted 609432 / dub 754375)
+burst-successor ratio measurements: 17
+slice D-check: rejected 33 samples, D-based re-anchors 0
+stretch speed distribution: {1.35: 64, 1.25: 3, 1.321822030032661: 1, 1.245278887733319: 1, 1.277704131380304: 1, 1.2936858151115869: 1, 1.3203891717578857: 1, 1.2655207571563707: 1, 1.2932923082116363: 1, 1.2785437893925118: 1, 1.2677269730067753: 1, 1.3008371671397976: 1, 1.245630957196345: 1, 1.336395932944051: 1, 1.2560205318027222: 1, 1.3007626947789455: 1, 1.341317414911273: 1, 1.3446739187233971: 1, 1.2669979548634782: 1, 1.3271943197640592: 1, 1.3178518122437426: 1, 1.2643700132051998: 1, 1.265759002298326: 1, 1.2795835780521103: 1, 1.2524542713305173: 1, 1.265912161316002: 1, 1.280295341672924: 1, 1.236781581106649: 1, 1.316115607447287: 2, 1.2800793373627155: 1, 1.3403961795931947: 1, 1.329544951675682: 1, 1.24428103476862: 1, 1.316461960787039: 1, 1.2943390930031928: 1, 1.2844456771221857: 1, 1.2602329310490337: 1, 1.2686134164657872: 1, 1.3367164345585025: 1, 1.2620975341926919: 1, 1.3061575829000829: 1, 1.3321722002639433: 1, 1.300530943966221: 1, 1.308001654186422: 1, 1.291172670678021: 1, 1.3224081605824787: 1, 1.293610079165668: 1, 1.2785743462541348: 1, 1.2547468718946875: 1, 1.3469263910286284: 1, 1.2389635809498494: 1, 1.2609043064142755: 1, 1.3434415932173411: 1, 1.3243699373769362: 1, 1.3433467634459366: 1, 1.293695634285711: 1, 1.2606379269510841: 1, 1.2501699539799187: 1, 1.2900087031800738: 1, 1.2548131901875323: 1, 1.2487551088310276: 1, 1.2748957157758953: 2, 1.2946008054274314: 1, 1.268984016236839: 1, 1.2541506339059145: 1, 1.3275543920470905: 1, 1.254257309217719: 1, 1.3290483712840455: 1, 1.3312983887256848: 1, 1.302907022735533: 1, 1.3331225818771648: 1, 1.3499971885427748: 1, 1.3011879363074779: 1, 1.3383942850389716: 1, 1.338265255658513: 1, 1.2942718662624937: 1, 1.3002697673345656: 1, 1.2567324955116697: 1, 1.2580743949097957: 1, 1.2914600263315068: 1, 1.2971367047947593: 1, 1.2598303293024244: 1, 1.3439869952998265: 1, 1.310268609592384: 1, 1.342157850213854: 1, 1.2787967323846954: 1, 1.2582266419419779: 1, 1.2841371348320734: 1, 1.2910127852711286: 1, 1.294237360452128: 1, 1.3086642830711765: 1, 1.26995037654242: 1, 1.3336839738522273: 1, 1.3024153597964478: 1, 1.3079910540825492: 1, 1.3223120340313943: 1, 1.2623257496340041: 1, 1.257913237237341: 1, 1.2848031867891585: 1, 1.3244110899730615: 1, 1.3337031525644985: 2, 1.324307968793602: 2, 1.3046242947627682: 1, 1.2948572162410894: 1, 1.3240174855505449: 1, 1.2785116165353385: 1, 1.303377996537206: 1, 1.2498917993487404: 1, 1.2847029452413177: 1, 1.298062996223877: 1, 1.2568536734871023: 1, 1.334942354203162: 1, 1.318341537026183: 1, 1.2924415254270487: 1, 1.290005663116358: 1, 1.30850481259301: 1, 1.3016856438552744: 1, 1.2834588557741018: 1, 1.3137210605698975: 1, 1.3286886188677967: 1, 1.2382824430983248: 1, 1.3153333271282228: 1, 1.284312880882344: 1}
+pipeline EMA now: 194.0 ms   dynamic margin now: 994 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 197/211 (93%)   longest unexplained inter-burst gap: 9789.0 ms (over 167 gaps)
+VOICE CONTINUITY (render-level): lines with >= 1 rendered chunk: 197/211 (93%)   longest unexplained inter-render gap: 5755.013997440517 ms (over 5485 gaps)
+VAD/feed: turns started 32   tracker-fed speech 572900 ms   gate-rejected frames 423
+sent to Live: 572900 ms / true speech 479184 ms (120%)   total dub 562325 ms
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 0
+ratio display (dub/speech): 1.24x (true 1.25x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 1314.0 ms, p90 305.0 ms (n=192); slice-play steady |err| max 3539.0 ms, p90 2359.242407478363 ms (n=853); per-burst END lateness |err| max 3539.0 ms, p90 2784.724204924889 ms (n=197 bursts)
+D-based selection: 20 picks (21a)   split attempts: Kotlin-count 29 vs fixed-count 0 (== splits 0) (21c)
+TRANSCRIPTION ANCHOR (21b): sentences seen 406   ok 152 / no-mk 18 / cons 6 / agree 27   asrLag EMA 600 ms (calibrated from 0 short turns)
+VAD/feed: turns started 32 (3 in last 60 s)   tracker-fed speech 572900 ms (57800 ms in last 60 s)   gate rejects: start-path 416 + in-turn 423
+FIRST 60 s (restart gate): pairs 13, first sync error at 8020.0 ms, D pinned (>=7.9 s) 0% of the session
+
+KOTLIN-REPORTED vs TRUE (22, §2): 192 bursts with slice records; TRUE end lateness (chunk-level, last chunk) median 98 / p90(|.|) 280.9860025594826 / max 1189.0 ms (steady-window p90(|.|) 297.4700013871043 ms); KOTLIN-FULL (same last slice, 1.0x + anchor) median 866 / p90(|.|) 1305.3333333333721 / max 6015.0; KOTLIN-AT-PLAY (partial burst, what the HUD shows) median 569 / p90(|.|) 949.0 / max 5499.666666666686; TRUE err of the last pairing entry's audio (chunk-referenced, same D) median 112 / p90(|.|) 249.66666666667152 ms
+  bias per burst (kotlin - true), decomposed on the last pairing entry (p90 = p90 of |value|, sim convention): TOTAL median 770 / p90 1193 / max 6051 / min -1809 ms = PURE 1.0x bias median 577 / p90 1274 / max 975 / min -5038 + ANCHOR error median 336 / p90 2118 / max 6740 / min -787 ms (pure bias is 22% / p90 47% of the burst's dub offset); anchor error over all slices median 194 / p90 557 ms; AT-PLAY minus FULL median 304 ms = the partial-burst effect; slice-level |err| p90 TRUE 266.27740504971007 ms (steady 301.6670497697196 ms, n=5508 chunks)
+PER-WINDOW (60 s): pairs [13, 16, 22, 23, 21, 15, 15, 18, 15, 22]; samples [96, 121, 150, 144, 139, 122, 114, 128, 98, 146]; tx ok [10, 15, 20, 21, 18, 15, 11, 13, 10, 19]; tx no-mk [3, 3, 0, 2, 0, 3, 2, 3, 2, 0]
+TX NO-MK REASONS (22, §3/§4): {'b-residual': 16, 'a-no-closed-group': 2} (a-no-group = no closed group in window; b-residual = merged-group start seconds off; c-refallback = audioAt null + marker >2500 ms)
+TX GROUPS: seen 406, open at end 1
+LAG / 12 s (22, §2): true lag median 4374 / p90 4529.333333333314 / max 4585.0 ms; per-minute true-lag medians [4370, 4368, 4375, 4396, 4372, 4358, 4360, 4389, 4375, 4376]; chunks with true lag >12 s: 0, >20 s: 0; last feed sample (incl. D-check rejects) 4304 ms at 599899.6666666666 ms, D end 5221 ms (gap -917 ms); D 60 s 5430.0 / 300 s 5224.0 / max 5597; dropped samples LARGE (>20 s) 0, SMALL (deferred) 0, dropped slices 0; ratio display 1.24x
+STRETCH (22): ratio measurements burst-successor 17, tx-ok 126; floor median 1.31 (first 60 s 1.35, steady 1.30); mean speed used 1.32 (0% of chunks at 1.5x); corrected endLag of last burst 185 ms (kotlin-reported 522 ms); valve fires 5, valve-dropped 8600 ms over 86 chunks; chase accepts 0 (runs []), chase rejects seen 0, D-reanchors 0
+  valve cut lines [3, 8, 17, 148, 175] (dropped ms per line {3: 2000, 8: 600, 17: 2000, 148: 2000, 175: 2000})
+
+GATE22 D-B-dense r1.25:
+  lines with dub >= 90% (render-level)           PASS
+  max unexplained inter-render gap <= 3000 ms    FAIL
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60s >= 40 (min over windows)           PASS
+  D max <= 8000                                  PASS
+  D pinned 0% of session                         PASS
+  combined burst unpaired fraction < 0.70        PASS
+  slice-play steady |err| median < 500 (TRUE chunk) PASS
+  slice-play steady |err| p90 < 1000 (TRUE chunk) PASS
+  per-burst END lateness p90 (TRUE chunk) < 1000 PASS
+  sync err (burst-start) max < 1000              FAIL
+  sync err (burst-start) p90 < 1000              PASS
+  line-start steady |err| median < 1200          PASS
+  dropped audio steady < 5%                      PASS
+  pairs in first 60 s > 0                        PASS
+  sync measurable in first 60 s (not '--')       PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  GATE22: FAIL
+
+device-signature check D-B-dense r1.25 (09:21 film B dense: D 5.1 s, LAST SAMPLE 12.0 s, samples/60s 25, pairs/60s 0, pairs first60 4, D pinned 0%, burst 91: 17/66/8/2, turns60 4, fed60 57940, gate 57/60 s, ratio 1.42x, end-late p90 2098 (n=15), slice-play p90 2032, sync max/p90 1750/1714, dropped LARGE 171, stall 3):
+  bursts 197 over 211 lines; burst ok/no-mk/cons/fb 30/129/36/9; samples/60s 146, pairs/60s 22, pairs first 60 s 13
+  D last 5291 ms, D max 5597 ms, D pinned 0%, last sample (accepted) 4.3 s, last feed sample (incl. rejects) 4304 ms, D gap -917 ms
+  true lag median 4374 / p90 4529.333333333314 / max 4585.0 ms; >12 s: 0 chunks, >20 s: 0 chunks; dropped LARGE 0, SMALL 0, slices 0; stall episodes 0
+  turns/60s 3, fed/60s 57800 ms, gate rejects/60s ~84, ratio display 1.24x; TRUE end-late p90 280.9860025594826 ms, KOTLIN-AT-PLAY end-late p90 949.0 ms
+
+DIAG23 D-B-dense r1.25:
+  tx lat_tx err vs TRUE lag (ok, n=152): median -23 (signed) / p90|.| 353 / max 445 ms; frac >+600 ms 0.00; frac <-600 ms 0.02
+  tx lat_tx err (R-b blocked, n=6): median 667 (signed) / p90|.| 1205 ms
+  boundary-sample err vs TRUE lag (tx, n=152): median -23 (signed) / p10 -332 / p90 244 / max 445; frac |err|>1500 0.00
+  boundary-sample err vs TRUE lag (vad, n=30): median 40 (signed) / p10 -120 / p90 40 / max 65; frac |err|>1500 0.07
+  per-minute (D med / refLag med / true-lag med): [(5059, 4407, 4370), (5269, 4432, 4368), (5307, 4559, 4375), (5263, 4583, 4396), (5285, 4488, 4372), (5343, 4549, 4358), (5337, 4611, 4360), (5498, 4620, 4389), (5319, 4586, 4375), (5273, 4552, 4376)]
+  D end 5221 vs true lag med 4374 -> |err| 847.0 ms; D pinned steady 0%; R-b blocks 6
+  tx groups: 406 seen, frags/group median 1 (1-frag 100%, >=3-frag 0%); no multi-frag groups
+  ratio pairs n=151 (consec 21%): counted/dub median 0.903 (true world fed/dub 0.854); pause-corrected/dub (K=0.40) median 0.763; pause ms/pair median 1379; floor median 1.31 (steady 1.30); ratio display 1.24x (true 1.17x)
+  ratio display check: tracker ratio() 0.808 vs true fed/dub 0.854; tx-ok ratio measurements 126 (rf meas 126 / skipped 0)
+
+DIAG24-bootstrap D-B-dense r1.25:
+  seed: loop=7080.0 err=2511.0 ms; corrected=4138.0 err=-389.66666666666697 ms (mode Sa2, group first/last/closed/startEst=(4162, 5178, True, 3062.0)); true lag med 4374 ms
+  cluster mode switches (unintentional, >1500 ms jumps of the established ref): 0 
+  B-c: trials 0, adopted switches 0; log []
+  first tx-anchor decisions (now, seq, dlag, best_res, lat_tx, outcome):
+    t=7368 seq=1 dlag=7080 best_res=None lat_tx=None cons/agree
+    t=11762 seq=2 dlag=4138 best_res=416.0 lat_tx=3722.0 ok
+    t=14528 seq=3 dlag=4138 best_res=519.0 lat_tx=4657.0 cons/agree
+    t=17581 seq=4 dlag=4138 best_res=250.0 lat_tx=3888.0 ok
+    t=19991 seq=5 dlag=4138 best_res=8.0 lat_tx=4146.0 ok
+    t=23071 seq=6 dlag=4146 best_res=261.0 lat_tx=4407.0 ok
+    t=27412 seq=7 dlag=4146 best_res=553.0 lat_tx=4699.0 ok
+    t=29575 seq=8 dlag=4407 best_res=27.0 lat_tx=4434.0 ok
+    t=32158 seq=9 dlag=4407 best_res=195.0 lat_tx=4602.0 ok
+    t=38608 seq=10 dlag=4432 best_res=150.0 lat_tx=4282.0 ok
+    t=41328 seq=11 dlag=4432 best_res=282.0 lat_tx=4714.0 cons/agree
+    t=43860 seq=12 dlag=4432 best_res=105.0 lat_tx=4327.0 ok
+
+GATE23 D-B-dense r1.25:
+  end-p90 TRUE steady < 1000 ms                  PASS
+  sync max < 1000 ms (full session)              FAIL
+  sync p90 < 1000 ms                             PASS
+  sync max < 1000 ms (steady, t>60 s)            PASS
+  D pinned 0% steady (t>60 s)                    PASS
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60 s >= 40 (min window)                PASS
+  dropped audio steady < 5%                      PASS
+  line-start steady median < 1200 ms             PASS
+  |D end - true lag| <= 1000 ms (anti-ratchet)   PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  end-p90/|D-lag| vs REPRO                       PENDING (no REPRO yet)
+  GATE23: FAIL (strict) / PASS (ex-cold-start sync max)
+
+GATE24-bootstrap D-B-dense r1.25:
+  |seed - true lag| <= 600 ms (first seed)       PASS (|seed err| -389.66666666666697 ms)
+  cluster mode switches after established = 0    PASS (unintentional 0, B-c adopted 0)
+  GATE24: FAIL (gate23 strict=False)
+
+DIAG25-seed/referee D-B-dense r1.25:
+  (no NewTracker25 instance captured)
+
+GATE25 D-B-dense r1.25:
+  end-p90 TRUE steady < 1000 ms                        PASS
+  sync max < 1000 ms (full session)                    FAIL
+  sync p90 < 1000 ms                                   PASS
+  sync max < 1000 ms (steady, t>60 s)                  PASS
+  D pinned 0% steady (t>60 s)                          PASS
+  pairs > 0 in EVERY 60 s window                       PASS
+  samples/60 s >= 40 (min window)                      PASS
+  dropped audio steady < 5%                            PASS
+  line-start steady median < 1200 ms                   PASS
+  |D end - true lag| <= 1000 ms ABSOLUTE (main bar)    PASS
+  |seed - true lag| <= 600 ms (first seed)             PASS
+  cluster mode switches after established = 0          PASS
+  |D end - true lag| <= REPRO (reported only)          n/a (|D-lag| 847.0 vs REPRO None)
+  GATE25: FAIL (strict=False excold=True)
+
+DIAG26 D-B-dense r1.25:
+  true lag med 4374; D end 5221 (signed err 847); last sample 4304; hold end 836.0
+  end-burst TRUE t>60s: p90 244.44106887822272 / max 332.2763147738733 / median 32.554533398593776 (n=179); first-chunk median 104.0; within-burst growth median -69.01588548126165 / p90 183.40274712248356
+  slice-play t>60s: p90 2259.6205395734287 / max 3090.778836770245 (n=1011); sync t>60s: max 456.0 / p90 287.0 (n=179)
+  stretch: mean 1.31, frac>=1.49 0.00, ratio-floor median 1.308; valve fires 5, dropped 8590 ms total, max/60s 4600 ms, last/60s 0 ms
+  pairs/60s [13, 16, 22, 23, 21, 15, 15, 18, 15, 22] (mean 18.0); samples/60s [96, 121, 150, 144, 139, 122, 114, 128, 98, 146] (mean 125.8); drop steady 2.0%; dropped slices 0; Sb trials 0 adopts 0; seedErr -389.66666666666697
+  end-burst median by minute [311, 221, 40, 76, 24, -20, -73, -133, 153, 58] (rising = backlog accumulating faster than the drain); total dub 562325 ms; drain check dense-minute: net 3.32 s/min (claim at 1.5x/1.47: +1.76 s/min)
+
+SUM29B D-B-dense r1.25                    end90t60    244  drop  2.0%  valve  8590 ms /  5 fires  skip 0 ms / 0  speedMax 1.35  pairsMin 13  Dmax 5597
+
+##### D-B-choppy r1.25: 15670 vad events, 344 VAD turns (344 lines), 3978 dub chunks, 429 tx-in fragments #####
+=== D-B-choppy r1.25 ===
+D changes: 134   D range: 4880..5349 ms (max 5349)   D last 60 s: [5275.0, 5262.0, 5303.0, 5237.0, 5210.0, 5245.0, 5226.0, 5237.0, 5196.0, 5246.0, 5280.0, 5209.0]
+last sample: 3.2 s   samples/60s: 111   queue: 4   deferred: 0   dropped: 0/0   empty: 1
+turn pairs: total 322, last 60 s: 32   bursts: 324   hold saturated (hold=0): 0
+tc: recv 0 (no-marker 0, anchor-back 0, consist 0, ok 0, fallback 0)
+burst: recv 322 (no-marker 0, anchor-back 0, consist 0, ok 322, fallback 0)
+marker splitting: splits 0
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 0, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median +0 ms, p10 -40, p90 +0 | |err| median 0 ms, p90 40 ms, n=332
+slice-sample err vs true lag: median -233 ms, p10 -1130, p90 +43, n=764
+BURST SYNC ERROR, TRUE render (n=321): signed median +98 ms, p10 +19, p90 +175 | |err| median 98 ms, p90 175 ms, n=321
+LINE-START SYNC ERROR, ACTUAL hold (n=321): signed median +97 ms, p10 +28, p90 +173 | |err| median 98 ms, p90 174 ms, n=321
+LINE-START ACTUAL, steady regimes only (n=252): signed median +97 ms, p10 +25, p90 +180 | |err| median 97 ms, p90 184 ms, n=252
+LINE-START FRESH-HOLD (n=321): signed median -63 ms, p10 -96, p90 -22 | |err| median 63 ms, p90 96 ms, n=321
+SLICE-PLAY SYNC ERROR (n=756): signed median +549 ms, p10 +166, p90 +1007 | |err| median 549 ms, p90 1007 ms, n=756
+SLICE-PLAY, steady regimes only (n=593): signed median +549 ms, p10 +166, p90 +1007 | |err| median 549 ms, p90 1007 ms, n=593
+MEASURED pipeline (what the tracker eats): median 52 ms, p90 54 ms, max 68 ms, n=321
+TRUE pipeline (render - due): median 119 ms, p90 196 ms, max 292 ms
+backlog ahead at burst write: median 0 ms, p90 0 ms, max 24 ms
+DROPPED audio (hold queue, >500 ms overdue): 2750 ms of 385275 ms (0.7%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 1650 ms of 299150 ms (0.6%)
+mid-burst pipeline samples (every 20th chunk): median 119 ms, p90 197 ms, n=196
+DECOMP (steady, first slice of each played chunk): pipeline median 93 ms, hold median 764 ms, sample median 4295 ms (true lag median 4417 ms), D median 5220 ms, lag_est median 4329 ms, implied slice-play median -53 ms
+STRETCH actually used at chunk feeds: {1.1012658227848102: 1, 1.1017661900756939: 1, 1.1041141897565072: 1, 1.1036789297658864: 1, 1.1050875729774812: 1, 1.1074104912572855: 1, 1.2: 133, 1.2996543488943486: 9, 1.0092659883720931: 1, 1.0128997093023255: 1, 1.1: 5, 1.25: 665, 1.2968455149501663: 24, 1.3275533151092302: 8, 1.3102748434206357: 3, 1.2943039789231938: 4, 1.281672998646676: 8, 1.222609561752988: 10, 1.28694: 18, 1.2392306405007294: 11, 1.2039764359351988: 8, 1.35: 245, 1.0: 1, 1.1852973568281937: 3, 1.1735807860262009: 4, 1.1715436810856659: 6, 1.1675824175824177: 7, 1.16677545691906: 4, 1.1660969546302051: 2, 1.2647164268585134: 19, 1.1645962732919255: 1, 1.2440210386027029: 11, 1.252563316401107: 2, 1.2506037029828105: 6, 1.2405672372368317: 11, 1.239130744412912: 8, 1.2373082362605374: 10, 1.3290406157681969: 5, 1.327249714367192: 10, 1.3045357111140214: 6, 1.302866039665603: 8, 1.2573888948570269: 7, 1.255825151858451: 10, 1.2776149426664074: 5, 1.2764448459721822: 10, 1.2729600979591604: 2, 1.271403526546596: 11, 1.246826315706536: 3, 1.2696953552736232: 15, 1.22672692313893: 10, 1.264510112371609: 26, 1.2703943247113867: 12, 1.256058911804087: 3, 1.2548600967399461: 9, 1.2216088981137405: 10, 1.2758483331899906: 31, 1.2177447200671405: 12, 1.233886083314555: 11, 1.272954144285299: 33, 1.212301250491029: 9, 1.211255271106892: 8, 1.273545630509606: 14, 1.208662793860503: 9, 1.251600346339144: 15, 1.2069508240233495: 11, 1.204157702221786: 8, 1.2034879268778294: 11, 1.2729692965229071: 24, 1.201969215216586: 11, 1.1996916458813232: 8, 1.1968850016471326: 8, 1.2635116000721587: 21, 1.195992862478046: 8, 1.272376939961646: 35, 1.193695989836418: 8, 1.2663854135008408: 23, 1.1921393111516072: 7, 1.265811653986171: 13, 1.1904687799535982: 6, 1.188955003194378: 6, 1.1882320692806796: 7, 1.1870902843857019: 3, 1.1856869808691761: 6, 1.2637975978941012: 31, 1.1843413710392674: 1, 1.1840295985580818: 4, 1.1832931679805205: 1, 1.2482068802779813: 6, 1.2883836158025286: 22, 1.284113371925163: 11, 1.3359801277610914: 2, 1.3352682341325224: 12, 1.3293257002695598: 4, 1.3285927066843288: 9, 1.282201999756521: 8, 1.2815906095974599: 14, 1.280919245988979: 10, 1.3433159036212163: 12, 1.3219205902759517: 4, 1.3212199038721761: 9, 1.279020022910829: 8, 1.2784301563020868: 10, 1.2780317217530757: 14, 1.2774958288800409: 11, 1.2768889060686184: 9, 1.2764071988446628: 14, 1.2760896710019916: 11, 1.2754971528807861: 13, 1.339801467085813: 3, 1.3392458156970626: 12, 1.3414427502581503: 12, 1.2749681702055493: 2, 1.2744639248003444: 9, 1.2739997306313682: 14, 1.2735054650060298: 11, 1.2724787336929533: 16, 1.2718855632034016: 3, 1.281737342904814: 22, 1.281150663106415: 10, 1.28205378638084: 11, 1.2801730424869457: 10, 1.279827649513081: 10, 1.3433986607260844: 3, 1.3429010359885256: 11, 1.3179981328215284: 3, 1.317433312303955: 12, 1.3463674211086945: 2, 1.34579687954634: 10, 1.3458741638694713: 11, 1.2768042987038288: 15, 1.276265263002566: 13, 1.2754997263591858: 14, 1.275150113043028: 2, 1.2747128860616945: 13, 1.2742921649163028: 12, 1.3366921947739268: 11, 1.2729924891931022: 15, 1.2725668025285684: 9, 1.2720975453536028: 9, 1.2718000358337627: 14, 1.2713059009835777: 28, 1.3468855506318478: 4, 1.3463547365698094: 11, 1.3192901329260378: 12, 1.319652802979389: 4, 1.319143418900052: 12, 1.3224685650957198: 1, 1.3219778142236531: 9, 1.3186292858223827: 11, 1.268629511314904: 11, 1.2682567070158794: 10, 1.3248601498599186: 12, 1.2678090078570392: 1, 1.2673506235375886: 12, 1.3498080976509117: 9, 1.2665261844958344: 10, 1.266170436590417: 12, 1.3251557867617307: 9, 1.2653788040655203: 10, 1.2649493325336976: 14, 1.2645860591920288: 11, 1.2641561262353227: 8, 1.277434429571279: 3, 1.277129898334609: 10, 1.2767925847121646: 13, 1.2760823950834703: 8, 1.2756916501050872: 12, 1.3420983754324407: 1, 1.3417329991902582: 11, 1.3256359187722562: 3, 1.325199231052469: 12, 1.3230476582639747: 4, 1.3226751130940322: 13, 1.3444916032458343: 3, 1.3440415686332978: 7, 1.297883490881524: 13, 1.2738298224067781: 16, 1.2760885420826569: 5, 1.2757337129475055: 12, 1.3440183322709984: 9, 1.2750979776896876: 13, 1.2743286221331174: 8, 1.3348834402473873: 9, 1.2740267098296434: 8, 1.27372833012249: 15, 1.2734626642539129: 13, 1.2732081348571458: 10, 1.2730317433779834: 11, 1.3367034452911617: 4, 1.3362915257148136: 11, 1.3230142502620914: 10, 1.2720312701434566: 12, 1.3187806111499145: 2, 1.3184515060649922: 12, 1.2717138314765206: 2, 1.271397170532469: 13, 1.3139948853374954: 16, 1.2710195562426465: 9, 1.3302313801739687: 10, 1.2703075380805122: 10, 1.2700141623545236: 12, 1.3145904243452466: 4, 1.3141992462531582: 13, 1.2696362486653967: 1, 1.2693945193030889: 12, 1.2690369914042514: 2, 1.268732798849614: 14, 1.2683716165169163: 16, 1.3485125062689924: 14, 1.2680054197565391: 13, 1.2676502206042521: 12, 1.2673622036041767: 12, 1.2670764486384827: 10, 1.2667994265512317: 9, 1.2664652738443567: 12, 1.2663044536049772: 13, 1.2659579841364064: 3, 1.2656660344482795: 14, 1.2653226366060446: 12, 1.2649861625147643: 3, 1.2646394466101625: 16, 1.2642949725316324: 12, 1.2640232537818097: 8, 1.3371478444024694: 13, 1.2637632654385391: 3, 1.2634247408253023: 12, 1.3237278535849824: 4, 1.3234363804999585: 12, 1.2631465459486844: 2, 1.2628755601150816: 10, 1.3102020747933685: 8, 1.262420731346465: 9, 1.2621053275044736: 13, 1.3141611785912126: 3, 1.313940260469475: 12, 1.3059357308712807: 1, 1.305603654301201: 13, 1.3255395868800648: 15, 1.3111626622553112: 12, 1.3021907685824798: 4, 1.301856596097936: 13, 1.2609309638614903: 1, 1.2606717205250662: 10, 1.316667042622882: 14, 1.2602220611075654: 13, 1.3269790584768888: 1, 1.3267706399773034: 12, 1.2597164078402652: 13, 1.2594647807496244: 9, 1.2591643682900946: 13, 1.3234477080782268: 3, 1.3231815648061065: 13, 1.3085113115211457: 2, 1.3081918485346253: 12, 1.2583026708293548: 26, 1.2581101141708027: 16, 1.2579746251880248: 8, 1.2576825100923943: 12, 1.3223990227805769: 13, 1.3104024493811677: 3, 1.31008951282588: 12, 1.2571414997191963: 1, 1.2568466612058562: 13, 1.3332309827187223: 1, 1.3329185451729884: 12, 1.2562613547660537: 12, 1.312026120319642: 4, 1.3117199930055854: 10, 1.2559682387157467: 14, 1.25573315685528: 13, 1.3250451780326475: 1, 1.3247404537885021: 12, 1.2785739485779712: 4, 1.278279805716619: 10, 1.3226229949694832: 14, 1.25492859866671: 1, 1.2547526631555752: 11, 1.3233010102091636: 13, 1.2544722655215446: 3, 1.2543518241877618: 8, 1.3205720318259306: 11, 1.3236993469744465: 9, 1.253737735218988: 10, 1.2534627273689447: 8, 1.2532970954137164: 13, 1.3257291424996678: 2, 1.3254935236884795: 12, 1.2528010861614702: 12, 1.3381263886106305: 14, 1.2525287935483247: 17, 1.25225648092644: 14, 1.251986193759202: 13, 1.3486682498151057: 12, 1.2972021877284905: 4, 1.2969790316443632: 13, 1.2915815279021043: 1, 1.2913610350018747: 2, 1.3350371235122225: 9, 1.2936093520773098: 17, 1.2933006529246247: 10, 1.2949546256766553: 8, 1.2927222103345817: 13, 1.2924602097997302: 12, 1.2921779524022663: 1}
+LOOP lateness (busy_until - due) at feed: median 0 ms, p90 0 ms, max 0 ms, n=3926
+ratio (speech/dub): tracker 0.774 vs true 0.800   (per-turn sums: counted 550863 / dub 711775)
+burst-successor ratio measurements: 300
+slice D-check: rejected 22 samples, D-based re-anchors 0
+stretch speed distribution: {1.2996543488943486: 2, 1.2: 9, 1.2968455149501663: 1, 1.3275533151092302: 1, 1.2943039789231938: 1, 1.2286324786324787: 1, 1.25: 59, 1.28694: 2, 1.2039764359351988: 1, 1.35: 21, 1.1735807860262009: 1, 1.2647164268585134: 2, 1.252563316401107: 1, 1.2420747894287345: 1, 1.2405672372368317: 1, 1.239130744412912: 1, 1.3290406157681969: 1, 1.3045357111140214: 1, 1.2573888948570269: 1, 1.2776149426664074: 1, 1.2729600979591604: 1, 1.246826315706536: 1, 1.2696953552736232: 2, 1.264510112371609: 2, 1.2703943247113867: 2, 1.2229319001591914: 1, 1.2758483331899906: 4, 1.272954144285299: 4, 1.212301250491029: 1, 1.273545630509606: 1, 1.2095898504942744: 1, 1.2525976153668856: 1, 1.2077005040121804: 1, 1.205095854596584: 1, 1.204157702221786: 1, 1.2729692965229071: 3, 1.2004072162031325: 1, 1.2635116000721587: 3, 1.272376939961646: 4, 1.2663854135008408: 3, 1.2663425022336514: 1, 1.1909411534712746: 1, 1.2637975978941012: 3, 1.2883836158025286: 1, 1.2846520816355025: 1, 1.3359801277610914: 1, 1.3293257002695598: 1, 1.2827214300510241: 1, 1.282201999756521: 1, 1.2815906095974599: 1, 1.3439639410471287: 1, 1.3219205902759517: 1, 1.2796229814969977: 1, 1.279020022910829: 1, 1.2784301563020868: 1, 1.2780317217530757: 1, 1.2774958288800409: 1, 1.2768889060686184: 1, 1.2764071988446628: 1, 1.2760896710019916: 1, 1.339801467085813: 1, 1.3414427502581503: 1, 1.2749681702055493: 1, 1.2744639248003444: 1, 1.2739997306313682: 1, 1.2729331366547025: 1, 1.2724787336929533: 1, 1.281737342904814: 3, 1.2825863599804561: 1, 1.2806186856571058: 1, 1.2801730424869457: 1, 1.3433986607260844: 1, 1.3179981328215284: 1, 1.3463674211086945: 1, 1.3464109335979064: 1, 1.2773180514363576: 1, 1.2768042987038288: 1, 1.2758135875162915: 1, 1.275150113043028: 1, 1.2747128860616945: 1, 1.3372144173876321: 1, 1.2733923066843442: 1, 1.2729924891931022: 1, 1.2725668025285684: 1, 1.2720975453536028: 1, 1.2718000358337627: 1, 1.2713059009835777: 1, 1.3468855506318478: 1, 1.3197785407872589: 1, 1.319652802979389: 1, 1.3224685650957198: 1, 1.3189290220750411: 1, 1.2690845446729864: 1, 1.268629511314904: 1, 1.3253279953879102: 1, 1.2678090078570392: 1, 1.2668816431903527: 1, 1.2665261844958344: 1, 1.3255356138683148: 1, 1.2658076203459188: 1, 1.2653788040655203: 1, 1.2649493325336976: 1, 1.2645860591920288: 1, 1.277434429571279: 1, 1.277129898334609: 1, 1.2763458990542487: 1, 1.2760823950834703: 1, 1.3420983754324407: 1, 1.3256359187722562: 1, 1.3230476582639747: 1, 1.3444916032458343: 1, 1.298198108022303: 1, 1.2738298224067781: 1, 1.2760885420826569: 1, 1.3444316945919383: 1, 1.275341472679289: 1, 1.274700194333841: 1, 1.3351997740661408: 1, 1.2740267098296434: 2, 1.27372833012249: 1, 1.2734626642539129: 1, 1.2732081348571458: 1, 1.3367034452911617: 1, 1.323334698801274: 1, 1.2723312723560356: 1, 1.3187806111499145: 1, 1.2717138314765206: 1, 1.3139948853374954: 1, 1.271397170532469: 1, 1.3306037600025726: 1, 1.270663851517669: 1, 1.2703075380805122: 1, 1.3145904243452466: 1, 1.2696362486653967: 1, 1.2690369914042514: 1, 1.268732798849614: 1, 1.3485125062689924: 1, 1.2683716165169163: 1, 1.2680054197565391: 1, 1.2676502206042521: 1, 1.2673622036041767: 1, 1.2670764486384827: 1, 1.2667994265512317: 1, 1.2664652738443567: 1, 1.2659579841364064: 1, 1.2656660344482795: 1, 1.2649861625147643: 1, 1.2646394466101625: 1, 1.2642949725316324: 1, 1.3374229298257296: 1, 1.2637632654385391: 1, 1.3237278535849824: 1, 1.2631465459486844: 1, 1.3104706946684772: 1, 1.2626166962758396: 1, 1.262420731346465: 1, 1.3141611785912126: 1, 1.3059357308712807: 1, 1.3255395868800648: 1, 1.3114928835604482: 1, 1.3021907685824798: 1, 1.2609309638614903: 1, 1.3168684416381715: 1, 1.26047891611493: 1, 1.3269790584768888: 1, 1.2600241276213942: 1, 1.2597164078402652: 1, 1.2594647807496244: 1, 1.3234477080782268: 1, 1.3085113115211457: 1, 1.258603798808844: 1, 1.2583026708293548: 2, 1.2581101141708027: 1, 1.2579746251880248: 1, 1.3226521793483312: 1, 1.3104024493811677: 1, 1.2571414997191963: 1, 1.3332309827187223: 1, 1.2565521240316673: 1, 1.312026120319642: 1, 1.2559682387157467: 2, 1.3250451780326475: 1, 1.2785739485779712: 1, 1.3228621894455688: 1, 1.25492859866671: 1, 1.3235967923341025: 1, 1.2544722655215446: 1, 1.3207491895674794: 1, 1.32399285799657: 1, 1.2539055373461274: 1, 1.253737735218988: 1, 1.2534627273689447: 1, 1.3257291424996678: 1, 1.2530743497847485: 1, 1.338417289652547: 1, 1.2525287935483247: 2, 1.25225648092644: 1, 1.348957683785777: 1, 1.2972021877284905: 1, 1.2915815279021043: 1, 1.2936093520773098: 2, 1.295250162841539: 1, 1.2930055605793214: 1, 1.2927222103345817: 1, 1.2921779524022663: 1}
+pipeline EMA now: 94.0 ms   dynamic margin now: 894 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 323/344 (94%)   longest unexplained inter-burst gap: 5622.0 ms (over 320 gaps)
+VOICE CONTINUITY (render-level): lines with >= 1 rendered chunk: 321/344 (93%)   longest unexplained inter-render gap: 3435.0168968601793 ms (over 3925 gaps)
+VAD/feed: turns started 344   tracker-fed speech 299640 ms   gate-rejected frames 5010
+sent to Live: 299640 ms / true speech 325713 ms (92%)   total dub 385275 ms
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 0
+ratio display (dub/speech): 1.29x (true 1.25x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 435.0 ms, p90 175.0 ms (n=321); slice-play steady |err| max 1407.0 ms, p90 1007.1481032526754 ms (n=593); per-burst END lateness |err| max 1407.0 ms, p90 1122.110124611936 ms (n=320 bursts)
+D-based selection: 320 picks (21a)   split attempts: Kotlin-count 343 vs fixed-count 0 (== splits 0) (21c)
+TRANSCRIPTION ANCHOR (21b): sentences seen 428   ok 10 / no-mk 28 / cons 2 / agree 295   asrLag EMA 475 ms (calibrated from 132 short turns)
+VAD/feed: turns started 344 (33 in last 60 s)   tracker-fed speech 299640 ms (29360 ms in last 60 s)   gate rejects: start-path 417 + in-turn 5010
+FIRST 60 s (restart gate): pairs 26, first sync error at 6947.0 ms, D pinned (>=7.9 s) 0% of the session
+
+KOTLIN-REPORTED vs TRUE (22, §2): 321 bursts with slice records; TRUE end lateness (chunk-level, last chunk) median 64 / p90(|.|) 156.0 / max 415.6666666666715 ms (steady-window p90(|.|) 158.6444335471606 ms); KOTLIN-FULL (same last slice, 1.0x + anchor) median 372 / p90(|.|) 629.6666666666642 / max 2215.333333333332; KOTLIN-AT-PLAY (partial burst, what the HUD shows) median 404 / p90(|.|) 612.3333333333721 / max 2215.333333333332; TRUE err of the last pairing entry's audio (chunk-referenced, same D) median 58 / p90(|.|) 141.60393787338398 ms
+  bias per burst (kotlin - true), decomposed on the last pairing entry (p90 = p90 of |value|, sim convention): TOTAL median 391 / p90 651 / max 2161 / min -2149 ms = PURE 1.0x bias median 328 / p90 792 / max 395 / min -2803 + ANCHOR error median 236 / p90 1057 / max 2824 / min -1693 ms (pure bias is 29% / p90 67% of the burst's dub offset); anchor error over all slices median 172 / p90 748 ms; AT-PLAY minus FULL median 0 ms = the partial-burst effect; slice-level |err| p90 TRUE 136.0740740741021 ms (steady 143.0 ms, n=3909 chunks)
+PER-WINDOW (60 s): pairs [26, 33, 35, 34, 36, 32, 32, 31, 31, 32]; samples [79, 105, 107, 105, 114, 104, 97, 100, 105, 103]; tx ok [1, 1, 0, 0, 2, 1, 2, 0, 0, 3]; tx no-mk [0, 0, 0, 7, 5, 2, 0, 6, 0, 8]
+TX NO-MK REASONS (22, §3/§4): {'b-residual': 28} (a-no-group = no closed group in window; b-residual = merged-group start seconds off; c-refallback = audioAt null + marker >2500 ms)
+TX GROUPS: seen 428, open at end 1
+LAG / 12 s (22, §2): true lag median 4385 / p90 4450.0 / max 4485.0 ms; per-minute true-lag medians [4394, 4388, 4387, 4381, 4389, 4385, 4386, 4378, 4382, 4383]; chunks with true lag >12 s: 0, >20 s: 0; last feed sample (incl. D-check rejects) 3200 ms at 599430.3333333334 ms, D end 5209 ms (gap -2009 ms); D 60 s 5204.0 / 300 s 5244.0 / max 5349; dropped samples LARGE (>20 s) 0, SMALL (deferred) 0, dropped slices 0; ratio display 1.29x
+STRETCH (22): ratio measurements burst-successor 300, tx-ok 6; floor median 1.27 (first 60 s 1.20, steady 1.28); mean speed used 1.27 (0% of chunks at 1.5x); corrected endLag of last burst -924 ms (kotlin-reported -639 ms); valve fires 2, valve-dropped 2750 ms over 28 chunks; chase accepts 0 (runs []), chase rejects seen 0, D-reanchors 0
+  valve cut lines [16, 17, 146] (dropped ms per line {16: 1050, 17: 600, 146: 1100})
+
+GATE22 D-B-choppy r1.25:
+  lines with dub >= 90% (render-level)           PASS
+  max unexplained inter-render gap <= 3000 ms    FAIL
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60s >= 40 (min over windows)           PASS
+  D max <= 8000                                  PASS
+  D pinned 0% of session                         PASS
+  combined burst unpaired fraction < 0.70        PASS
+  slice-play steady |err| median < 500 (TRUE chunk) PASS
+  slice-play steady |err| p90 < 1000 (TRUE chunk) PASS
+  per-burst END lateness p90 (TRUE chunk) < 1000 PASS
+  sync err (burst-start) max < 1000              PASS
+  sync err (burst-start) p90 < 1000              PASS
+  line-start steady |err| median < 1200          PASS
+  dropped audio steady < 5%                      PASS
+  pairs in first 60 s > 0                        PASS
+  sync measurable in first 60 s (not '--')       PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  GATE22: FAIL
+
+device-signature check D-B-choppy r1.25 (09:21 film B dense: D 5.1 s, LAST SAMPLE 12.0 s, samples/60s 25, pairs/60s 0, pairs first60 4, D pinned 0%, burst 91: 17/66/8/2, turns60 4, fed60 57940, gate 57/60 s, ratio 1.42x, end-late p90 2098 (n=15), slice-play p90 2032, sync max/p90 1750/1714, dropped LARGE 171, stall 3):
+  bursts 324 over 344 lines; burst ok/no-mk/cons/fb 322/0/0/0; samples/60s 111, pairs/60s 32, pairs first 60 s 26
+  D last 5174 ms, D max 5349 ms, D pinned 0%, last sample (accepted) 3.2 s, last feed sample (incl. rejects) 3200 ms, D gap -2009 ms
+  true lag median 4385 / p90 4450.0 / max 4485.0 ms; >12 s: 0 chunks, >20 s: 0 chunks; dropped LARGE 0, SMALL 0, slices 0; stall episodes 0
+  turns/60s 33, fed/60s 29360 ms, gate rejects/60s ~543, ratio display 1.29x; TRUE end-late p90 156.0 ms, KOTLIN-AT-PLAY end-late p90 612.3333333333721 ms
+
+DIAG23 D-B-choppy r1.25:
+  tx lat_tx err vs TRUE lag (ok, n=10): median -517 (signed) / p90|.| 948 / max 404 ms; frac >+600 ms 0.00; frac <-600 ms 0.30
+  tx lat_tx err (R-b blocked, n=2): median 680 (signed) / p90|.| 680 ms
+  boundary-sample err vs TRUE lag (tx, n=10): median -517 (signed) / p10 -632 / p90 404 / max 404; frac |err|>1500 0.00
+  boundary-sample err vs TRUE lag (vad, n=322): median 40 (signed) / p10 0 / p90 40 / max 1417; frac |err|>1500 0.00
+  per-minute (D med / refLag med / true-lag med): [(5173, 4490, 4394), (5130, 4495, 4388), (5272, 4494, 4387), (5206, 4490, 4381), (5227, 4491, 4389), (5197, 4493, 4385), (5216, 4496, 4386), (5192, 4495, 4378), (5245, 4494, 4382), (5245, 4495, 4383)]
+  D end 5209 vs true lag med 4385 -> |err| 823.6666666666715 ms; D pinned steady 0%; R-b blocks 2
+  tx groups: 428 seen, frags/group median 1 (1-frag 100%, >=3-frag 0%); multi-frag group span median 241 ms
+  ratio pairs n=9 (consec 11%): counted/dub median 0.944 (true world fed/dub 0.843); pause-corrected/dub (K=0.40) median 0.716; pause ms/pair median 17798; floor median 1.27 (steady 1.28); ratio display 1.29x (true 1.19x)
+  ratio display check: tracker ratio() 0.774 vs true fed/dub 0.843; tx-ok ratio measurements 6 (rf meas 6 / skipped 0)
+
+DIAG24-bootstrap D-B-choppy r1.25:
+  seed: loop=6077.0 err=1608.0 ms; corrected=4092.84 err=-334.8266666666668 ms (mode Sa2, group first/last/closed/startEst=(3159, 3696, True, 2004.1599999999999)); true lag med 4385 ms
+  cluster mode switches (unintentional, >1500 ms jumps of the established ref): 0 
+  B-c: trials 0, adopted switches 0; log []
+  first tx-anchor decisions (now, seq, dlag, best_res, lat_tx, outcome):
+    t=6265 seq=1 dlag=6077 best_res=None lat_tx=None cons/agree
+    t=8879 seq=2 dlag=4093 best_res=329.84799999999996 lat_tx=4422.688 cons/agree
+    t=12636 seq=3 dlag=4093 best_res=497.84799999999996 lat_tx=4590.688 cons/agree
+    t=14373 seq=4 dlag=4093 best_res=852.641599999999 lat_tx=4945.481599999999 cons/agree
+    t=15888 seq=5 dlag=4093 best_res=233.99712 lat_tx=4326.83712 cons/agree
+    t=17813 seq=6 dlag=4093 best_res=290.99712 lat_tx=4383.83712 cons/agree
+    t=19939 seq=7 dlag=4093 best_res=633.99712 lat_tx=4726.83712 cons/agree
+    t=21517 seq=8 dlag=4093 best_res=56.997119999999995 lat_tx=4149.83712 cons/agree
+    t=22971 seq=9 dlag=4093 best_res=437.99712 lat_tx=4530.83712 cons/agree
+    t=25499 seq=10 dlag=4531 best_res=197.6511360000004 lat_tx=4333.185984 cons/agree
+    t=27361 seq=11 dlag=4423 best_res=62.502016000002186 lat_tx=4360.185984 cons/agree
+    t=30990 seq=12 dlag=4423 best_res=564.296867840003 lat_tx=3858.391132159999 ok
+
+GATE23 D-B-choppy r1.25:
+  end-p90 TRUE steady < 1000 ms                  PASS
+  sync max < 1000 ms (full session)              PASS
+  sync p90 < 1000 ms                             PASS
+  sync max < 1000 ms (steady, t>60 s)            PASS
+  D pinned 0% steady (t>60 s)                    PASS
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60 s >= 40 (min window)                PASS
+  dropped audio steady < 5%                      PASS
+  line-start steady median < 1200 ms             PASS
+  |D end - true lag| <= 1000 ms (anti-ratchet)   PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  end-p90/|D-lag| vs REPRO                       PENDING (no REPRO yet)
+  GATE23: PASS (strict) / PASS (ex-cold-start sync max)
+
+GATE24-bootstrap D-B-choppy r1.25:
+  |seed - true lag| <= 600 ms (first seed)       PASS (|seed err| -334.8266666666668 ms)
+  cluster mode switches after established = 0    PASS (unintentional 0, B-c adopted 0)
+  GATE24: PASS (gate23 strict=True)
+
+DIAG25-seed/referee D-B-choppy r1.25:
+  (no NewTracker25 instance captured)
+
+GATE25 D-B-choppy r1.25:
+  end-p90 TRUE steady < 1000 ms                        PASS
+  sync max < 1000 ms (full session)                    PASS
+  sync p90 < 1000 ms                                   PASS
+  sync max < 1000 ms (steady, t>60 s)                  PASS
+  D pinned 0% steady (t>60 s)                          PASS
+  pairs > 0 in EVERY 60 s window                       PASS
+  samples/60 s >= 40 (min window)                      PASS
+  dropped audio steady < 5%                            PASS
+  line-start steady median < 1200 ms                   PASS
+  |D end - true lag| <= 1000 ms ABSOLUTE (main bar)    PASS
+  |seed - true lag| <= 600 ms (first seed)             PASS
+  cluster mode switches after established = 0          PASS
+  |D end - true lag| <= REPRO (reported only)          n/a (|D-lag| 823.6666666666715 vs REPRO None)
+  GATE25: PASS (strict=True excold=True)
+
+DIAG26 D-B-choppy r1.25:
+  true lag med 4385; D end 5209 (signed err 824); last sample 3200; hold end 700.0
+  end-burst TRUE t>60s: p90 158.0 / max 415.6666666666715 / median 59.377591213487904 (n=297); first-chunk median 61.0; within-burst growth median 2.595356011413969 / p90 47.0
+  slice-play t>60s: p90 1007.3222347497067 / max 1407.0 (n=702); sync t>60s: max 435.0 / p90 176.0 (n=296)
+  stretch: mean 1.28, frac>=1.49 0.00, ratio-floor median 1.268; valve fires 2, dropped 2743 ms total, max/60s 1650 ms, last/60s 0 ms
+  pairs/60s [26, 33, 35, 34, 36, 32, 32, 31, 31, 32] (mean 32.2); samples/60s [79, 105, 107, 105, 114, 104, 97, 100, 105, 103] (mean 101.9); drop steady 0.6%; dropped slices 0; Sb trials 0 adopts 0; seedErr -334.8266666666668
+  end-burst median by minute [49, 122, 70, 96, 31, 77, 39, 90, 37, 59] (rising = backlog accumulating faster than the drain); total dub 385275 ms; drain check dense-minute: net 1.54 s/min (claim at 1.5x/1.47: +1.76 s/min)
+
+SUM29B D-B-choppy r1.25                   end90t60    158  drop  0.6%  valve  2743 ms /  2 fires  skip 0 ms / 0  speedMax 1.35  pairsMin 26  Dmax 5349
+
+##### D-B-filmA r1.25 lag7.8: 29508 vad events, 10 VAD turns (205 lines), 5276 dub chunks, 395 tx-in fragments #####
+=== D-B-filmA r1.25 lag7.8 ===
+D changes: 89   D range: 5000..8000 ms (max 8000)   D last 60 s: [8000, 8000, 8000, 7979.0, 7954.0, 7993.0, 7994.0, 7981.0, 7981.0, 8000, 7972.0, 7988.0]
+last sample: 7.3 s   samples/60s: 128   queue: 16   deferred: 0   dropped: 0/0   empty: 1
+turn pairs: total 177, last 60 s: 19   bursts: 184   hold saturated (hold=0): 12
+tc: recv 0 (no-marker 0, anchor-back 0, consist 0, ok 0, fallback 0)
+burst: recv 182 (no-marker 162, anchor-back 0, consist 10, ok 10, fallback 3)
+marker splitting: splits 0
+marker diagnostics: markers now 0, newest marker age None ms, split attempts 0, splits 0, stall resets 0
+BOUNDARY-sample err vs TRUE sample of the same turn: signed median -26 ms, p10 -372, p90 +200 | |err| median 139 ms, p90 385 ms, n=179
+slice-sample err vs true lag: median +2 ms, p10 -412, p90 +347, n=1022
+BURST SYNC ERROR, TRUE render (n=167): signed median -28 ms, p10 -150, p90 +132 | |err| median 111 ms, p90 161 ms, n=167
+LINE-START SYNC ERROR, ACTUAL hold (n=182): signed median -16 ms, p10 -146, p90 +228 | |err| median 114 ms, p90 228 ms, n=182
+LINE-START ACTUAL, steady regimes only (n=144): signed median -47 ms, p10 -156, p90 +228 | |err| median 109 ms, p90 228 ms, n=144
+LINE-START FRESH-HOLD (n=17): signed median -87 ms, p10 -140, p90 +2639 | |err| median 137 ms, p90 2639 ms, n=17
+SLICE-PLAY SYNC ERROR (n=957): signed median +1060 ms, p10 +175, p90 +2029 | |err| median 1060 ms, p90 2029 ms, n=957
+SLICE-PLAY, steady regimes only (n=757): signed median +1013 ms, p10 +152, p90 +2007 | |err| median 1013 ms, p90 2007 ms, n=757
+MEASURED pipeline (what the tracker eats): median 52 ms, p90 54 ms, max 222 ms, n=167
+TRUE pipeline (render - due): median 174 ms, p90 301 ms, max 509 ms
+backlog ahead at burst write: median 0 ms, p90 0 ms, max 228 ms
+DROPPED audio (hold queue, >500 ms overdue): 32375 ms of 520675 ms (6.2%)
+DROPPED audio, steady regimes only (excl. the 30 s continuous stretch 180-300 s): 24475 ms of 379525 ms (6.4%)
+mid-burst pipeline samples (every 20th chunk): median 175 ms, p90 308 ms, n=243
+DECOMP (steady, first slice of each played chunk): pipeline median 172 ms, hold median 119 ms, sample median 7549 ms (true lag median 7572 ms), D median 7997 ms, lag_est median 7605 ms, implied slice-play median -145 ms
+STRETCH actually used at chunk feeds: {1.0: 60, 1.1: 43, 1.2: 20, 1.25: 69, 1.35: 2418, 1.289785445214828: 38, 1.3225909194508894: 58, 1.311238295800641: 22, 1.324652754388565: 62, 1.332703288256153: 1, 1.3269218986152527: 34, 1.3223200488203393: 32, 1.3229288832996569: 32, 1.3307626333349432: 28, 1.3283856876323061: 57, 1.3381654537209193: 25, 1.3400038778757035: 1, 1.3305946821190566: 27, 1.3381313010214435: 1, 1.3490077343979787: 25, 1.3432378721563993: 22, 1.3491890289004245: 2, 1.3395219436499923: 29, 1.3253566393624687: 20, 1.3290124710929982: 3, 1.3370539500428265: 23, 1.3371913191512155: 3, 1.3114154137058158: 4, 1.3041598974557702: 2, 1.304509619340627: 24, 1.3075259689243761: 3, 1.3097666117397266: 29, 1.313495825517111: 3, 1.308776669355583: 24, 1.3065983581692515: 3, 1.3090274690827053: 23, 1.308801277882059: 1, 1.3092117940726666: 4, 1.3318064365936526: 29, 1.330526784731952: 3, 1.3310477500702866: 27, 1.33342938373575: 2, 1.3233822962251107: 27, 1.3234658249924813: 3, 1.3057463632336361: 17, 1.3045790955529675: 3, 1.277780179284753: 22, 1.284352297383511: 26, 1.250962958774763: 1, 1.259457450305188: 36, 1.2945155798982282: 29, 1.3008022831997244: 6, 1.2667818585447708: 23, 1.3417320558003096: 36, 1.298306108569795: 24, 1.2960982347381804: 1, 1.265285555702527: 28, 1.2654080007423532: 31, 1.2650565620206418: 32, 1.267452212396956: 20, 1.2688800400046598: 28, 1.3021732372710084: 22, 1.2691722841509119: 35, 1.2721845705931338: 25, 1.2687663410886139: 32, 1.2714761652066044: 21, 1.3351153656311308: 27, 1.27312575997944: 24, 1.2749796894533445: 22, 1.2775811070399758: 1, 1.2757233948824902: 36, 1.2751872507398263: 19, 1.2745670169435974: 21, 1.2735476806188373: 58, 1.2719957263951334: 7, 1.2714759653172953: 30, 1.2732346751458519: 3, 1.2739073009033963: 21, 1.276222952856283: 36, 1.2760066897101232: 22, 1.27536061920957: 21, 1.2761186016137536: 37, 1.2725583937800502: 26, 1.2724264978641142: 28, 1.2752765910164854: 60, 1.2739104826361765: 62, 1.2725693341214646: 30, 1.2746529813164202: 30, 1.272368050009134: 77, 1.2759861270647008: 28, 1.2741417088522993: 28, 1.3229292618143975: 2, 1.32473215539529: 27, 1.2758781145501266: 26, 1.337974881285084: 2, 1.3390168750489349: 18, 1.2779460669717826: 61, 1.3285690296664585: 1, 1.329453582217243: 29, 1.2778196486267728: 26, 1.276046150243501: 21, 1.3290962622273876: 35}
+LOOP lateness (busy_until - due) at feed: median 0 ms, p90 0 ms, max 192 ms, n=4866
+ratio (speech/dub): tracker 0.784 vs true 0.800   (per-turn sums: counted 356272 / dub 454500)
+burst-successor ratio measurements: 2
+slice D-check: rejected 33 samples, D-based re-anchors 0
+stretch speed distribution: {1.0: 1, 1.25: 2, 1.35: 85, 1.289785445214828: 1, 1.3225909194508894: 2, 1.311238295800641: 1, 1.324652754388565: 2, 1.3269218986152527: 1, 1.3223200488203393: 1, 1.3229288832996569: 1, 1.3307626333349432: 2, 1.3283856876323061: 1, 1.3381654537209193: 1, 1.3305946821190566: 1, 1.3490077343979787: 1, 1.3432378721563993: 1, 1.3253566393624687: 1, 1.3370539500428265: 1, 1.3097666117397266: 1, 1.308776669355583: 1, 1.3090274690827053: 1, 1.3318064365936526: 1, 1.3310477500702866: 1, 1.3233822962251107: 1, 1.3057463632336361: 1, 1.277780179284753: 1, 1.284352297383511: 1, 1.259457450305188: 1, 1.2945155798982282: 1, 1.2667818585447708: 1, 1.3417320558003096: 2, 1.265285555702527: 2, 1.2650565620206418: 1, 1.267452212396956: 1, 1.3021732372710084: 1, 1.2688800400046598: 1, 1.2691722841509119: 1, 1.2721845705931338: 1, 1.2687663410886139: 1, 1.3351153656311308: 1, 1.2714761652066044: 1, 1.27312575997944: 1, 1.2749796894533445: 1, 1.2757233948824902: 2, 1.2751872507398263: 1, 1.2735476806188373: 3, 1.2714759653172953: 1, 1.2732346751458519: 1, 1.276222952856283: 1, 1.2760066897101232: 2, 1.27536061920957: 1, 1.2761186016137536: 1, 1.2725583937800502: 1, 1.2724264978641142: 1, 1.2752765910164854: 2, 1.2739104826361765: 2, 1.2725693341214646: 1, 1.2746529813164202: 1, 1.272368050009134: 3, 1.2759861270647008: 1, 1.3229292618143975: 1, 1.2758781145501266: 1, 1.337974881285084: 1, 1.2779460669717826: 2, 1.3285690296664585: 1, 1.2778196486267728: 2, 1.3290962622273876: 1}
+pipeline EMA now: 239.0 ms   dynamic margin now: 1039 ms
+
+VOICE CONTINUITY (v1.0.20): lines with >= 1 dub burst: 183/205 (89%)   longest unexplained inter-burst gap: 9800.0 ms (over 136 gaps)
+VOICE CONTINUITY (render-level): lines with >= 1 rendered chunk: 182/205 (89%)   longest unexplained inter-render gap: 7912.592592592584 ms (over 4801 gaps)
+VAD/feed: turns started 10   tracker-fed speech 589760 ms   gate-rejected frames 143
+sent to Live: 589760 ms / true speech 457892 ms (129%)   total dub 520675 ms
+stall: episodes 0   reset invocations (old-style count) 0   burst D-check bypass streak now 0
+ratio display (dub/speech): 1.28x (true 1.25x)
+
+SYNC ERROR max/p90 (21d): burst-start |err| max 1771.0987654321361 ms, p90 161.0 ms (n=167); slice-play steady |err| max 2968.7526563418214 ms, p90 2007.3292367484537 ms (n=757); per-burst END lateness |err| max 2968.7526563418214 ms, p90 2437.699999999997 ms (n=183 bursts)
+D-based selection: 6 picks (21a)   split attempts: Kotlin-count 8 vs fixed-count 0 (== splits 0) (21c)
+TRANSCRIPTION ANCHOR (21b): sentences seen 392   ok 169 / no-mk 4 / cons 3 / agree 8   asrLag EMA 600 ms (calibrated from 0 short turns)
+VAD/feed: turns started 10 (1 in last 60 s)   tracker-fed speech 589760 ms (60040 ms in last 60 s)   gate rejects: start-path 17 + in-turn 143
+FIRST 60 s (restart gate): pairs 11, first sync error at 10450.0 ms, D pinned (>=7.9 s) 98% of the session
+
+KOTLIN-REPORTED vs TRUE (22, §2): 167 bursts with slice records; TRUE end lateness (chunk-level, last chunk) median 154 / p90(|.|) 257.6296296294895 / max 385.88888888875954 ms (steady-window p90(|.|) 299.222222222219 ms); KOTLIN-FULL (same last slice, 1.0x + anchor) median 739 / p90(|.|) 1154.0 / max 3310.333333333314; KOTLIN-AT-PLAY (partial burst, what the HUD shows) median 577 / p90(|.|) 2142.333333333334 / max 3875.0; TRUE err of the last pairing entry's audio (chunk-referenced, same D) median 145 / p90(|.|) 246.4853462157771 ms
+  bias per burst (kotlin - true), decomposed on the last pairing entry (p90 = p90 of |value|, sim convention): TOTAL median 859 / p90 1258 / max 3406 / min -1299 ms = PURE 1.0x bias median 591 / p90 1104 / max 949 / min -4864 + ANCHOR error median 312 / p90 2432 / max 6367 / min -1666 ms (pure bias is 25% / p90 33% of the burst's dub offset); anchor error over all slices median 233 / p90 628 ms; AT-PLAY minus FULL median 320 ms = the partial-burst effect; slice-level |err| p90 TRUE 226.074074074073 ms (steady 236.33333333333576 ms, n=4689 chunks)
+PER-WINDOW (60 s): pairs [11, 19, 18, 20, 18, 19, 16, 19, 18, 19]; samples [72, 129, 122, 128, 122, 120, 112, 118, 114, 128]; tx ok [11, 17, 18, 19, 18, 19, 13, 18, 18, 18]; tx no-mk [0, 0, 0, 0, 0, 1, 1, 0, 0, 2]
+TX NO-MK REASONS (22, §3/§4): {'b-residual': 4} (a-no-group = no closed group in window; b-residual = merged-group start seconds off; c-refallback = audioAt null + marker >2500 ms)
+TX GROUPS: seen 392, open at end 1
+LAG / 12 s (22, §2): true lag median 7579 / p90 7727.666666666686 / max 7785.0 ms; per-minute true-lag medians [7575, 7564, 7570, 7583, 7568, 7588, 7574, 7589, 7584, 7581]; chunks with true lag >12 s: 0, >20 s: 0; last feed sample (incl. D-check rejects) 7336 ms at 599194.3333333334 ms, D end 7988 ms (gap -652 ms); D 60 s 7995.0 / 300 s 8000 / max 8000; dropped samples LARGE (>20 s) 0, SMALL (deferred) 0, dropped slices 0; ratio display 1.28x
+STRETCH (22): ratio measurements burst-successor 2, tx-ok 126; floor median 1.35 (first 60 s 1.35, steady 1.29); mean speed used 1.35 (0% of chunks at 1.5x); corrected endLag of last burst 207 ms (kotlin-reported 337 ms); valve fires 17, valve-dropped 32375 ms over 324 chunks; chase accepts 0 (runs []), chase rejects seen 0, D-reanchors 0
+  valve cut lines [17, 22, 28, 34, 38, 55, 59, 63, 75, 96, 99, 109] (dropped ms per line {17: 2000, 22: 800, 28: 2000, 34: 1975, 38: 2000, 55: 2000, 59: 2000, 63: 2000, 75: 2000, 96: 1900, 99: 2000, 109: 2000})
+
+GATE22 D-B-filmA r1.25 lag7.8:
+  lines with dub >= 90% (render-level)           FAIL
+  max unexplained inter-render gap <= 3000 ms    FAIL
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60s >= 40 (min over windows)           PASS
+  D max <= 8000                                  PASS
+  D pinned 0% of session                         FAIL
+  combined burst unpaired fraction < 0.70        PASS
+  slice-play steady |err| median < 500 (TRUE chunk) PASS
+  slice-play steady |err| p90 < 1000 (TRUE chunk) PASS
+  per-burst END lateness p90 (TRUE chunk) < 1000 PASS
+  sync err (burst-start) max < 1000              FAIL
+  sync err (burst-start) p90 < 1000              PASS
+  line-start steady |err| median < 1200          PASS
+  dropped audio steady < 5%                      FAIL
+  pairs in first 60 s > 0                        PASS
+  sync measurable in first 60 s (not '--')       PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  GATE22: FAIL
+
+device-signature check D-B-filmA r1.25 lag7.8 (09:10 film A: D 5.3 s, last sample 7.8 s, samples/60s 8, pairs/60s 0, pairs first60 4, D pinned 0%, burst 33: 11/18/4 (ok/no-mk/cons), turns60 1, fed60 53820, gate 136/60 s, ratio 1.42x, end-late p90 2448 (n=9), slice-play p90 2098, sync max/p90 1714/1267, dropped large 10, stall 0):
+  bursts 184 over 205 lines; burst ok/no-mk/cons/fb 10/162/10/3; samples/60s 128, pairs/60s 19, pairs first 60 s 11
+  D last 7988 ms, D max 8000 ms, D pinned 98%, last sample (accepted) 7.3 s, last feed sample (incl. rejects) 7336 ms, D gap -652 ms
+  true lag median 7579 / p90 7727.666666666686 / max 7785.0 ms; >12 s: 0 chunks, >20 s: 0 chunks; dropped LARGE 0, SMALL 0, slices 0; stall episodes 0
+  turns/60s 1, fed/60s 60040 ms, gate rejects/60s ~16, ratio display 1.28x; TRUE end-late p90 257.6296296294895 ms, KOTLIN-AT-PLAY end-late p90 2142.333333333334 ms
+
+DIAG23 D-B-filmA r1.25 lag7.8:
+  tx lat_tx err vs TRUE lag (ok, n=169): median -5 (signed) / p90|.| 353 / max 461 ms; frac >+600 ms 0.00; frac <-600 ms 0.01
+  tx lat_tx err (R-b blocked, n=3): median 966 (signed) / p90|.| 966 ms
+  boundary-sample err vs TRUE lag (tx, n=169): median -5 (signed) / p10 -332 / p90 244 / max 461; frac |err|>1500 0.00
+  boundary-sample err vs TRUE lag (vad, n=10): median 20 (signed) / p10 -60 / p90 40 / max 40; frac |err|>1500 0.10
+  per-minute (D med / refLag med / true-lag med): [(8000, 7602, 7575), (7999, 7716, 7564), (8000, 7731, 7570), (7997, 7758, 7583), (8000, 7738, 7568), (7998, 7769, 7588), (8000, 7744, 7574), (7997, 7744, 7589), (7991, 7871, 7584), (7994, 7820, 7581)]
+  D end 7988 vs true lag med 7579 -> |err| 409.0 ms; D pinned steady 100%; R-b blocks 3
+  tx groups: 392 seen, frags/group median 1 (1-frag 99%, >=3-frag 0%); multi-frag group span median 205 ms
+  ratio pairs n=168 (consec 29%): counted/dub median 0.937 (true world fed/dub 0.882); pause-corrected/dub (K=0.40) median 0.820; pause ms/pair median 1346; floor median 1.35 (steady 1.29); ratio display 1.28x (true 1.13x)
+  ratio display check: tracker ratio() 0.784 vs true fed/dub 0.882; tx-ok ratio measurements 126 (rf meas 126 / skipped 0)
+
+DIAG24-bootstrap D-B-filmA r1.25 lag7.8:
+  seed: loop=10280.0 err=2511.0 ms; corrected=7338.0 err=-389.66666666666606 ms (mode Sa2, group first/last/closed/startEst=(4162, 5178, True, 3062.0)); true lag med 7579 ms
+  cluster mode switches (unintentional, >1500 ms jumps of the established ref): 0 
+  B-c: trials 0, adopted switches 0; log []
+  first tx-anchor decisions (now, seq, dlag, best_res, lat_tx, outcome):
+    t=10568 seq=1 dlag=10280 best_res=None lat_tx=None cons/agree
+    t=14962 seq=2 dlag=7338 best_res=416.0 lat_tx=6922.0 ok
+    t=17728 seq=3 dlag=7338 best_res=519.0 lat_tx=7857.0 ok
+    t=26211 seq=4 dlag=7338 best_res=264.0 lat_tx=7602.0 ok
+    t=30521 seq=5 dlag=7338 best_res=555.0 lat_tx=7893.0 ok
+    t=35505 seq=6 dlag=7338 best_res=215.0 lat_tx=7123.0 ok
+    t=41821 seq=7 dlag=7602 best_res=127.0 lat_tx=7475.0 ok
+    t=44440 seq=8 dlag=7602 best_res=307.0 lat_tx=7909.0 ok
+    t=47048 seq=9 dlag=7602 best_res=92.0 lat_tx=7510.0 ok
+    t=49927 seq=10 dlag=7602 best_res=114.0 lat_tx=7716.0 ok
+    t=52341 seq=11 dlag=7602 best_res=239.0 lat_tx=7841.0 ok
+    t=57753 seq=12 dlag=7716 best_res=48.0 lat_tx=7764.0 ok
+
+GATE23 D-B-filmA r1.25 lag7.8:
+  end-p90 TRUE steady < 1000 ms                  PASS
+  sync max < 1000 ms (full session)              FAIL
+  sync p90 < 1000 ms                             PASS
+  sync max < 1000 ms (steady, t>60 s)            FAIL
+  D pinned 0% steady (t>60 s)                    FAIL
+  pairs > 0 in EVERY 60 s window                 PASS
+  samples/60 s >= 40 (min window)                PASS
+  dropped audio steady < 5%                      FAIL
+  line-start steady median < 1200 ms             PASS
+  |D end - true lag| <= 1000 ms (anti-ratchet)   PASS
+  D tracks last sample (gap < 3000 ms)           PASS
+  no true lag ever > 20000 ms                    PASS
+  end-p90/|D-lag| vs REPRO                       PENDING (no REPRO yet)
+  GATE23: FAIL (strict) / FAIL (ex-cold-start sync max)
+
+GATE24-bootstrap D-B-filmA r1.25 lag7.8:
+  |seed - true lag| <= 600 ms (first seed)       PASS (|seed err| -389.66666666666606 ms)
+  cluster mode switches after established = 0    PASS (unintentional 0, B-c adopted 0)
+  GATE24: FAIL (gate23 strict=False)
+
+DIAG25-seed/referee D-B-filmA r1.25 lag7.8:
+  (no NewTracker25 instance captured)
+
+GATE25 D-B-filmA r1.25 lag7.8:
+  end-p90 TRUE steady < 1000 ms                        PASS
+  sync max < 1000 ms (full session)                    FAIL
+  sync p90 < 1000 ms                                   PASS
+  sync max < 1000 ms (steady, t>60 s)                  FAIL
+  D pinned 0% steady (t>60 s)                          FAIL
+  pairs > 0 in EVERY 60 s window                       PASS
+  samples/60 s >= 40 (min window)                      PASS
+  dropped audio steady < 5%                            FAIL
+  line-start steady median < 1200 ms                   PASS
+  |D end - true lag| <= 1000 ms ABSOLUTE (main bar)    PASS
+  |seed - true lag| <= 600 ms (first seed)             PASS
+  cluster mode switches after established = 0          PASS
+  |D end - true lag| <= REPRO (reported only)          n/a (|D-lag| 409.0 vs REPRO None)
+  GATE25: FAIL (strict=False excold=False)
+
+DIAG26 D-B-filmA r1.25 lag7.8:
+  true lag med 7579; D end 7988 (signed err 409); last sample 7336; hold end 125.0
+  end-burst TRUE t>60s: p90 228.66666666667152 / max 385.88888888875954 / median -146.65598974155728 (n=155); first-chunk median -57.0; within-burst growth median -93.1721849134774 / p90 177.40740740759065
+  slice-play t>60s: p90 2051.111111111124 / max 2968.7526563418214 (n=888); sync t>60s: max 1771.0987654321361 / p90 161.0 (n=155)
+  stretch: mean 1.32, frac>=1.49 0.00, ratio-floor median 1.35; valve fires 17, dropped 32297 ms total, max/60s 6775 ms, last/60s 1900 ms
+  pairs/60s [11, 19, 18, 20, 18, 19, 16, 19, 18, 19] (mean 17.7); samples/60s [72, 129, 122, 128, 122, 120, 112, 118, 114, 128] (mean 116.5); drop steady 6.4%; dropped slices 0; Sb trials 0 adopts 0; seedErr -389.66666666666606
+  end-burst median by minute [-328, -213, -160, -42, -66, -43, -35, -147, -204, -211] (rising = backlog accumulating faster than the drain); total dub 520675 ms; drain check dense-minute: net 3.98 s/min (claim at 1.5x/1.47: +1.76 s/min)
+
+SUM29B D-B-filmA r1.25 lag7.8             end90t60    229  drop  6.4%  valve 32297 ms / 17 fires  skip 0 ms / 0  speedMax 1.35  pairsMin 11  Dmax 8000
+
+TOTAL runtime 7.9 s

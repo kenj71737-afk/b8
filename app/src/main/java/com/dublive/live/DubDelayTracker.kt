@@ -326,8 +326,13 @@ class DubDelayTracker(
         /** v1.0.19 — hard D cap: the device lag maxed at 8.3 s;
          * D must never chase a runaway backlog again. */
         const val MAX_DELAY_CAP_MS = 8000L
-        /** v1.0.19 — time-stretch ceiling (error-driven path only). */
-        const val MAX_STRETCH_SPEED = 1.5
+        /** v1.0.19 — time-stretch ceiling (error-driven path only).
+         * v1.0.24: 1.35x (was 1.5x — user 28/11 12:11 "Giọng bị
+         * méo khi bắt kịp" at sustained 1.5x; the distortion
+         * threshold sits between 1.25x and 1.5x, and sim1035/1036
+         * gate the whole round at cap 1.35x). Every speed path
+         * (error-driven, level, ratio floor) caps here. */
+        const val MAX_STRETCH_SPEED = 1.35
         /** v1.0.19 — level-driven stretch ceiling: a full buffer
          * alone does not justify the fastest stretch. */
         const val STRETCH_LEVEL_CAP = 1.25
@@ -466,6 +471,12 @@ class DubDelayTracker(
         const val SB_AGREE_RUN = 3
         const val SB_COOLDOWN_BURSTS = 10
         const val SB_MAX_TRIALS = 3
+        /** v1.0.24 TB (trial budget, sim1034) — max D excursion
+         * from the trial-start value while an S-b trial is
+         * active (±500 ms). Bounds the transient video-delay
+         * jump a wrong trial ref can cause; lifts on adoption,
+         * so genuine lag steps still recover. */
+        const val TRIAL_BUDGET_MS = 500L
     }
 
     /** One 500 ms slice of counted speech: its wall span and its
@@ -794,6 +805,29 @@ class DubDelayTracker(
     private var tailValveFires = 0
     private var vbPlaySeq: Long? = null
     private var vbValveUsedSeq: Long? = null
+    /** v1.0.24 — thiết bị đo tốc độ stretch THẬT (port từ
+     * v1.0.23, CHỈ ĐO, không đổi hành vi đồng bộ): tốc độ target
+     * của tracker, tốc độ đọc lại từ track (readback), tốc độ
+     * thật đo bằng độ dốc playhead (slope), và cờ stretch có
+     * được hỗ trợ không. Service đẩy vào đây mỗi giây (level
+     * ticker) + mỗi lần burst phát (onBurstPlayed). HUD hiện cả
+     * target lẫn thật để vạch mặt trường hợp HUD cũ in 1,50×
+     * trong khi track kẹt 1,0× (số hạng ~1800 ms chưa giải thích
+     * được trên ảnh 12:00). */
+    private var lastAppliedReadback: Double? = null
+    private var lastMeasuredSpeed: Double? = null
+    private var lastStretchSupported: Boolean? = null
+    /** v1.0.24 Fix D — TRUE end-burst of COMPLETED bursts: the
+     * last played burst's play info, captured at its play
+     * report (the record is pruned there, so the values must be
+     * kept here until the next burst finalises this one). */
+    private var fxdLastPlaySpeed = 1.0
+    private var fxdLastPlayDelayMs = 0L
+    private var fxdLastStartCumMs = -1L
+    /** Completed TRUE end-bursts (newest last, max 5) + seqs
+     * already finalised (one finalisation per burst). */
+    private val fxdCompletedEnds = ArrayDeque<Long>()
+    private val fxdCompletedDone = HashSet<Long>()
     /** Sa2 seed v2: arrival wall of the session's first dub
      * chunk; the first paired slice sample re-seeds from it.
      * Set once per session (stop() clears it; reconnect/stall
@@ -818,6 +852,9 @@ class DubDelayTracker(
     private var sbLastSeq: Long? = null
     private var sbTrialActive = false
     private var sbTrialRef: Long? = null
+    /** v1.0.24 TB — D latched at trial start (see sbStartTrial);
+     * null when no trial is active. */
+    private var sbTrialStartDelayMs: Long? = null
     private var sbTrialLeft = 0
     private var sbTrialBaseRef: Long? = null
     private var sbTrialBaseMed: Long? = null
@@ -1317,8 +1354,13 @@ class DubDelayTracker(
         // belong to the stalled burst; the next chunk starts a
         // new turn and must not be eaten or stretched on a stale
         // backlog. Sa2 / S-b state survives (once per run).
+        // v1.0.24 Fix D — the completed end-bursts are pre-stall
+        // measurements; drop them so the valve never arms on a
+        // stale regime.
         pendingTailDropMs = 0L
         lastCorrectedEndLagMs = 0L
+        fxdCompletedEnds.clear()
+        fxdCompletedDone.clear()
     }
 
     /**
@@ -1614,6 +1656,10 @@ class DubDelayTracker(
             lastBurstSeqTx = burstSeq
             lastBurstPaired = burstOk > burstOkBefore
             lastBurstMarker = marker
+            // v1.0.24 Fix D (2/2) — arm the tail valve now that
+            // this burst's hold is known (the hold gate must see
+            // the post-slew hold). One arm per play report.
+            armTailValveD(burstHold)
         } else if (isFirstChunk) {
             // v1.0.17 — the session's (or post-reconnect) first
             // chunk is not a burst by the old test, but it still
@@ -1728,7 +1774,21 @@ class DubDelayTracker(
      *     current in-turn sync. Diagnostics only.
      */
     @Synchronized
-    fun onBurstPlayed(seq: Long, playWallMs: Long, pipelineMs: Long, estimated: Boolean, backlogMs: Long = 0L) {
+    fun onBurstPlayed(seq: Long, playWallMs: Long, pipelineMs: Long, estimated: Boolean, backlogMs: Long = 0L, trueSpeed: Double = 0.0) {
+        // v1.0.24 — thiết bị đo tốc độ THẬT (port từ v1.0.23):
+        // tốc độ đo bằng độ dốc playhead mà VoicePlayer gửi kèm
+        // (0.0 = chưa đo được). Dùng nó — không dùng target — để
+        // chia offset dub khi tính playSliceWall, và để HUD đối
+        // chiếu target vs thật. Nếu chưa đo được thì rơi về
+        // target như cũ (và số cuối-burst mang cờ "đo bằng tốc độ
+        // giả định" qua lastPipelineEstimated / diagnostics).
+        if (trueSpeed in 0.5..2.0) {
+            lastMeasuredSpeed = trueSpeed
+            if (kotlin.math.abs(trueSpeed - targetSpeed) > 0.05) {
+                Log.w(TAG, "applied speed mismatch: target=%.2f measured=%.2f (burst seq=%d)"
+                    .format(targetSpeed, trueSpeed, seq))
+            }
+        }
         lastPipelineMs = pipelineMs.coerceIn(0L, 2000L)
         lastPipelineEstimated = estimated
         // v1.0.18 — the audio already queued ahead of this burst's
@@ -1764,17 +1824,34 @@ class DubDelayTracker(
         // Default end-lag 0 (no pairing entries → no drift
         // signal, no valve arm — conservative: a marker-less
         // burst never arms the valve on an unmeasurable lag).
-        // The speed used is the tracker's target at this burst's
-        // play (stretchUpdate runs after this block, so it is
-        // the speed in effect during the burst; a mid-burst
-        // speed change is a second-order error on this
-        // diagnostic). The sim measures the same quantity from
-        // true render times, so after the v1.0.22 measurement
-        // fix the device numbers are comparable to the sim.
+        // The speed used is the MEASURED applied speed when the
+        // VoicePlayer managed to measure it (v1.0.24 — the
+        // tracker target is NOT the applied speed: on the 12:00
+        // device photo the HUD printed 1.50x while the track may
+        // have been stuck at 1.0x, which alone explains the
+        // ~1800 ms unexplained within-burst growth: dividing by
+        // 1.5 instead of 1.0 understates end-lag by 33% of the
+        // dub length in the burst). Fall back to the target only
+        // when nothing was measured.
         vbPlaySeq = seq
         lastCorrectedEndLagMs = 0L
         if (record != null) {
-            val playSpeed = targetSpeed.coerceIn(1.0, MAX_STRETCH_SPEED)
+            // v1.0.24 Fix D — keep this burst's play info for the
+            // next burst's finalisation (the record is pruned
+            // below; the completed TRUE end-burst is computed at
+            // the next burst boundary from the full pairing log).
+            fxdLastPlaySpeed = (lastMeasuredSpeed?.takeIf { it in 0.5..2.0 }
+                ?: targetSpeed).coerceIn(1.0, 2.0)
+            fxdLastPlayDelayMs = delayMs
+            fxdLastStartCumMs = record.startCumDubMs
+        } else {
+            fxdLastStartCumMs = -1L
+        }
+        if (record != null) {
+            // v1.0.24 — divide the in-burst dub offset by the
+            // MEASURED applied speed (see above), not the target.
+            val playSpeed = (lastMeasuredSpeed?.takeIf { it in 0.5..2.0 }
+                ?: targetSpeed).coerceIn(1.0, 2.0)
             val slices = pairingLog.filter { it.burstSeq == seq }
                 .sortedBy { it.dubCumMs }
             if (slices.isNotEmpty()) {
@@ -1844,6 +1921,22 @@ class DubDelayTracker(
     val currentStretchSpeed: Double get() = targetSpeed
 
     /**
+     * v1.0.24 — THIẾT BỊ ĐO TỐC ĐỘ ÁP DỤNG THẬT (port từ v1.0.23;
+     * service đẩy vào mỗi giây + mỗi burst phát): tốc độ đọc lại
+     * từ AudioTrack sau setPlaybackParams ([readback], 0.0 = chưa
+     * đọc được), tốc độ thật đo bằng độ dốc playhead ([measured],
+     * 0.0 = chưa đo được), và cờ stretch có được hỗ trợ trên máy
+     * này không. Chỉ lưu để chẩn đoán/HUD — KHÔNG lái tốc độ
+     * target (target vẫn do [stretchUpdate]/[ratioFloorMs] quyết).
+     */
+    @Synchronized
+    fun noteAppliedSpeed(readback: Double, measured: Double, supported: Boolean) {
+        if (readback in 0.5..2.0) lastAppliedReadback = readback
+        if (measured in 0.5..2.0) lastMeasuredSpeed = measured
+        lastStretchSupported = supported
+    }
+
+    /**
      * v1.0.19 — MID-BURST PIPELINE SAMPLE. The burst-first
      * chunk's pipeline (~50 ms — the loop is idle at burst
      * starts) systematically UNDER-measures the typical pipeline
@@ -1881,9 +1974,9 @@ class DubDelayTracker(
      * Raise-only; the lowering is the hysteresis + decay in
      * [stretchUpdate]. The raise caps at [STRETCH_LEVEL_CAP]
      * (1.25): a full buffer alone does not justify the fastest
-     * stretch (at speed 1.5 the buffer is often >85% full and
-     * 1.5x there breaks sync); only the error-driven path in
-     * [stretchUpdate] may go to 1.5.
+     * stretch (at speed 1.35 the buffer is often >85% full and
+     * 1.35x there breaks sync); only the error-driven path in
+     * [stretchUpdate] may go to 1.35.
      */
     @Synchronized
     fun noteLevel(levelMs: Long, capMs: Long, nowMs: Long) {
@@ -1906,7 +1999,7 @@ class DubDelayTracker(
      * separates a 2.5x generation burst (median ~330 ms) from a
      * 1.5x one (~40 ms); the sync error and track backlog overlap
      * between the two speeds. When the loop is >200 ms behind,
-     * raise the speed to [MAX_STRETCH_SPEED] (1.5x) so the drain
+     * raise the speed to [MAX_STRETCH_SPEED] (1.35x) so the drain
      * outruns the burst; the level-raise hold in [stretchUpdate]
      * keeps it from being lowered again for 5 s.
      */
@@ -1962,7 +2055,7 @@ class DubDelayTracker(
         }
         // v1.0.22 (V-a/V-b) — ratio-baseline stretch, max-wins:
         // the dub runs ~1.42x the source, so the floor is the
-        // measured ratio (1/ratio(), clamped [1.0, 1.5]),
+        // measured ratio (1/ratio(), clamped [1.0, 1.35]),
         // multiplied by (1 + endLag/5000) while the last played
         // burst drifted late; it decays to 1.0 when silent >5 s
         // (no burst play — the floor is a dubbing speed, not an
@@ -2275,35 +2368,90 @@ class DubDelayTracker(
      * up). Before the first exact anchor, the seed lag is the only
      * reference.
      */
-    private fun onDubBurst(nowMs: Long): Pair<Long, TurnMarker?> {
-        burstRecv++
-        // v1.0.22 — V-c tail valve (round-2 tuned V2000cap500):
-        // arm at the next burst boundary when the last PLAYED
-        // burst drifted >2000 ms with the stretch already at the
-        // 1.5x ceiling — the queue cannot drain by speed alone,
-        // so the stale head-audio of this burst is dropped
-        // instead (see the drop in [onDubAudioArrival]). One arm
-        // per play report (a report that already armed never
-        // arms again); the arm reads only the last play's
-        // end-lag + the current speed, so it runs before every
-        // return path below, like the sim's on_dub_burst (which
-        // arms after its anchor work regardless of outcome).
+    /**
+     * v1.0.24 Fix D (sim1031) — TRUE end-burst of the last PLAYED
+     * burst, computed when the next burst arrives (its pairing log
+     * is complete by then: the burst's slices all arrived before
+     * this burst's first chunk, in order). The last pairing entry
+     * by dubCum is the burst's last slice; its play time is
+     * (playWall + offset/measuredSpeed), so the end-burst is
+     * (playWall + off/speed − sourceWall) − D-at-play. Skipped
+     * when the burst has no surviving pairing entries (a short
+     * burst fully arrived before its play report — its early
+     * slices were pruned at play time; the sim skips it the same
+     * way). One finalisation per burst.
+     */
+    private fun finalizePrevBurstEnd() {
+        val prevSeq = vbPlaySeq ?: return
+        if (prevSeq in fxdCompletedDone) return
+        if (fxdLastStartCumMs < 0L) return
+        val playWall = lastBurstPlayWallMs ?: return
+        val entries = pairingLog.filter { it.burstSeq == prevSeq }
+        if (entries.isEmpty()) return
+        val last = entries.maxByOrNull { it.dubCumMs } ?: return
+        val off = (last.dubCumMs - fxdLastStartCumMs).coerceAtLeast(0L)
+        val playSliceWall = playWall + (off / fxdLastPlaySpeed).toLong()
+        val end = playSliceWall - last.sourceWallMs - fxdLastPlayDelayMs
+        fxdCompletedEnds.addLast(end)
+        while (fxdCompletedEnds.size > 5) fxdCompletedEnds.removeFirst()
+        fxdCompletedDone.add(prevSeq)
+        while (fxdCompletedDone.size > 20) {
+            // Prune old seqs (the set only needs recent bursts;
+            // the smallest seq is the oldest).
+            val oldest = fxdCompletedDone.minOrNull() ?: break
+            fxdCompletedDone.remove(oldest)
+        }
+    }
+
+    /**
+     * v1.0.24 Fix D (2/2) — arm the tail valve ONLY on the median
+     * TRUE end-burst of the last 3 COMPLETED bursts, and ONLY when
+     * the hold is normal (hold <= dynamic margin). A hold jack is
+     * structural — dropping tail audio cannot fix it (sim1030: the
+     * r=1.40 explosion was a 2399 ms hold jack, and the STRONG valve
+     * only added 6.2% word loss on top). OLD strength kept
+     * (2000/1500/500): the v1.0.22 valve is the only one that never
+     * caused a regression. Called by [onDubAudioArrival] after the
+     * burst's hold is known, once per burst; one arm per play
+     * report (a report that already armed never arms again).
+     */
+    private fun armTailValveD(holdMs: Long) {
+        if (fxdCompletedEnds.size < 3) return
+        if (holdMs > dynamicMarginMs()) return
+        val med = fxdCompletedEnds.takeLast(3).sorted()[1]
         if (vbPlaySeq != null && vbPlaySeq != vbValveUsedSeq &&
-            lastCorrectedEndLagMs > VALVE_THRESH_MS &&
-            targetSpeed >= MAX_STRETCH_SPEED - 0.01
+            med > VALVE_THRESH_MS
         ) {
-            val drop = minOf(
-                lastCorrectedEndLagMs - VALVE_KEEP_MS,
-                VALVE_MAX_DROP_MS
-            )
+            val drop = minOf(med - VALVE_KEEP_MS, VALVE_MAX_DROP_MS)
             if (drop > 0L) {
                 pendingTailDropMs += drop
                 tailValveFires++
                 vbValveUsedSeq = vbPlaySeq
             }
         }
-        // v1.0.19 — previous hold, for the hold slew limit (the
-        // hold may not drop more than HOLD_SLEW_MS below it).
+    }
+
+    private fun onDubBurst(nowMs: Long): Pair<Long, TurnMarker?> {
+        burstRecv++
+        // v1.0.24 Fix D (1/2) — finalise the previous PLAYED
+        // burst's TRUE end-burst from the full pairing log at
+        // this burst boundary (sim1031: the at-play partial
+        // snapshot _vb_end_lag carries ~1500–2500 ms anchor noise,
+        // so the old V-c arm fired on noise while the TRUE
+        // end-burst was ~200 ms). The arming itself moved to
+        // [armTailValveD], called by [onDubAudioArrival] after
+        // this burst's hold is known (the sim arms after its
+        // anchor work, with the new hold — the hold gate must see
+        // the post-slew hold, not the previous one).
+        finalizePrevBurstEnd()
+        // v1.0.24 Fix C3 — EVERY return path below slews the hold
+        // through [robustHoldMs] (symmetric ±300 ms/burst toward
+        // robust), including no-marker and D-check-rejected
+        // bursts: the sim's C3 applies on every burst, and a
+        // frozen hold on rejected bursts is exactly what let the
+        // r=1.40 hold jack persist for minutes (sim1030).
+        // v1.0.19 — previous hold, for the hold slew limit (see
+        // [robustHoldMs]: Fix C3, symmetric ±300 ms/burst).
         val prevHoldMs = lastHoldMs
         if (!everExactAnchor) {
             // Before the first exact anchor a burst has no reliable
@@ -2317,13 +2465,13 @@ class DubDelayTracker(
                 // re-anchor at once to the D-based marker so the
                 // next bursts find their markers again.
                 reanchorToDMarker(nowMs)
-                return lastHoldMs to null
+                return robustHoldMs(nowMs, prevHoldMs) to null
             }
             val latency = nowMs - marker.wallMs
             if (latency !in 0L..MAX_SAMPLE_MS) {
                 burstConsistency++
                 burstDCheckStreak = 0
-                return lastHoldMs to null
+                return robustHoldMs(nowMs, prevHoldMs) to null
             }
             burstOk++
             burstDCheckStreak = 0
@@ -2367,7 +2515,7 @@ class DubDelayTracker(
                     burstNoMarker++
                     // v1.0.19 — NO-MARKER RE-ANCHOR (see 5b below).
                     reanchorToDMarker(nowMs)
-                    return lastHoldMs to null
+                    return robustHoldMs(nowMs, prevHoldMs) to null
                 }
                 viaSeed = true
                 burstFallback++
@@ -2382,20 +2530,20 @@ class DubDelayTracker(
         if (marker.audioMs < anchorSpeechMs && everExactAnchor) {
             burstAnchorBack++
             burstDCheckStreak = 0
-            return lastHoldMs to null
+            return robustHoldMs(nowMs, prevHoldMs) to null
         }
         val latency = nowMs - marker.wallMs
         if (latency !in 0L..MAX_SAMPLE_MS) {
             burstConsistency++
             burstDCheckStreak = 0
-            return lastHoldMs to null
+            return robustHoldMs(nowMs, prevHoldMs) to null
         }
         if (!viaSeed && !viaDBased) {
             val ref = impliedLagMs(nowMs, sPos)
             if (kotlin.math.abs(latency - ref) > SAMPLE_CONSISTENCY_MS) {
                 burstConsistency++
                 burstDCheckStreak = 0
-                return lastHoldMs to null
+                return robustHoldMs(nowMs, prevHoldMs) to null
             }
             // v1.0.20 — BURST D-CHECK BYPASS: the D-check is the
             // last gate, but a D pinned from a stale sample (the
@@ -2418,7 +2566,7 @@ class DubDelayTracker(
                 } else {
                     burstConsistency++
                     burstDCheckStreak++
-                    return lastHoldMs to null
+                    return robustHoldMs(nowMs, prevHoldMs) to null
                 }
             } else {
                 burstDCheckStreak = 0
@@ -2446,7 +2594,7 @@ class DubDelayTracker(
             // for it — like the sim's _accept_tc for tc).
             burstConsistency++
             burstDCheckStreak = 0
-            return lastHoldMs to null
+            return robustHoldMs(nowMs, prevHoldMs) to null
         }
         burstOk++
         burstDCheckStreak = 0
@@ -2502,15 +2650,28 @@ class DubDelayTracker(
      * elapsed in the turn); one outlier zeroes the hold and the
      * dues cluster → drops. So the hold is recomputed from the
      * robust lag estimate instead of the single burst latency:
-     * hold = max(0, D − lagEstimate − pipeline). The hold may
-     * not drop more than [HOLD_SLEW_MS] (300 ms) below the
-     * previous hold — a 1 s hold drop makes a whole second of
-     * dub due at once and the queue drops it; a rise is
-     * unlimited (it only delays dues). */
+     * hold = max(0, D − lagEstimate − pipeline), slewed toward
+     * that robust value by at most [HOLD_SLEW_MS] (300 ms) per
+     * burst, in EITHER direction.
+     * v1.0.24 Fix C3 (sim1030/1036 — the r=1.40 explosion): the
+     * old slew let the hold RISE without limit on a marker burst
+     * (it only limited the fall), so one bad marker burst jacked
+     * the hold 562 → 2399 ms and the end-burst exploded to
+     * 1940 ms. The symmetric slew caps the jack at +300 ms. It
+     * also replaces sim1031's C1+C2 (hard clamp to the margin +
+     * decay-only): those starved the hold in cap-marginal worlds
+     * where the genuine hold needs ~2 s (regone34/36 proved the
+     * clamp, not the valve, doubled the sim1018 stale drops —
+     * then regone38 proved the doubling is a CAP effect, and C3
+     * keeps the hold free to rise to its genuine value at
+     * +300/burst). A 1 s hold drop still makes a whole second of
+     * dub due at once and the queue drops it — hence the −300
+     * side too. */
     private fun robustHoldMs(nowMs: Long, prevHoldMs: Long): Long {
         val robust = (delayMs - lagEstimateMs(nowMs) - pipelineMs())
             .coerceAtLeast(0L)
-        return maxOf(prevHoldMs - HOLD_SLEW_MS, robust)
+        return minOf(prevHoldMs + HOLD_SLEW_MS,
+            maxOf(prevHoldMs - HOLD_SLEW_MS, robust))
     }
 
     /** v1.0.19 — BURST-SUCCESSOR RATIO. The marker this burst
@@ -3154,6 +3315,15 @@ class DubDelayTracker(
         sbTrialMaxRun = 0
         sbTrialBursts.clear()
         sbTrials++
+        // v1.0.24 TB (trial budget, sim1034) — latch D at trial
+        // start: while the trial is active D may move at most
+        // ±500 ms from this value (see flushWindowIfDue). A wrong
+        // trial ref must not drag the video delay (D) with it;
+        // the budget lifts on adoption, so genuine lag steps
+        // still recover exactly like the old code (sim1033: the
+        // recovery comes from trial-2 ADOPTING, and Fix A — which
+        // blocked the trial ref entirely — broke that path).
+        sbTrialStartDelayMs = delayMs
         Log.i(TAG, "S-b trial start: ref=%d -> trial=%d".format(ref, medN))
     }
 
@@ -3190,6 +3360,7 @@ class DubDelayTracker(
         }
         sbTrialActive = false
         sbTrialRef = null
+        sbTrialStartDelayMs = null
         sbTrialLeft = 0
         sbCooldown = SB_COOLDOWN_BURSTS
     }
@@ -3445,8 +3616,25 @@ class DubDelayTracker(
             }
             val updated = latencyEma.sample(median, delayMs)
             if (updated != null) {
+                // v1.0.24 TB (trial budget, sim1034) — while an
+                // S-b trial is active, D may move at most ±500 ms
+                // from its trial-start value (the EMA state still
+                // updates fully inside LatencyEma; only the D
+                // actually applied is clamped). A wrong trial ref
+                // then causes at most a transient, bounded video
+                // delay excursion; the budget lifts when the trial
+                // ends (adopt or reject), so genuine steps recover
+                // via adoption exactly as before.
+                var newDelay = updated.toLong()
+                val trialStart = sbTrialStartDelayMs
+                if (sbTrialActive && trialStart != null) {
+                    newDelay = newDelay.coerceIn(
+                        trialStart - TRIAL_BUDGET_MS,
+                        trialStart + TRIAL_BUDGET_MS
+                    )
+                }
                 // v1.0.19 — hard D cap (see capDelayMs).
-                delayMs = capDelayMs(updated.toLong())
+                delayMs = capDelayMs(newDelay)
                 onDelayChanged(delayMs)
             }
         }
@@ -3592,9 +3780,36 @@ class DubDelayTracker(
         val newestAgePart = markers.lastOrNull()?.let {
             "%d ms trước".format((nowMs - it.wallMs).coerceAtLeast(0L))
         } ?: "—"
-        val markerPart = " · mốc %d (mới nhất %s) · tách thử cũ %d/mới %d/được %d · stall %d · tốc độ %.2f×".format(
+        // v1.0.24 — tốc độ THẬT vs target (port từ v1.0.23):
+        // HUD in "tốc độ <target>× (thật <đo>×)" và gắn cờ CHÊNH!
+        // khi lệch >0,05, hoặc cảnh báo khi stretch không được hỗ
+        // trợ (kẹt 1,0× vĩnh viễn). Đây là thiết bị đo đóng số
+        // hạng ~1800 ms chưa giải thích được trên ảnh 12:00 (HUD
+        // cũ in 1,50× = target, không ai biết track thật chạy bao
+        // nhiêu).
+        val speedPart = run {
+            val parts = StringBuilder("tốc độ %.2f×".format(targetSpeed))
+            val measured = lastMeasuredSpeed
+            if (measured != null) {
+                parts.append(" (thật %.2f×".format(measured))
+                if (kotlin.math.abs(measured - targetSpeed) > 0.05) parts.append(" CHÊNH!")
+                parts.append(")")
+            }
+            if (lastStretchSupported == false) {
+                parts.append(" [stretch KHÔNG hỗ trợ — kẹt 1,0×]")
+            } else {
+                val readback = lastAppliedReadback
+                if (readback != null &&
+                    kotlin.math.abs(readback - targetSpeed) > 0.02
+                ) {
+                    parts.append(" [readback %.2f×]".format(readback))
+                }
+            }
+            parts.toString()
+        }
+        val markerPart = " · mốc %d (mới nhất %s) · tách thử cũ %d/mới %d/được %d · stall %d · %s".format(
             markers.size, newestAgePart, splitAttemptsOld, splitAttempts, splitMarkers,
-            stallEpisodes, targetSpeed
+            stallEpisodes, speedPart
         )
         // v1.0.21 (21d) — the end-of-session photo hides
         // mid-session drift, so the max/p90 over the whole
@@ -3686,8 +3901,12 @@ class DubDelayTracker(
         // v1.0.22 — the tail valve's pending drop and end-lag
         // belong to the pre-reconnect burst (see resetForStall).
         // Sa2 / S-b state survives (once per run).
+        // v1.0.24 Fix D — drop the completed end-bursts too
+        // (pre-reconnect measurements).
         pendingTailDropMs = 0L
         lastCorrectedEndLagMs = 0L
+        fxdCompletedEnds.clear()
+        fxdCompletedDone.clear()
     }
 
     /** Manual nudge from the "Trễ −1s / +1s" buttons: shift D by the
@@ -3855,6 +4074,14 @@ class DubDelayTracker(
         tailValveFires = 0
         vbPlaySeq = null
         vbValveUsedSeq = null
+        lastAppliedReadback = null
+        lastMeasuredSpeed = null
+        lastStretchSupported = null
+        fxdLastPlaySpeed = 1.0
+        fxdLastPlayDelayMs = 0L
+        fxdLastStartCumMs = -1L
+        fxdCompletedEnds.clear()
+        fxdCompletedDone.clear()
         sbSamples.clear()
         sbFirst.clear()
         sbLast.clear()
@@ -3864,6 +4091,7 @@ class DubDelayTracker(
         sbLastSeq = null
         sbTrialActive = false
         sbTrialRef = null
+        sbTrialStartDelayMs = null
         sbTrialBaseRef = null
         sbTrialBaseMed = null
         sbTrialLeft = 0

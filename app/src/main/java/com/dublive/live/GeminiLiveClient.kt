@@ -217,9 +217,14 @@ class GeminiLiveClient(
         //    can only hurt.
         //  - NO voice config for the translate model (ALDA FIX17), no
         //    translationConfig for the native models. Unchanged.
+        // v1.0.24 — PROMPT DỊCH NGẮN GỌN (port từ v1.0.23):
+        // mục tiêu tỉ lệ giọng/gốc r=1,35, cứng ≤1,40. Sim chứng
+        // minh r là phần chịu tải của trần 1,35×: r=1,47 (prompt
+        // cũ) vượt trần → backlog; r=1,35 pass gate seed-28 4/4
+        // (sim1035/1036). Đo r thật trên HUD trước khi chốt.
         val instruction = if (isTranslate) {
             "You are a real-time simultaneous interpreter. " +
-                "Translate speech into concise, natural spoken Vietnamese. " +
+                "Translate speech into concise, natural spoken Vietnamese — and keep every line SHORT: cut filler words, drop politeness padding and repetitions, use short sentences, say the same meaning in fewer words. " +
                 "Translate only meaningful speech. Completely ignore non-verbal sounds — " +
                 "cries of pain, groans, moans, gasps, sighs, laughter, coughing, sneezing, " +
                 "hiccups, and filler sounds such as uh, um, hmm, ah and oh — and stay " +
@@ -233,16 +238,13 @@ class GeminiLiveClient(
                 "natural Vietnamese address terms (anh/em/chi/co/chu...) matching the characters' " +
                 "relationship, never stiff textbook Vietnamese. Keep the speaker's own tone and " +
                 "emotion. Do not imitate any real dubbing actor's voice; this is a delivery " +
-                "style, not a copy of a person. Every translated line must take about the same " +
-                "time to say as the original line it replaces, so the Vietnamese voice finishes " +
-                "when the character's mouth stops moving. " +
+                "style, not a copy of a person. Every translated line must be SHORTER than the original line it replaces — aim for about three quarters of its length — so the Vietnamese voice finishes BEFORE the character's mouth stops moving. Never make a line longer than the original. " +
                 modeHint +
                 "preserve meaning and speaker intent, avoid explanations and repetition, " +
                 "and maintain source order with minimal pauses."
         } else {
             "Bạn là phiên dịch viên lồng tiếng phim. Nghe $langHint trong video và " +
-                "nói lại bằng tiếng Việt tự nhiên, giọng lồng tiếng truyền hình ấm áp, rõ ràng, " +
-                "khớp đúng lúc nhân vật mở miệng và nói hết trong đúng thời lượng câu gốc. " +
+                "nói lại bằng tiếng Việt tự nhiên NGẮN GỌN — bỏ từ đệm, câu ngắn, giữ nguyên nghĩa, câu tiếng Việt chỉ dài khoảng 3/4 câu gốc, không bao giờ dài hơn câu gốc — giọng lồng tiếng truyền hình ấm áp, rõ ràng, khớp đúng lúc nhân vật mở miệng và nói hết TRƯỚC KHI nhân vật ngừng mở miệng. " +
                 (if (wholeSentence) "Chờ nghe hết một câu hoàn chỉnh rồi mới dịch cả câu, dịch đúng ngữ cảnh hơn."
                 else "Dịch theo từng cụm ngắn ngay khi nghe rõ cụm đó, không chờ hết câu, để ra giọng nhanh nhất.") +
                 " Chỉ dịch câu có nghĩa. Nhân vật chỉ kêu, rên, cười, ho, ậm ừ hoặc nhạc không lời " +

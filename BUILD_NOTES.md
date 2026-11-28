@@ -1,7 +1,8 @@
-# DubLive v1.0.23 — TRỄ CỐ ĐỊNH 40 s + PROMPT NGẮN GỌN + TRẦN STRETCH 1,25× + THIẾT BỊ ĐO TỐC ĐỘ THẬT (28/11/2026, SIM1028 ĐÃ PASS GATE — BUILD [PENDING: run/commit/MD5 điền sau khi Actions chạy xong])
+# DubLive v1.0.23 — TRỄ CỐ ĐỊNH 40 s + PROMPT NGẮN GỌN + TRẦN STRETCH 1,25× + THIẾT BỊ ĐO TỐC ĐỘ THẬT (28/11/2026, ĐÃ BUILD — run Actions 46114739072, commit 0caeb1b70edbd0b9d6ce9dbc6194b961b01edf6e, tag v1.0.23-dublive, artifact 15250304094, MD5 e2b5b01176e4e3f33d1ab10200db3089, 9.581.166 byte)
 
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.23.apk`
   (symlink `~/workspace/your_files/DubLive-v1.0.23.apk`).
+- Build 1/3 thành công ngay lần đầu (28/11 ~06:05 UTC): job "Build APK" success; job "Create GitHub Release" fail — dự kiến trên tag run (PAT thiếu scope release), bỏ qua như các bản trước. APK giao là bản Debug (cài được; Release unsigned trong cùng artifact KHÔNG cài được). Verify: aapt2 package com.dublive.live versionCode 24 versionName 1.0.23; dex chứa đủ marker mới (image/jpeg ×2, DubLiveSetDubbing ×3, readback ×4, skip-ahead ×1, "SHORTER than the original" ×1, "three quarters" ×1, CHÊNH ×1, "cố định" ×1, "0:40" ×1, DubLiveDelayMs = 40000 ×1); prompt cũ "same time to say as the original" đã biến mất (0 hit).
 - Quyết định: user đề xuất 12:36 trễ cố định 30–40 s để xử lý đoạn dịch rồi đưa giọng về đúng vị trí video trễ; user chốt 12:40: "Lấy thừa cũng được để xem mọi phim đều có thể môi khớp với giọng" — ưu tiên đồng bộ mọi phim, lấy thừa. Bản này THAY THẾ hướng trần 1,25× một mình (sim1027 GATE FAIL 12:25 — mất chữ 25–29% ở phim thoại dày vì tỉ lệ 1,46–1,51 > trần; xem mục "v1.0.23 — SIM GATE FAIL" bên dưới để biết cái gì KHÔNG được lặp lại).
 
 ## Cấu hình ship — sim1028 (e), BẮT BUỘC theo đúng

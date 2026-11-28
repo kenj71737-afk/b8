@@ -3107,8 +3107,14 @@ class DubDelayTracker(
     private fun sbStep(nowMs: Long, rec: SbBurstRec) {
         if (sbTrialActive) {
             sbTrialBursts.add(rec)
-            val agree = rec.latTx != null && rec.med != null &&
-                kotlin.math.abs(rec.latTx - rec.med!!) <= SB_AGREE_MS
+            // Locals first: rec.latTx / rec.med are mutable data
+            // class properties, so the compiler cannot smart-cast
+            // them after a null check (compileReleaseKotlin error
+            // on the first v1.0.22 build attempt).
+            val latTx = rec.latTx
+            val med = rec.med
+            val agree = latTx != null && med != null &&
+                kotlin.math.abs(latTx - med) <= SB_AGREE_MS
             if (agree) {
                 sbTrialRun++
                 if (sbTrialRun > sbTrialMaxRun) sbTrialMaxRun = sbTrialRun

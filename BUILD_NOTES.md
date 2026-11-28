@@ -1,4 +1,4 @@
-# DubLive v1.0.21 — NEO BẰNG TRANSCRIPTION AI + SỬA TẬN GỐC KHAN HIẾM MARKER (28/11/2026, ĐANG LÀM — chưa build)
+# DubLive v1.0.21 — NEO BẰNG TRANSCRIPTION AI + SỬA TẬN GỐC KHAN HIẾM MARKER (28/11/2026, ĐÃ BUILD — run Actions 46092674107, commit 99e7b664, tag v1.0.21-dublive, MD5 17aea1f915e767a2a309a0c259219aec, 9.565.306 byte)
 
 Thử v1.0.20 trên máy thật cho 3 ảnh chẩn đoán (28/11 07:07, 07:32,
 07:35). Giọng liên tục ĐÃ sửa được (triệu chứng số 1 xong) nhưng môi
@@ -10,8 +10,36 @@ build + giao. GIỮ NGUYÊN toàn bộ còn lại của v1.0.20. KHÔNG mang l�
 share target v1.0.15, KHÔNG mang lại sửa probe/watchdog v1.0.16.
 
 - File: `~/workspace/goals/alda-v10-tvb-style-dubbing-sync/files/DubLive-v1.0.21.apk`
-  (symlink `~/workspace/your_files/DubLive-v1.0.21.apk`) — CHƯA CÓ,
-  đang cài đặt Kotlin, sẽ điền run/commit/MD5 sau khi build xong.
+  (symlink `~/workspace/your_files/DubLive-v1.0.21.apk`) — ĐÃ GIAO
+  28/11 ~08:24 VN, build 1 lần đậu ngay (run Actions 46092674107, job
+  Build APK success; job Create GitHub Release fail — dự kiến trên tag
+  run, bỏ qua), commit 99e7b664 (full
+  99e7b66458db2bd5bace09ec499783a61834cf23), tag v1.0.21-dublive,
+  artifact alad-apks id 15242002800, MD5
+  17aea1f915e767a2a309a0c259219aec, 9.565.306 byte, package
+  com.dublive.live, versionCode 22, versionName 1.0.21. Dex đã kiểm
+  chứng chứa đủ logic mới (applyTxAnchor, noteTxSource/In/OutFragment,
+  onOutputTranscription, clusterCentre, selectDBased, dBasedLagMs,
+  selLagMs, refLagMs, splitAttemptsOld, txSentenceStartMs, audioAt,
+  droppedBlocks; chuỗi chẩn đoán "lệch max", "cặp 60 s đầu").
+- **Rà code Kotlin trước build (parent, đối chiếu sim NewTracker21):**
+  khớp sim ở mọi điểm đã kiểm tra — seed theo marker đầu tiên (fallback
+  first sent audio); cụm dày nhất + pool bootstrap, không EMA/trung vị;
+  dBasedLagMs chỉ trả cụm khi txOk > 0, selLagMs dùng cụm/pool/seed ngay
+  cả bootstrap; chọn-D đơn điệu residual ≤ 1500 ms; tc D-based không
+  check nào, burst D-based qua D-check 2500 ms (đúng sim1018);
+  anchor-back veto trên pick D-based không fallback (đúng sim); neo tx
+  chỉ nhóm ĐÃ ĐÓNG, pool bootstrap, residual ±1200 ms khi đã thiết lập,
+  D-check ±2000 ms (±6000 ms bootstrap), đồng thuận VAD ≤ 500 ms, guard
+  1 lần/burst; hằng số khớp sim (TX_WIN 10000, TX_RES 1200, TX_DCHECK
+  2000, TX_BOOT_WIN 6000, DBASED_RES 1500, BURST_D_CHECK 1500,
+  SEED_FB_D_CHECK 2500, MAX_BND_SAMPLES 30, MAX_SEED_CAND 200);
+  onOutputTranscription có default rỗng nên SettingsActivity vẫn biên
+  dịch; brace/paren cân bằng cả 5 file. Hai lưu ý cần kiểm chứng trên
+  máy thật (không chặn build): (a) fallback onTranslatedText — nếu text
+  của burst N tới trước audio của burst N thì nó thử neo burst N−1 (vẫn
+  đúng dòng N−1, chỉ kích hoạt sớm); (b) chunk đầu phiên (isFirstChunk)
+  không phải burst VAD nên không được neo tx.
 - versionCode 22, versionName 1.0.21 (bump từ 21 / 1.0.20).
 
 ## Kết quả thử v1.0.20 trên máy — 3 ảnh (ghi nguyên văn)
